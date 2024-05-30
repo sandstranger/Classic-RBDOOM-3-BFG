@@ -119,6 +119,8 @@ If you have questions concerning this license or the applicable additional terms
 #define CPUSTRING 						"aarch64"
 #elif defined(__powerpc64__)
 #define CPUSTRING						"ppc64"
+#elif defined(__arm__)
+#define CPUSTRING						"arm"
 #else
 #error unknown CPU
 #endif

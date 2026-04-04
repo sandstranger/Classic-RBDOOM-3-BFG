@@ -1745,8 +1745,7 @@ if (NOT ANDROID)
 endif()
 
 	if(UNIX)
-		if(FFMPEG)
-		if (NOT ANDROID)
+		if(FFMPEG AND NOT ANDROID)
 		if (USE_VCPKG)
 			find_package(FFMPEG COMPONENTS AVCODEC AVDEVICE AVFILTER AVFORMAT AVUTIL SWRESAMPLE SWSCALE REQUIRED)
 		else(USE_VCPKG)
@@ -1756,14 +1755,6 @@ endif()
 			
 			include_directories(${FFMPEG_INCLUDE_DIR})
 			link_directories(${FFMPEG_LIBRARIES_DIRS})
-		else()
-            include_directories(${FFMPEG_INCLUDE_DIRS})
-            set(FFmpeg_LIBRARIES ${AVFORMAT_LIBRARY}
-                        ${AVCODEC_LIBRARY}
-                        ${AVUTIL_LIBRARY}
-                        ${AVSWSCALE_LIBRARY}
-                        ${SWRESAMPLE_LIBRARY})
-		endif()
 		endif()
 
 if (NOT ANDROID)
@@ -1771,6 +1762,7 @@ if (NOT ANDROID)
 		include_directories(${SDL3_INCLUDE_DIR})
 		set(SDLx_LIBRARY SDL3::SDL3)
 else()
+        include_directories(${FFMPEG_INCLUDE_DIRS})
 		include_directories(${SDL3_INCLUDE_DIR})
 		set(SDLx_LIBRARY ${SDL3_LIBRARY})
 endif()
@@ -1906,7 +1898,7 @@ endif()
 	else()
 		set(remove_command "rm")
 	endif()
-	add_library(external ${LIB_INCLUDES} ${LIB_SOURCES})
+	add_library(external STATIC ${LIB_INCLUDES} ${LIB_SOURCES})
 	target_compile_options(external PRIVATE "-Wno-error")
 	add_custom_target(shaders SOURCES ${SHADERS})
 	if (USE_PRECOMPILED_HEADERS)
@@ -1959,17 +1951,23 @@ if (NOT ANDROID)
 			)
 else()
 		target_link_libraries(DoomBFA
+		    ${AVFORMAT_LIBRARY}
+		    ${AVCODEC_LIBRARY}
+		    ${AVUTIL_LIBRARY}
+		    ${AVSWSCALE_LIBRARY}
+		    ${SWRESAMPLE_LIBRARY}
+			-Wl,--whole-archive
 			idlib
 			external
-			-Wl,--whole-archive ${game} -Wl,--no-whole-archive
+			-Wl,--no-whole-archive
 			${NG_GL4ES_LIBRARY}
 			${SDLx_LIBRARY}
 			${OPENAL_LIBRARY}
-			${FFMPEG_LIBRARIES}
             ${ZLIB_LIBRARY}
             ${JPEG_LIBRARY}
 			${OpenSSL_LIBRARY}
-    	    ${CMAKE_DL_LIBS})
+    	    ${CMAKE_DL_LIBS}
+    	    log)
 endif()
 		if (USE_OPENXR) 
 	        target_compile_options(openxr_loader PRIVATE "-Wno-error")

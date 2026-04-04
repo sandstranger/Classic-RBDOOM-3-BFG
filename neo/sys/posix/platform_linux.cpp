@@ -633,6 +633,7 @@ void* getAddressOffset(const char* mangledName, const char* address) {
 }
 
 void Sys_GetCallStack(char* Dest) {
+#ifndef ANDROID
 	char callStack[5000];
 	sprintf(callStack, "Called: ");
 	void* stack[62];
@@ -674,6 +675,7 @@ void Sys_GetCallStack(char* Dest) {
 		strcat(callStack, frameLine);
 	}
 	sprintf(Dest, "%s", callStack);
+#endif
 }
 
 int Sys_Wcstrtombstr(char* Dest, const wchar_t* Source, size_t size) {

@@ -27,27 +27,11 @@ If you have questions concerning this license or the applicable additional terms
 ===========================================================================
 */
 
+#include "../idlib/sys/sys_defines.h"
+#include "precompiled.h"
+
 #ifndef __SYS_PUBLIC__
 #define __SYS_PUBLIC__
-
-#include "../idlib/CmdArgs.h"
-#include "../idlib/precompiled.h"
-
-#if defined(_MSC_VER) && defined(__clang__)
-#pragma clang diagnostic ignored "-Wmicrosoft-enum-forward-reference"
-#endif
-
-#ifdef _MSC_VER
-#pragma warning( disable: 4471 )
-#endif
-
-/*
-===============================================================================
-
-	Non-portable system services.
-
-===============================================================================
-*/
 
 enum cpuid_t
 {
@@ -69,6 +53,39 @@ enum cpuid_t
 	CPUID_XENON							= 0x10000,	// Xbox 360
 	CPUID_CELL							= 0x20000	// PS3
 };
+
+typedef enum
+{
+    NA_BAD,					// an address lookup failed
+    NA_LOOPBACK,
+    NA_BROADCAST,
+    NA_IP
+} netadrtype_t;
+
+typedef struct
+{
+    netadrtype_t	type;
+    unsigned char	ip[4];
+    unsigned short	port;
+} netadr_t;
+
+#include "../idlib/CmdArgs.h"
+
+#if defined(_MSC_VER) && defined(__clang__)
+#pragma clang diagnostic ignored "-Wmicrosoft-enum-forward-reference"
+#endif
+
+#ifdef _MSC_VER
+#pragma warning( disable: 4471 )
+#endif
+
+/*
+===============================================================================
+
+	Non-portable system services.
+
+===============================================================================
+*/
 
 enum fpuExceptions_t
 {
@@ -690,21 +707,6 @@ int Sys_LangIndex(const char* lang);
 ==============================================================
 */
 
-typedef enum
-{
-	NA_BAD,					// an address lookup failed
-	NA_LOOPBACK,
-	NA_BROADCAST,
-	NA_IP
-} netadrtype_t;
-
-typedef struct
-{
-	netadrtype_t	type;
-	unsigned char	ip[4];
-	unsigned short	port;
-} netadr_t;
-
 #define	PORT_ANY			-1
 
 /*
@@ -838,7 +840,7 @@ class idSys
 public:
 	virtual void			DebugPrintf( VERIFY_FORMAT_STRING const char* fmt, ... ) = 0;
 	virtual void			DebugVPrintf( const char* fmt, va_list arg ) = 0;
-	
+
 	virtual struct leaderboardDefinition_t* FindLeaderboardDef(int id)=0;
 	virtual struct leaderboardDefinition_t* CreateLeaderboardDef(int id_, int numColumns_, const struct columnDef_t* columnDefs_, enum rankOrder_t rankOrder_, bool supportsAttachments_, bool checkAgainstCurrent_) = 0;
 	virtual void			DestroyLeaderboardDefs() = 0;
@@ -851,20 +853,20 @@ public:
 	virtual bool			FPU_StackIsEmpty() = 0;
 	virtual void			FPU_SetFTZ( bool enable ) = 0;
 	virtual void			FPU_SetDAZ( bool enable ) = 0;
-	
+
 	virtual void			FPU_EnableExceptions( int exceptions ) = 0;
-	
+
 	virtual bool			LockMemory( void* ptr, int bytes ) = 0;
 	virtual bool			UnlockMemory( void* ptr, int bytes ) = 0;
-	
+
 	virtual intptr_t				DLL_Load( const char* dllName ) = 0;
 	virtual void* 			DLL_GetProcAddress( int dllHandle, const char* procName ) = 0;
 	virtual void			DLL_Unload( int dllHandle ) = 0;
 	virtual void			DLL_GetFileName( const char* baseName, char* dllName, int maxLength ) = 0;
-	
+
 	virtual sysEvent_t		GenerateMouseButtonEvent( int button, bool down ) = 0;
 	virtual sysEvent_t		GenerateMouseMoveEvent( int deltax, int deltay ) = 0;
-	
+
 	virtual void			OpenURL( const char* url, bool quit ) = 0;
 	virtual void			StartProcess( const char* exePath, bool quit ) = 0;
 };

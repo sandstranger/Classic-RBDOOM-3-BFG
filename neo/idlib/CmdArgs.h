@@ -29,6 +29,9 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __CMDARGS_H__
 #define __CMDARGS_H__
 
+#if defined(__ANDROID__)
+#include "sys/sys_types.h"
+#endif
 /*
 ===============================================================================
 

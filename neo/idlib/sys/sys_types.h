@@ -25,9 +25,12 @@ If you have questions concerning this license or the applicable additional terms
 
 ===========================================================================
 */
+#if defined(__ANDROID__)
+#include "sys_assert.h"
+#endif
+
 #ifndef SYS_TYPES_H
 #define SYS_TYPES_H
-
 /*
 ================================================================================================
 Contains types and defines used throughout the engine.
@@ -53,6 +56,7 @@ typedef unsigned long long	uint64;
 
 // The C/C++ standard guarantees the size of an unsigned type is the same as the signed type.
 // The exact size in bytes of several types is guaranteed here.
+
 assert_sizeof( bool,	1 );
 assert_sizeof( char,	1 );
 assert_sizeof( short,	2 );
@@ -118,8 +122,10 @@ struct idNullPtr
 //#endif
 
 // C99 Standard
+#if !defined(__ANDROID__)
 #ifndef nullptr
 #define nullptr	idNullPtr()
+#endif
 #endif
 #endif
 

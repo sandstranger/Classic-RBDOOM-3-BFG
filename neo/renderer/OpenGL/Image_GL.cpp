@@ -27,6 +27,9 @@ If you have questions concerning this license or the applicable additional terms
 ===========================================================================
 */
 
+#if ANDROID
+#include <GLES3/gl32.h>
+#endif
 #include "precompiled.h"
 #pragma hdrstop
 /*
@@ -119,7 +122,7 @@ void idImage::Bind()
 	if( currentMap != texnum )
 	{
 
-#if !defined(USE_GLES2) && !defined(USE_GLES3)
+#if !defined(USE_GLES2) && !defined(USE_GLES3) && !ANDROID
 		if( glConfig.directStateAccess )
 		{
 			glBindTextureUnit( texUnit, texnum );
@@ -244,12 +247,13 @@ void idImage::CopyFramebufferDSA(int x, int y, int imageWidth, int imageHeight, 
 		//to wipe the old one and create it as new
 		AllocImage();
 	}
-#if !defined(USE_GLES2)
+#if !defined(USE_GLES2) && !ANDROID
 	if (Framebuffer::IsDefaultFramebufferActive())
 	{
 		glNamedFramebufferReadBuffer(0, GL_BACK);
 	}
 #endif
+#ifndef ANDROID
 	glCopyTextureSubImage2D(texnum, 0, 0, 0, x, y, imageWidth, imageHeight);
 
 	glTextureParameterf(texnum, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -257,6 +261,23 @@ void idImage::CopyFramebufferDSA(int x, int y, int imageWidth, int imageHeight, 
 
 	glTextureParameterf(texnum, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glTextureParameterf(texnum, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#else
+	glBindTexture(GL_TEXTURE_2D, texnum);
+
+	glCopyTexSubImage2D(
+			GL_TEXTURE_2D,
+			0,
+			0, 0,
+			x, y,
+			imageWidth,
+			imageHeight
+	);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#endif
 }
 
 void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight, bool forceLDR )
@@ -278,19 +299,24 @@ CopyDepthbuffer
 */
 void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight )
 {
-	if (!glConfig.directStateAccess) {
+#ifndef ANDROID
+	if (!glConfig.directStateAccess)
+#endif
+	{
 		glBindTexture((opts.textureType == TT_CUBIC) ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, texnum);
 
 		opts.width = imageWidth;
 		opts.height = imageHeight;
 		glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, x, y, imageWidth, imageHeight, 0);
 	}
+#ifndef ANDROID
 	else {
 		if (opts.width != imageWidth || opts.height != imageHeight) {
 			opts.width = imageWidth;
 			opts.height = imageHeight;
 			AllocImage();
 		}
+
 		if (opts.textureType == TT_CUBIC) {
 			glCopyTextureSubImage3D(texnum, 0, 0, 0, 0, x, y, imageWidth, imageHeight);
 		}
@@ -298,7 +324,7 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight )
 			glCopyTextureSubImage2D(texnum, 0, 0, 0, x, y, imageWidth, imageHeight);
 		}
 	}
-
+#endif
 	tr.backend.pc.c_copyFrameBuffer++;
 }
 
@@ -346,7 +372,10 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 	
 	int target;
 	int uploadTarget;
-	if (!glConfig.directStateAccess) {
+#ifndef ANDROID
+	if (!glConfig.directStateAccess)
+#endif
+	{
 		if (opts.textureType == TT_2D)
 		{
 			target = uploadTarget = GL_TEXTURE_2D;
@@ -402,6 +431,7 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 			glTexSubImage2D(uploadTarget, mipLevel, x, y, width, height, dataFormat, dataType, pic);
 		}
 	}
+#ifndef ANDROID
 	else {
 		if( pixelPitch != 0 )
 		{
@@ -452,7 +482,7 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 			
 		}
 	}
-	
+#endif
 #if defined(DEBUG) || defined(__ANDROID__)
 	//GL_CheckErrors();
 #endif
@@ -673,6 +703,7 @@ void idImage::SetTextureParameters() {
 	if (opts.textureType == TT_2D_MULTISAMPLE) {
 		return;
 	}
+#ifndef ANDROID
 	// ALPHA, LUMINANCE, LUMINANCE_ALPHA, and INTENSITY have been removed
 	// in OpenGL 3.2. In order to mimic those modes, we use the swizzle operators
 	if (opts.colorFormat == CFM_GREEN_ALPHA) {
@@ -740,10 +771,113 @@ void idImage::SetTextureParameters() {
 	default:
 		common->FatalError("%s: bad texture filter %d", GetName(), filter);
 	}
+#else
+// Bind texture first (GLES has no DSA)
+	glBindTexture(GL_TEXTURE_2D, texnum);
 
+/*
+========================
+ SWIZZLE SETUP
+========================
+GLES 3.0+ supports swizzle.
+We emulate legacy formats (L8A8, ALPHA, LUM, INT) using RGBA swizzle.
+*/
+
+	if (opts.colorFormat == CFM_GREEN_ALPHA)
+	{
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_ONE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_ONE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_ONE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_GREEN);
+	}
+	else
+	{
+		switch (opts.format)
+		{
+			case FMT_ALPHA:
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_ONE);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_ONE);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_ONE);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_RED);
+				break;
+
+			case FMT_L8A8:
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_GREEN);
+				break;
+
+			case FMT_LUM8:
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_ONE);
+				break;
+
+			case FMT_INT8:
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_RED);
+				break;
+
+			default:
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_GREEN);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_BLUE);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_ALPHA);
+				break;
+		}
+	}
+
+/*
+========================
+ FILTERING SETUP
+========================
+GLES only supports glTexParameteri (no DSA, no glTextureParameterf)
+*/
+	switch (filter)
+	{
+		case TF_DEFAULT:
+			if (r_useTrilinearFiltering.GetBool())
+			{
+				glTexParameteri(GL_TEXTURE_2D,
+								GL_TEXTURE_MIN_FILTER,
+								GL_LINEAR_MIPMAP_LINEAR);
+			}
+			else
+			{
+				glTexParameteri(GL_TEXTURE_2D,
+								GL_TEXTURE_MIN_FILTER,
+								GL_LINEAR_MIPMAP_NEAREST);
+			}
+
+			glTexParameteri(GL_TEXTURE_2D,
+							GL_TEXTURE_MAG_FILTER,
+							GL_LINEAR);
+			break;
+
+		case TF_LINEAR:
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			break;
+
+		case TF_NEAREST:
+		case TF_NEAREST_MIPMAP:
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+			break;
+
+		default:
+			common->FatalError("%s: bad texture filter %d", GetName(), filter);
+			break;
+	}
+#endif
 	if (glConfig.anisotropicFilterAvailable)
 	{
 		// only do aniso filtering on mip mapped images
+#ifndef ANDROID
 		if (filter == TF_DEFAULT)
 		{
 			int aniso = r_maxAnisotropicFiltering.GetInteger();
@@ -761,6 +895,32 @@ void idImage::SetTextureParameters() {
 		{
 			glTextureParameterf(texnum, (glConfig.glVersion == 4.6) ? GL_TEXTURE_MAX_ANISOTROPY : GL_TEXTURE_MAX_ANISOTROPY_EXT, 1);
 		}
+#else
+		if (glConfig.anisotropicFilterAvailable)
+		{
+			const GLenum ANISO_ENUM = GL_TEXTURE_MAX_ANISOTROPY_EXT;
+			if (filter == TF_DEFAULT)
+			{
+				int aniso = r_maxAnisotropicFiltering.GetInteger();
+
+				if (aniso > glConfig.maxTextureAnisotropy)
+				{
+					aniso = glConfig.maxTextureAnisotropy;
+				}
+
+				if (aniso < 1)
+				{
+					aniso = 1;
+				}
+
+				glTexParameterf(GL_TEXTURE_2D, ANISO_ENUM, (GLfloat)aniso);
+			}
+			else
+			{
+				glTexParameterf(GL_TEXTURE_2D, ANISO_ENUM, 1.0f);
+			}
+		}
+#endif
 	}
 
 	// RB: disabled use of unreliable extension that can make the game look worse
@@ -773,6 +933,7 @@ void idImage::SetTextureParameters() {
 	*/
 	// RB end
 
+#ifndef ANDROID
 	// set the wrap/clamp modes
 	switch (repeat)
 	{
@@ -811,6 +972,62 @@ void idImage::SetTextureParameters() {
 		glTextureParameteri(texnum, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_R_TO_TEXTURE);
 		glTextureParameteri(texnum, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
 	}
+#else
+/*
+========================
+ WRAP / CLAMP
+========================
+NOTE:
+GLES does NOT support:
+- GL_CLAMP_TO_BORDER
+- GL_TEXTURE_BORDER_COLOR
+
+So we emulate via CLAMP_TO_EDGE
+*/
+
+	switch (repeat)
+	{
+		case TR_REPEAT:
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+			break;
+
+		case TR_CLAMP_TO_ZERO:
+		case TR_CLAMP_TO_ZERO_ALPHA:
+			// ❌ no border color in GLES
+			// ✔️ fallback
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+			break;
+
+		case TR_CLAMP:
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+			break;
+
+		default:
+			common->FatalError("%s: bad texture repeat %d", GetName(), repeat);
+			break;
+	}
+
+/*
+========================
+ SHADOW MAP COMPARE
+========================
+GLES 3.0+ supports shadow samplers
+*/
+
+	if (opts.format == FMT_SHADOW_ARRAY)
+	{
+		glTexParameteri(GL_TEXTURE_2D,
+						GL_TEXTURE_COMPARE_MODE,
+						GL_COMPARE_REF_TO_TEXTURE);
+
+		glTexParameteri(GL_TEXTURE_2D,
+						GL_TEXTURE_COMPARE_FUNC,
+						GL_LEQUAL);
+	}
+#endif
 }
 
 
@@ -1006,16 +1223,29 @@ void idImage::AllocImage()
 	int w = opts.width;
 	int h = opts.height;
 #endif
-
-	if (!glConfig.directStateAccess) {
+#ifndef ANDROID
+	if (!glConfig.directStateAccess)
+#endif
+	{
 		glGenTextures(1, (GLuint*)&texnum);
 		assert(texnum != TEXTURE_NOT_LOADED);
 		glBindTexture(target, texnum);
 		if (opts.textureType == TT_2D_ARRAY) {
 			glTexImage3D(uploadTarget, 0, internalFormat, w, h, numSides, 0, dataFormat, GL_UNSIGNED_BYTE, NULL);
 		}
-		else if (opts.textureType == TT_2D_MULTISAMPLE) {
+        else if (opts.textureType == TT_2D_MULTISAMPLE) {
+#ifndef ANDROID
 			glTexImage2DMultisample(uploadTarget, opts.samples, internalFormat, w, h, GL_FALSE);
+#else
+            glTexStorage2DMultisample(
+                    GL_TEXTURE_2D_MULTISAMPLE,
+                    opts.samples,
+                    internalFormat,
+                    w,
+                    h,
+                    GL_FALSE
+            );
+#endif
 		}else{
 			if (opts.textureType == TT_CUBIC)
 			{
@@ -1079,6 +1309,7 @@ void idImage::AllocImage()
 			glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, opts.numLevels - 1);
 		}
 	}
+#ifndef ANDROID
 	else 
 	{
 		glCreateTextures(target, 1, (GLuint*)&texnum);
@@ -1097,7 +1328,7 @@ void idImage::AllocImage()
 			glTextureParameteri(texnum, GL_TEXTURE_MAX_LEVEL, opts.numLevels - 1);
 		}
 	}
-	
+#endif
 	// see if we messed anything up
 	//GL_CheckErrors();
 	

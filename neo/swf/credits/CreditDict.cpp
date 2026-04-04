@@ -29,7 +29,7 @@
 
 std::vector<creditInfo_t> creditList;
 
-std::map<std::string, int> types = {
+static std::map<std::string, int> types = {
 	{"Header", 3},
 	{"SubHeader", 2},
 	{"Title", 1},

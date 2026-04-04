@@ -414,7 +414,7 @@ idRenderLog::Printf
 */
 void idRenderLog::Printf( const char* fmt, ... )
 {
-#if !defined(USE_VULKAN)
+#if !defined(USE_VULKAN) && !ANDROID
 	if( activeLevel <= LOG_LEVEL_BLOCKS_ONLY )
 	{
 		return;
@@ -438,9 +438,8 @@ void idRenderLog::Printf( const char* fmt, ... )
 	msg[sizeof( msg ) - 1] = '\0';
 	
 	out.Append( msg );
-	
+
 	glStringMarkerGREMEDY( out.Length(), out.c_str() );
-	
 	//logFile->Printf( "%s", indentString );
 	//va_start( marker, fmt );
 	//logFile->VPrintf( fmt, marker );
@@ -468,7 +467,7 @@ void idRenderLog::LogOpenBlock( renderLogIndentLabel_t label, const char* fmt, .
 		//logFile->Printf( "%s%1.1f msec gap from last closeblock\n", indentString, ( now - closeBlockTime ) * ( 1.0f / 1000.0f ) );
 		//}
 		
-#if !defined(USE_VULKAN)
+#if !defined(USE_VULKAN) && !ANDROID
 		if( glConfig.gremedyStringMarkerAvailable )
 		{
 			//Printf( fmt, args );
@@ -491,7 +490,7 @@ void idRenderLog::LogOpenBlock( renderLogIndentLabel_t label, const char* fmt, .
 			
 			out.Append( msg );
 			out += " {";
-			
+
 			glStringMarkerGREMEDY( out.Length(), out.c_str() );
 		}
 #endif

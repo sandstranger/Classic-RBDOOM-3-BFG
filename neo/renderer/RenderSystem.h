@@ -193,7 +193,7 @@ struct glconfig_t
 	float				pixelAspect;
 	
 	// RB begin
-#if !defined(__ANDROID__) && !defined(USE_VULKAN)
+#if !defined(USE_VULKAN)
 	GLuint				global_vao;
 #endif
 	// RB end

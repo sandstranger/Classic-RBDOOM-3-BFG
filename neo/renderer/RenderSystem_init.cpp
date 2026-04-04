@@ -48,6 +48,9 @@ If you have questions concerning this license or the applicable additional terms
 #ifdef BUGFIXEDSCREENSHOTRESOLUTION
 #include "../framework/Common_local.h"
 #endif
+#if ANDROID
+#define INFINITY (__builtin_inff())
+#endif
 #include <random>
 
 // DeviceContext bypasses RenderSystem to work directly with this

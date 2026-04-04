@@ -31,6 +31,9 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../RenderCommon.h"
 #include "../Framebuffer.h"
+#if ANDROID
+#include "GLES3/gl32.h"
+#endif
 
 #if !defined(USE_VULKAN)
 
@@ -62,13 +65,17 @@ Framebuffer::Framebuffer( const char* name, int w, int h )
 	height = h;
 	
 	msaaSamples = false;
-	
-	if (!glConfig.directStateAccess) {
+#ifndef ANDROID
+	if (!glConfig.directStateAccess)
+#endif
+	{
 		glGenFramebuffers(1, &frameBuffer);
 	}
+#ifndef ANDROID
 	else {
 		glCreateFramebuffers(1, &frameBuffer);
 	}
+#endif
 	
 	framebuffers.Append( this );
 }
@@ -94,13 +101,18 @@ void Framebuffer::Init()
 		width = height = shadowMapResolutions[i];
 		
 		globalFramebuffers.shadowFBO[i] = new Framebuffer( va( "_shadowMap%i", i ) , width, height );
-		if (!glConfig.directStateAccess) {
+#ifndef ANDROID
+		if (!glConfig.directStateAccess)
+#endif
+		{
 			globalFramebuffers.shadowFBO[i]->Bind();
 			glDrawBuffers(0, NULL);
 		}
+#ifndef ANDROID
 		else {
 			glNamedFramebufferDrawBuffers(globalFramebuffers.shadowFBO[i]->frameBuffer, 0, NULL);
 		}
+#endif
 	}
 	
 	// HDR
@@ -434,7 +446,10 @@ void Framebuffer::AddColorBuffer( int format, int index, int multiSamples )
 	colorFormat = format;
 	
 	bool notCreatedYet = colorBuffers[index] == 0;
-	if (!glConfig.directStateAccess) {
+#ifndef ANDROID
+	if (!glConfig.directStateAccess)
+#endif
+	{
 		if (notCreatedYet)
 		{
 			glGenRenderbuffers(1, &colorBuffers[index]);
@@ -458,6 +473,7 @@ void Framebuffer::AddColorBuffer( int format, int index, int multiSamples )
 			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + index, GL_RENDERBUFFER, colorBuffers[index]);
 		}
 	}
+#ifndef ANDROID
 	else {
 		if (notCreatedYet)
 		{
@@ -480,6 +496,7 @@ void Framebuffer::AddColorBuffer( int format, int index, int multiSamples )
 			glNamedFramebufferRenderbuffer(frameBuffer, GL_COLOR_ATTACHMENT0 + index, GL_RENDERBUFFER, colorBuffers[index]);
 		}
 	}
+#endif
 	
 	//GL_CheckErrors();
 }
@@ -489,7 +506,10 @@ void Framebuffer::AddDepthBuffer( int format, int multiSamples )
 	depthFormat = format;
 	
 	bool notCreatedYet = depthBuffer == 0;
-	if (!glConfig.directStateAccess) {
+#ifndef ANDROID
+	if (!glConfig.directStateAccess)
+#endif
+	{
 		if (notCreatedYet)
 		{
 			glGenRenderbuffers(1, &depthBuffer);
@@ -513,6 +533,7 @@ void Framebuffer::AddDepthBuffer( int format, int multiSamples )
 			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, depthBuffer);
 		}
 	}
+#ifndef ANDROID
 	else {
 		if (notCreatedYet)
 		{
@@ -535,7 +556,7 @@ void Framebuffer::AddDepthBuffer( int format, int multiSamples )
 			glNamedFramebufferRenderbuffer(frameBuffer, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, depthBuffer);
 		}
 	}
-	
+#endif
 	//GL_CheckErrors();
 }
 
@@ -547,15 +568,20 @@ void Framebuffer::AddStencilBuffer(int format, int multiSamples)
 	bool notCreatedYet = stencilBuffer == 0;
 	if (notCreatedYet)
 	{
+#ifndef ANDROID
 		if (glConfig.directStateAccess) {
 			glCreateRenderbuffers(1, &stencilBuffer);
 		}
-		else {
+		else
+#endif
+		{
 			 glGenRenderbuffers(1, &stencilBuffer);
 		}
 	}
-
-	if (!glConfig.directStateAccess) {
+#ifndef ANDROID
+	if (!glConfig.directStateAccess)
+#endif
+	{
 		glBindRenderbuffer(GL_RENDERBUFFER, stencilBuffer);
 
 
@@ -575,6 +601,7 @@ void Framebuffer::AddStencilBuffer(int format, int multiSamples)
 			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, stencilBuffer);
 		}
 	}
+#ifndef ANDROID
 	else {
 		if (multiSamples > 0)
 		{
@@ -592,7 +619,7 @@ void Framebuffer::AddStencilBuffer(int format, int multiSamples)
 			glNamedFramebufferRenderbuffer(frameBuffer, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, stencilBuffer);
 		}
 	}
-
+#endif
 	//GL_CheckErrors();
 }
 //SP End
@@ -610,12 +637,17 @@ void Framebuffer::AttachImage2D( int target, const idImage* image, int index, in
 		common->Warning( "Framebuffer::AttachImage2D( %s ): bad index = %i", fboName.c_str(), index );
 		return;
 	}
-	if (!glConfig.directStateAccess) {
+#ifndef ANDROID
+	if (!glConfig.directStateAccess)
+#endif
+	{
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + index, target, image->texnum, mipmapLod);
 	}
+#ifndef ANDROID
 	else {
 		glNamedFramebufferTexture(frameBuffer, GL_COLOR_ATTACHMENT0 + index, image->texnum, mipmapLod);
 	}
+#endif
 }
 
 void Framebuffer::AttachImageDepth( int target, const idImage* image )
@@ -625,30 +657,42 @@ void Framebuffer::AttachImageDepth( int target, const idImage* image )
 		common->Warning( "Framebuffer::AttachImageDepth( %s ): invalid target", fboName.c_str() );
 		return;
 	}
-	if (!glConfig.directStateAccess) {
+#ifndef ANDROID
+	if (!glConfig.directStateAccess)
+#endif
+	{
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, target, image->texnum, 0);
 	}
+#ifndef ANDROID
 	else {
 		glNamedFramebufferTexture(frameBuffer, GL_DEPTH_STENCIL_ATTACHMENT, image->texnum, 0);
 	}
+#endif
 }
 
 void Framebuffer::AttachImageDepthLayer( const idImage* image, int layer )
 {
-	if (!glConfig.directStateAccess) {
+#ifndef ANDROID
+	if (!glConfig.directStateAccess)
+#endif
+	{
 		glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, image->texnum, 0, layer);
 	}
+#ifndef ANDROID
 	else {
 		glNamedFramebufferTextureLayer(frameBuffer, GL_DEPTH_ATTACHMENT, image->texnum, 0, layer);
 	}
+#endif
 }
 
 void Framebuffer::Check()
 {
 	int status;
 	int prev = -1;
-	if (!glConfig.directStateAccess) {
-		
+#ifndef ANDROID
+	if (!glConfig.directStateAccess)
+#endif
+	{
 		glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev);
 
 		glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer);
@@ -660,13 +704,14 @@ void Framebuffer::Check()
 			return;
 		}
 	}
+#ifndef ANDROID
 	else {
 		status = glCheckNamedFramebufferStatus(frameBuffer, GL_FRAMEBUFFER);
 		if (status == GL_FRAMEBUFFER_COMPLETE) {
 			return;
 		}
 	}
-	
+#endif
 	// something went wrong
 	switch( status )
 	{

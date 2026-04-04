@@ -240,7 +240,7 @@ else()
 			#libs/openal/include
 			#libs/freetype/include
             )
-	add_library(game SHARED ${ID_SOURCES_ALL} ${ID_INCLUDES_ALL})
+	add_library(game STATIC ${ID_SOURCES_ALL} ${ID_INCLUDES_ALL})
 	if (USE_PRECOMPILED_HEADERS)
 		# make sure precompiled header is created before executable is compiled
 		add_dependencies(game precomp_header_game)
@@ -249,11 +249,13 @@ else()
 	target_link_libraries(game
 		idlib)
 		#GK: Make sure the name is right
+    if (NOT ANDROID)
 	set_target_properties(game PROPERTIES PREFIX "")
 	if(CMAKE_SIZEOF_VOID_P EQUAL 8)
 	set_target_properties(game PROPERTIES SUFFIX "x86_64.so")
 	else()
 	set_target_properties(game PROPERTIES SUFFIX "x86.so")
+	endif()
 	endif()
 	
 endif()

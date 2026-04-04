@@ -141,7 +141,7 @@ cmake_policy(SET CMP0059 NEW)
 	                  )
 	endif()
 	
-	add_library(idlib ${ID_SOURCES_ALL} ${ID_INCLUDES_ALL})
+	add_library(idlib STATIC ${ID_SOURCES_ALL} ${ID_INCLUDES_ALL})
 	if (USE_PRECOMPILED_HEADERS)
 	add_dependencies(idlib precomp_header_idlib)
 	endif()

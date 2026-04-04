@@ -26,6 +26,8 @@ If you have questions concerning this license or the applicable additional terms
 ===========================================================================
 */
 
+#include "../idlib/precompiled.h"
+
 #ifndef __W_WAD__
 #define __W_WAD__
 

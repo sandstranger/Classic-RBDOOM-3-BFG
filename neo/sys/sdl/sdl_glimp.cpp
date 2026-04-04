@@ -393,7 +393,8 @@ bool GLimp_Init( glimpParms_t parms )
 #ifdef __APPLE__
 	glewExperimental = GL_TRUE;
 #endif
-	
+
+#ifndef ANDROID
 	GLenum glewResult = glewInit();
 	if( GLEW_OK != glewResult )
 	{
@@ -404,6 +405,7 @@ bool GLimp_Init( glimpParms_t parms )
 	{
 		common->Printf( "Using GLEW %s\n", glewGetString( GLEW_VERSION ) );
 	}
+#endif
 	
 	// DG: disable cursor, we have two cursors in menu (because mouse isn't grabbed in menu)
 	SDL_HideCursor();

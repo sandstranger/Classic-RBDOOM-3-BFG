@@ -128,7 +128,7 @@ void idRenderSystemLocal::RenderCommandBuffers( const emptyCommand_t* const cmdH
 	// draw 2D graphics
 	if( !r_skipBackEnd.GetBool() )
 	{
-#if !defined(USE_VULKAN)
+#if !defined(USE_VULKAN) && !ANDROID
 		if( glConfig.timerQueryAvailable )
 		{
 			if( tr.timerQueryId == 0 )
@@ -663,7 +663,7 @@ void idRenderSystemLocal::SwapCommandBuffers_FinishRendering(
 		backend.GL_BlockingSwapBuffers();
 	}
 	
-#if !defined(USE_VULKAN)
+#if !defined(USE_VULKAN) && !ANDROID
 	// read back the start and end timer queries from the previous frame
 	if( glConfig.timerQueryAvailable )
 	{

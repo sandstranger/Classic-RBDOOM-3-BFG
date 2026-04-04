@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 // Needed for action function pointer handling.
 #include "d_think.h"
 #include <vector>
+#include "../idlib/precompiled.h"
 
 typedef enum
 {

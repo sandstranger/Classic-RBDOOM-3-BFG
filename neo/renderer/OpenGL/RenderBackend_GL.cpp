@@ -30,11 +30,18 @@ If you have questions concerning this license or the applicable additional terms
 
 
 #include "precompiled.h"
+#if ANDROID
+#include <string>
+#endif
 #pragma hdrstop
 
 #include "../RenderCommon.h"
 #include "../RenderBackend.h"
 #include "../../framework/Common_local.h"
+#if ANDROID
+#include "GLES3/gl32.h"
+#endif
+
 #ifdef USE_OPENXR
 #include "../OpenXR/XRCommon.h"
 #endif
@@ -212,10 +219,14 @@ static void CALLBACK DebugCallback( unsigned int source, unsigned int type,
 		severityStr = "Notification";
 		break;
 	}
+#ifndef ANDROID
 	char callstack[5000];
 	Sys_GetCallStack(callstack);
+#else
+	std::string callstack = "";
+#endif
 	// RB: printf should be thread safe on Linux
-	idLib::Printf("caught OpenGL Error:\n\tSource:%s\n\tType: %s\n\tSeverity: %s\n\tMessage: %s\n%s", sourceStr.c_str(), typeStr.c_str(), severityStr.c_str(), message, callstack);
+	idLib::Printf("caught OpenGL Error:\n\tSource:%s\n\tType: %s\n\tSeverity: %s\n\tMessage: %s\n%s", sourceStr.c_str(), typeStr.c_str(), severityStr.c_str(), message, callstack.c_str());
 	// RB end
 }
 
@@ -273,7 +284,11 @@ static void R_CheckPortableExtensions()
 		}
 	}
 	// RB end
-	
+
+#if ANDROID
+	const char* ext = (const char*)glGetString(GL_EXTENSIONS);
+#endif
+#ifndef ANDROID
 	// GL_ARB_multitexture
 	if( glConfig.driverType != GLDRV_OPENGL3X )
 	{
@@ -283,7 +298,7 @@ static void R_CheckPortableExtensions()
 	{
 		glConfig.multitextureAvailable = GLEW_ARB_multitexture != 0;
 	}
-	
+
 	// GL_ARB_texture_compression + GL_S3_s3tc
 	// DRI drivers may have GL_ARB_texture_compression but no GL_EXT_texture_compression_s3tc
 	if( glConfig.driverType == GLDRV_OPENGL_MESA_CORE_PROFILE )
@@ -296,6 +311,12 @@ static void R_CheckPortableExtensions()
 	}
 	// GL_EXT_texture_filter_anisotropic
 	glConfig.anisotropicFilterAvailable = GLEW_EXT_texture_filter_anisotropic != 0;
+#else
+	glConfig.multitextureAvailable = ext && strstr(ext, "GL_ARB_multitexture");
+	glConfig.textureCompressionAvailable = ext && strstr(ext, "GL_ARB_texture_compression") &&
+			strstr(ext, "GL_EXT_texture_compression_s3tc");
+	glConfig.anisotropicFilterAvailable = ext && strstr(ext, "GL_EXT_texture_filter_anisotropic");
+#endif
 	if( glConfig.anisotropicFilterAvailable )
 	{
 		glGetFloatv( GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &glConfig.maxTextureAnisotropy );
@@ -308,25 +329,41 @@ static void R_CheckPortableExtensions()
 	
 	// GL_ARB_direct_state_access
 	//GK: Use the core direct State Access intead (what purpose the EXT has?)
+#ifndef ANDROID
 	glConfig.directStateAccess = (r_useOpenGLDSA.GetInteger() < 0) ? GLEW_ARB_direct_state_access != 0 && glConfig.glVersion >= 4.5 : r_useOpenGLDSA.GetBool();
-
+#else
+	glConfig.directStateAccess = false;
+#endif
 	R_PrintExtensionStatus(glConfig.directStateAccess, "GL_ARB_direct_state_access");
 	
 	// GL_EXT_texture_lod_bias
 	// The actual extension is broken as specificed, storing the state in the texture unit instead
 	// of the texture object.  The behavior in GL 1.4 is the behavior we use.
+#ifndef ANDROID
 	glConfig.textureLODBiasAvailable = ( glConfig.glVersion >= 1.4 || GLEW_EXT_texture_lod_bias != 0 );
+#else
+	glConfig.textureLODBiasAvailable = false;
+#endif
 	R_PrintExtensionStatus(glConfig.textureLODBiasAvailable, "GL_EXT_texture_lod_bias");
 	
 	// GL_ARB_seamless_cube_map
+#ifndef ANDROID
 	glConfig.seamlessCubeMapAvailable = GLEW_ARB_seamless_cube_map != 0;
+#else
+	glConfig.seamlessCubeMapAvailable = false;
+#endif
 	R_PrintExtensionStatus(glConfig.seamlessCubeMapAvailable, "GL_ARB_seamless_cube_map");
 	r_useSeamlessCubeMap.SetModified();		// the CheckCvars() next frame will enable / disable it
 	
 	// GL_ARB_framebuffer_sRGB
+#ifndef ANDROID
 	glConfig.sRGBFramebufferAvailable = GLEW_ARB_framebuffer_sRGB != 0;
+#else
+	glConfig.sRGBFramebufferAvailable = false;
+#endif
 	r_useSRGB.SetModified();		// the CheckCvars() next frame will enable / disable it
-	
+
+#ifndef ANDROID
 	// GL_ARB_vertex_buffer_object
 	if( glConfig.driverType == GLDRV_OPENGL_MESA_CORE_PROFILE )
 	{
@@ -336,6 +373,9 @@ static void R_CheckPortableExtensions()
 	{
 		glConfig.vertexBufferObjectAvailable = GLEW_ARB_vertex_buffer_object != 0;
 	}
+#else
+	glConfig.vertexBufferObjectAvailable = ext && strstr(ext, "GL_ARB_vertex_buffer_object");
+#endif
 	
 	// GL_ARB_map_buffer_range, map a section of a buffer object's data store
 	//if( glConfig.driverType == GLDRV_OPENGL_MESA_CORE_PROFILE )
@@ -344,7 +384,11 @@ static void R_CheckPortableExtensions()
 	//}
 	//else
 	{
+#ifndef ANDROID
 		glConfig.mapBufferRangeAvailable = GLEW_ARB_map_buffer_range != 0;
+#else
+		glConfig.mapBufferRangeAvailable = ext && strstr(ext, "GL_ARB_map_buffer_range");
+#endif
 	}
 	
 	// GL_ARB_vertex_array_object
@@ -353,6 +397,7 @@ static void R_CheckPortableExtensions()
 	//    glConfig.vertexArrayObjectAvailable = true;
 	//}
 	//else
+#ifndef ANDROID
 	{
 		glConfig.vertexArrayObjectAvailable = GLEW_ARB_vertex_array_object != 0;
 	}
@@ -362,6 +407,11 @@ static void R_CheckPortableExtensions()
 	
 	// GL_ARB_vertex_program / GL_ARB_fragment_program
 	glConfig.fragmentProgramAvailable = GLEW_ARB_fragment_program != 0;
+#else
+	glConfig.vertexArrayObjectAvailable = ext && strstr(ext, "GL_ARB_vertex_array_object");
+	glConfig.drawElementsBaseVertexAvailable = ext && strstr(ext, "GL_ARB_draw_elements_base_vertex");
+	glConfig.fragmentProgramAvailable = ext && strstr(ext, "GL_ARB_fragment_program");
+#endif
 	if( glConfig.fragmentProgramAvailable )
 	{
 		//glGetInteger64v( GL_MAX_TEXTURE_COORDS, ( GLint64* )&glConfig.maxTextureCoords ); //DEPRECATED
@@ -372,7 +422,11 @@ static void R_CheckPortableExtensions()
 	glConfig.glslAvailable = ( glConfig.glVersion >= 2.0f );
 	
 	// GL_ARB_uniform_buffer_object
+#ifndef ANDROID
 	glConfig.uniformBufferAvailable = GLEW_ARB_uniform_buffer_object != 0;
+#else
+	glConfig.uniformBufferAvailable = ext && strstr(ext, "GL_ARB_uniform_buffer_object");
+#endif
 	if( glConfig.uniformBufferAvailable )
 	{
 		glGetIntegerv( GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, ( GLint* )&glConfig.uniformBufferOffsetAlignment );
@@ -385,12 +439,17 @@ static void R_CheckPortableExtensions()
 	glConfig.gpuSkinningAvailable = glConfig.uniformBufferAvailable && ( glConfig.driverType == GLDRV_OPENGL3X || glConfig.driverType == GLDRV_OPENGL32_CORE_PROFILE || glConfig.driverType == GLDRV_OPENGL32_COMPATIBILITY_PROFILE );
 	
 	// ATI_separate_stencil / OpenGL 2.0 separate stencil
+#ifndef ANDROID
 	glConfig.twoSidedStencilAvailable = ( glConfig.glVersion >= 2.0f ) || GLEW_ATI_separate_stencil != 0;
-	
 	// GL_EXT_depth_bounds_test
 	glConfig.depthBoundsTestAvailable = GLEW_EXT_depth_bounds_test != 0;
-	
+#else
+	glConfig.twoSidedStencilAvailable = false;
+	glConfig.depthBoundsTestAvailable = false;
+#endif
+
 	// GL_ARB_sync
+#ifndef ANDROID
 	glConfig.syncAvailable = GLEW_ARB_sync &&
 							 // as of 5/24/2012 (driver version 15.26.12.64.2761) sync objects
 							 // do not appear to work for the Intel HD 4000 graphics
@@ -398,16 +457,26 @@ static void R_CheckPortableExtensions()
 							 
 	// GL_ARB_occlusion_query
 	glConfig.occlusionQueryAvailable = GLEW_ARB_occlusion_query != 0;
-	
+
 	// GL_ARB_timer_query
 	glConfig.timerQueryAvailable = ( GLEW_ARB_timer_query != 0 || GLEW_EXT_timer_query != 0 ) && ( glConfig.vendor != VENDOR_INTEL || r_skipIntelWorkarounds.GetBool() ) && glConfig.driverType != GLDRV_OPENGL_MESA;
 	
 	// GREMEDY_string_marker
 	glConfig.gremedyStringMarkerAvailable = GLEW_GREMEDY_string_marker != 0;
+#else
+	glConfig.syncAvailable = ext && strstr(ext, "GL_ARB_sync");
+	glConfig.occlusionQueryAvailable = false;
+	glConfig.timerQueryAvailable = false;
+	glConfig.gremedyStringMarkerAvailable = false;
+#endif
 	R_PrintExtensionStatus(glConfig.gremedyStringMarkerAvailable, "GL_GREMEDY_string_marker");
 	
 	// GL_ARB_framebuffer_object
+#ifndef ANDROID
 	glConfig.framebufferObjectAvailable = GLEW_ARB_framebuffer_object != 0;
+#else
+	glConfig.framebufferObjectAvailable = ext && strstr(ext, "GL_ARB_framebuffer_object");
+#endif
 	R_PrintExtensionStatus(glConfig.framebufferObjectAvailable, "GL_ARB_framebuffer_object");
 	if( glConfig.framebufferObjectAvailable )
 	{
@@ -416,10 +485,15 @@ static void R_CheckPortableExtensions()
 	}
 	
 	// GL_EXT_framebuffer_blit
+#ifndef ANDROID
 	glConfig.framebufferBlitAvailable = GLEW_EXT_framebuffer_blit != 0;
+#else
+	glConfig.framebufferBlitAvailable = ext && strstr(ext, "GL_ARB_framebuffer_object");
+#endif
 	R_PrintExtensionStatus(glConfig.framebufferBlitAvailable, "GL_EXT_framebuffer_blit");
 	
 	// GL_ARB_debug_output
+#ifndef ANDROID
 	glConfig.debugOutputAvailable = GLEW_ARB_debug_output != 0 && glConfig.glVersion >= 4.3;
 	if( glConfig.debugOutputAvailable )
 	{
@@ -444,7 +518,9 @@ static void R_CheckPortableExtensions()
 									  0, NULL, true );
 		}
 	}
-	
+#else
+	glConfig.debugOutputAvailable = false;
+#endif
 	// GL_ARB_multitexture
 	if( !glConfig.multitextureAvailable )
 	{
@@ -495,12 +571,15 @@ static void R_CheckPortableExtensions()
 	{
 		idLib::Error( "GL_ATI_separate_stencil not available" );
 	}
-	
+
+#ifndef ANDROID
 	// generate one global Vertex Array Object (VAO)
 	if (glConfig.directStateAccess) {
 		glCreateVertexArrays(1, &glConfig.global_vao);
 	}
-	else {
+	else
+#endif
+	{
 		glGenVertexArrays(1, &glConfig.global_vao);
 		glBindVertexArray(glConfig.global_vao);
 	}
@@ -729,6 +808,7 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 	}
 
 	renderProgManager.CommitUniforms(glStateBits);
+#ifndef ANDROID
 	if (glConfig.directStateAccess) {		
 		// RB: 64 bit fixes, changed GLuint to GLintptr
 		if ((GLintptr)currentIndexBuffer != (GLintptr)indexBuffer->GetAPIObject() || !r_useStateCaching.GetBool())
@@ -767,7 +847,9 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 		}
 		glBindVertexArray(glConfig.global_vao);
 	}
-	else {
+	else
+#endif
+	{
 		// RB: 64 bit fixes, changed GLuint to GLintptr
 		if ((GLintptr)currentIndexBuffer != (GLintptr)indexBuffer->GetAPIObject() || !r_useStateCaching.GetBool())
 		{
@@ -830,10 +912,13 @@ void idRenderBackend::GL_StartFrame()
 	// If we have a stereo pixel format, this will draw to both
 	// the back left and back right buffers, which will have a
 	// performance penalty.
+#ifndef ANDROID
 	if (glConfig.directStateAccess) {
 		glNamedFramebufferDrawBuffer(0, GL_BACK);
 	}
-	else {
+	else
+#endif
+	{
 		glDrawBuffer(GL_BACK);
 	}
 }
@@ -910,11 +995,14 @@ void idRenderBackend::GL_SetDefaultState()
 	glEnable( GL_DEPTH_TEST );
 	glEnable( GL_BLEND );
 	glEnable( GL_SCISSOR_TEST );
+#ifndef ANDROID
 	if (glConfig.directStateAccess) {
 		glNamedFramebufferDrawBuffer(0, GL_BACK);
 		glNamedFramebufferReadBuffer(0, GL_BACK);
 	}
-	else {
+	else
+#endif
+	{
 		glDrawBuffer(GL_BACK);
 		glReadBuffer(GL_BACK);
 	}
@@ -1365,6 +1453,7 @@ idRenderBackend::GL_DepthBoundsTest
 */
 void idRenderBackend::GL_DepthBoundsTest( const float zmin, const float zmax )
 {
+#ifndef ANDROID
 	if( !glConfig.depthBoundsTestAvailable || zmin > zmax )
 	{
 		return;
@@ -1379,6 +1468,7 @@ void idRenderBackend::GL_DepthBoundsTest( const float zmin, const float zmax )
 		glEnable( GL_DEPTH_BOUNDS_TEST_EXT );
 		glDepthBoundsEXT( zmin, zmax );
 	}
+#endif
 }
 
 /*
@@ -1631,10 +1721,13 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 	// RB: 64 bit fixes, changed GLuint to GLintptr
 	if((GLintptr)currentIndexBuffer != ( GLintptr )indexBuffer->GetAPIObject() || !r_useStateCaching.GetBool() )
 	{
+#ifndef ANDROID
 		if (glConfig.directStateAccess) {
 			glVertexArrayElementBuffer(glConfig.global_vao, indexBuffer->GetAPIObject());
 		}
-		else {
+		else
+#endif
+		{
 			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLintptr)indexBuffer->GetAPIObject());
 		}
 		currentIndexBuffer = ( GLintptr )indexBuffer->GetAPIObject();
@@ -1657,7 +1750,10 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 		
 		if( ( vertexLayout != LAYOUT_DRAW_SHADOW_VERT_SKINNED ) || ((GLintptr)currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) || !r_useStateCaching.GetBool() )
 		{
-			if (!glConfig.directStateAccess) {
+#ifndef ANDROID
+			if (!glConfig.directStateAccess)
+#endif
+			{
 				glBindBuffer(GL_ARRAY_BUFFER, (GLintptr)vertexBuffer->GetAPIObject());
 				currentVertexBuffer = (GLintptr)vertexBuffer->GetAPIObject();
 
@@ -1678,6 +1774,7 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 				glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idShadowVertSkinned), (void*)(SHADOWVERTSKINNED_COLOR2_OFFSET));
 #endif
 			}
+#ifndef ANDROID
 			else 
 			{
 				glVertexArrayVertexBuffer(glConfig.global_vao, 0, vertexBuffer->GetAPIObject(), 0, sizeof(idShadowVertSkinned));
@@ -1698,7 +1795,7 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 				glVertexArrayAttribBinding(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR, 0);
 				glVertexArrayAttribBinding(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2, 0);
 			}
-			
+#endif
 			vertexLayout = LAYOUT_DRAW_SHADOW_VERT_SKINNED;
 		}
 		glBindVertexArray(glConfig.global_vao);
@@ -1707,6 +1804,7 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 	{
 		if( ( vertexLayout != LAYOUT_DRAW_SHADOW_VERT ) || ((GLintptr)currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) || !r_useStateCaching.GetBool() )
 		{
+#ifndef ANDROID
 			if (!glConfig.directStateAccess) {
 				glBindBuffer(GL_ARRAY_BUFFER, (GLintptr)vertexBuffer->GetAPIObject());
 				currentVertexBuffer = (GLintptr)vertexBuffer->GetAPIObject();
@@ -1740,7 +1838,24 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 
 				glVertexArrayAttribBinding(glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX, 0);
 			}
-			
+#else
+			glBindBuffer(GL_ARRAY_BUFFER, (GLintptr)vertexBuffer->GetAPIObject());
+			currentVertexBuffer = (GLintptr)vertexBuffer->GetAPIObject();
+
+			glEnableVertexAttribArray(PC_ATTRIB_INDEX_VERTEX);
+			glDisableVertexAttribArray(PC_ATTRIB_INDEX_NORMAL);
+			glDisableVertexAttribArray(PC_ATTRIB_INDEX_COLOR);
+			glDisableVertexAttribArray(PC_ATTRIB_INDEX_COLOR2);
+			glDisableVertexAttribArray(PC_ATTRIB_INDEX_ST);
+			glDisableVertexAttribArray(PC_ATTRIB_INDEX_TANGENT);
+
+#if defined(USE_GLES2) || defined(USE_GLES3)
+			glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, sizeof(idShadowVert), (void*)(vertOffset + SHADOWVERT_XYZW_OFFSET));
+#else
+			glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, sizeof(idShadowVert), (void*)(SHADOWVERT_XYZW_OFFSET));
+#endif
+
+#endif
 			vertexLayout = LAYOUT_DRAW_SHADOW_VERT;
 		}
 	}

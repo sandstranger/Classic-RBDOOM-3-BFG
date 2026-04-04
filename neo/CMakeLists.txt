@@ -85,14 +85,14 @@ set(CPU_TYPE "" CACHE STRING "When set, passes this string as CPU-ID which will 
 
 set(UWP_PATH "" CACHE STRING "When set, passes this string as the game's base search folder.")
 
-if (CMAKE_SYSTEM_PROCESSOR MATCHES "(x86)|(X86)|(amd64)|(AMD64)")
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "(x86|i686|amd64|x86_64)")
 	set(CPU_OPTIMIZATION "-mmmx -msse -msse2" CACHE STRING "Which CPU specific optimitations should be used beside the compiler's default?")
 endif()
 
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "(powerpc|ppc)64le")
-	option(USE_INTRINSICS "Compile using intrinsics (e.g mmx, sse, msse2)" OFF)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86|i686|amd64|x86_64)")
+    set(USE_INTRINSICS ON)
 else()
-	option(USE_INTRINSICS "Compile using intrinsics (e.g mmx, sse, msse2)" ON)
+    set(USE_INTRINSICS OFF)
 endif()
 
 option (MAKE_DLL "Make game.dll solution" ON)
@@ -384,7 +384,7 @@ else()
 	include_directories("libs/stb")
 endif (Stb_FOUND)
 
-
+if (NOT ANDROID)
 if(USE_SYSTEM_LIBJPEG)
 find_package(JPEG REQUIRED)
 endif(USE_SYSTEM_LIBJPEG)
@@ -400,7 +400,10 @@ if (JPEG_FOUND)
 	endif()
     add_definitions(-DUSE_NEWER_JPEG)
 endif (JPEG_FOUND)
-
+else()
+    include_directories(${JPEG_INCLUDE_DIRS})
+    add_definitions(-DUSE_NEWER_JPEG)
+endif()
 macro(SET_OPTION option value)
   set(${option} ${value} CACHE INTERNAL "" FORCE)
 endmacro()
@@ -438,7 +441,7 @@ if(USE_VULKAN)
 	include_directories($ENV{VULKAN_SDK}/Include)
 
 else()
-
+if (NOT ANDROID)
 	if(USE_SYSTEM_LIBGLEW)
 		find_package(GLEW)
 	endif()
@@ -464,6 +467,7 @@ else()
 		endif()
 		
 	endif()
+endif()
 
 	if (INSIDE_PACKAGE)
 		if (NOT EXISTS ${CMAKE_SOURCE_DIR}/libs/glu/build/src)
@@ -536,6 +540,7 @@ else ()
 	endif(MSVC)
 endif (OpenAL_FOUND)
 
+if (NOT ANDROID)
 find_package(OpenSSL)
 if (NOT MSVC)
 	get_target_property(OPENSSL_CRYPTO_IMPORTED_LOCATION OpenSSL::Crypto IMPORTED_LOCATION_RELEASE)
@@ -546,7 +551,9 @@ if (NOT MSVC)
 endif()
 include_directories(${OpenSSL_INCLUDE_DIR})
 set(OpenSSL_LIBRARY OpenSSL::Crypto)
-
+else()
+    include_directories(${OpenSSL_INCLUDE_DIR})
+endif()
 	
 add_subdirectory(idlib)
 
@@ -1112,9 +1119,6 @@ source_group("zlib" FILES ${ZLIB_SOURCES})
 source_group("zlib\\minizip" FILES ${MINIZIP_INCLUDES})
 source_group("zlib\\minizip" FILES ${MINIZIP_SOURCES})
 
-source_group("glew" FILES ${GLEW_INCLUDES})
-source_group("glew" FILES ${GLEW_SOURCES})
-
 source_group("rapidjson" FILES ${RAPIDJSON_INCLUDES})
 
 source_group("freetype" FILES ${FREETYPE_SOURCES})
@@ -1258,7 +1262,6 @@ set(LIB_INCLUDES
 			${ZLIB_INCLUDES}
 			${MINIZIP_INCLUDES}
 			${BINKDEC_INCLUDES}
-			${GLEW_INCLUDES}
 			#${OPEN_PLATFORM_INCLUDES}
 			${RAPIDJSON_INCLUDES}
 			#${FREETYPE_SOURCES}
@@ -1271,7 +1274,6 @@ set(LIB_SOURCES
 			${ZLIB_SOURCES}
 			${MINIZIP_SOURCES}
 			${BINKDEC_SOURCES}
-			${GLEW_SOURCES}
 			#${OPEN_PLATFORM_SOURCES}
 			#${FREETYPE_SOURCES}
 			${TIMIDITY_SOURCES}
@@ -1537,7 +1539,7 @@ if(MSVC)
 	
 	if(FFMPEG)
 		add_definitions(-DUSE_FFMPEG)
-	
+if (NOT ANDROID)
 		if (USE_PACKAGED_FFMPEG)
 		if (NOT USE_VCPKG)
 			find_package(FFMPEGDNL REQUIRED)
@@ -1576,8 +1578,15 @@ if(MSVC)
 					swresample)
 			
 		endif(FFMPEG_FOUND)
-		
-	endif()
+else()
+    include_directories(${FFMPEG_INCLUDE_DIRS})
+    set(FFmpeg_LIBRARIES ${AVFORMAT_LIBRARY}
+                    ${AVCODEC_LIBRARY}
+                    ${AVUTIL_LIBRARY}
+                    ${AVSWSCALE_LIBRARY}
+                    ${SWRESAMPLE_LIBRARY})
+endif()
+endif()
 	
 	if(USE_MFC_TOOLS)
 		
@@ -1701,7 +1710,6 @@ if(MSVC)
 		${FFMPEG_LIBRARIES}
         ${ZLIB_LIBRARY}
         ${JPEG_LIBRARY}
-        ${GLEW_LIBRARY}
 		${OpenSSL_LIBRARY}
 		${CMAKE_DL_LIBS}
 		)
@@ -1718,12 +1726,17 @@ else()
 
 	list(APPEND RBDOOM3_SOURCES
 		${SYS_INCLUDES} ${SYS_SOURCES})
-	
+
+if (NOT ANDROID)
 	find_package(OpenGL REQUIRED)
 	include_directories(${OPENGL_INCLUDE_DIRS})
+else()
+	include_directories(${NG_GL4ES_INCLUDE_DIR})
+endif()
 
 	if(UNIX)
 		if(FFMPEG)
+		if (NOT ANDROID)
 		if (USE_VCPKG)
 			find_package(FFMPEG COMPONENTS AVCODEC AVDEVICE AVFILTER AVFORMAT AVUTIL SWRESAMPLE SWSCALE REQUIRED)
 		else(USE_VCPKG)
@@ -1733,12 +1746,24 @@ else()
 			
 			include_directories(${FFMPEG_INCLUDE_DIR})
 			link_directories(${FFMPEG_LIBRARIES_DIRS})
+		else()
+            include_directories(${FFMPEG_INCLUDE_DIRS})
+            set(FFmpeg_LIBRARIES ${AVFORMAT_LIBRARY}
+                        ${AVCODEC_LIBRARY}
+                        ${AVUTIL_LIBRARY}
+                        ${AVSWSCALE_LIBRARY}
+                        ${SWRESAMPLE_LIBRARY})
+		endif()
 		endif()
 
+if (NOT ANDROID)
 		find_package(SDL3 REQUIRED)
 		include_directories(${SDL3_INCLUDE_DIR})
 		set(SDLx_LIBRARY SDL3::SDL3)
-
+else()
+		include_directories(${SDL3_INCLUDE_DIR})
+		set(SDLx_LIBRARY ${SDL3_LIBRARY})
+endif()
 		if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 			list(REMOVE_ITEM POSIX_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/sys/posix/platform_linux.cpp)
 		else()
@@ -1887,10 +1912,12 @@ else()
 		# make sure this is run after creating idlib
 		add_dependencies(precomp_header_doombfa idlib external)
 	endif()
-	
-	
-	add_executable(DoomBFA WIN32 ${RBDOOM3_SOURCES} ${RBDOOM3_INCLUDES})
 
+if (NOT ANDROID)
+	add_executable(DoomBFA WIN32 ${RBDOOM3_SOURCES} ${RBDOOM3_INCLUDES})
+else()
+	add_library(DoomBFA SHARED ${RBDOOM3_SOURCES} ${RBDOOM3_INCLUDES})
+endif()
 	if (USE_PRECOMPILED_HEADERS)
 		# make sure precompiled header is created before executable is compiled
 		add_dependencies(DoomBFA precomp_header_doombfa)
@@ -1903,7 +1930,7 @@ else()
 		if(NOT "${CMAKE_SYSTEM}" MATCHES "Darwin")
 			set(RT_LIBRARY rt)
 		endif()
-
+if (NOT ANDROID)
 		target_link_libraries(DoomBFA
 			idlib
 			external
@@ -1920,6 +1947,20 @@ else()
 			${OpenSSL_LIBRARY}
 	    ${CMAKE_DL_LIBS}
 			)
+else()
+		target_link_libraries(DoomBFA
+			idlib
+			external
+			${NG_GL4ES_LIBRARY}
+			${RT_LIBRARY}
+			${SDLx_LIBRARY}
+			${OPENAL_LIBRARY}
+			${FFMPEG_LIBRARIES}
+            ${ZLIB_LIBRARY}
+            ${JPEG_LIBRARY}
+			${OpenSSL_LIBRARY}
+    	    ${CMAKE_DL_LIBS})
+endif()
 		if (USE_OPENXR) 
 	        target_compile_options(openxr_loader PRIVATE "-Wno-error")
 			target_compile_options(XrApiLayer_api_dump PRIVATE "-Wno-error")

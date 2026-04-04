@@ -772,9 +772,6 @@ void idImage::SetTextureParameters() {
 		common->FatalError("%s: bad texture filter %d", GetName(), filter);
 	}
 #else
-// Bind texture first (GLES has no DSA)
-	glBindTexture(GL_TEXTURE_2D, texnum);
-
 /*
 ========================
  SWIZZLE SETUP

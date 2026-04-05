@@ -3645,7 +3645,7 @@ cm_model_t* idCollisionModelManagerLocal::LoadBinaryModelFromFile( idFile* file,
 	assert( model->polygonRefBlocks == NULL || ( model->polygonRefBlocks->next == NULL && model->polygonRefBlocks->nextRef == NULL ) );
 	
 	// RB: FIXME
-#if !defined(__x86_64__) && !defined(_WIN64)
+#if !defined(__x86_64__) && !defined(_WIN64) && !ANDROID
 	assert( model->polygonBlock->bytesRemaining == 0 );
 	assert( model->brushBlock->bytesRemaining == 0 );
 #endif

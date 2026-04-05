@@ -776,7 +776,7 @@ const char* vertexInsert =
 {
 	"#version %d\n"
 	"#pragma shader_stage( vertex )\n"
-	"#extension GL_ARB_separate_shader_objects : enable\n"
+//	"#extension GL_ARB_separate_shader_objects : enable\n"
 	//"#define PC\n"
 	"\n"
 	//"float saturate( float v ) { return clamp( v, 0.0, 1.0 ); }\n"
@@ -791,7 +791,7 @@ const char* fragmentInsert =
 {
 	"#version %d\n"
 	"#pragma shader_stage( fragment )\n"
-	"#extension GL_ARB_separate_shader_objects : enable\n"
+//	"#extension GL_ARB_separate_shader_objects : enable\n"
 	//"#define PC\n"
 	"\n"
 	"void clip( float v ) { if ( v < 0.0 ) { discard; } }\n"

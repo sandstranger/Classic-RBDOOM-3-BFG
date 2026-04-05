@@ -41,7 +41,11 @@ If you have questions concerning this license or the applicable additional terms
 // DG: needed for Sys_ReLaunch()
 #include <dirent.h>
 #include <execinfo.h>
+#ifndef ANDROID
 static const char** cmdargv = NULL;
+#else
+static char** cmdargv = NULL;
+#endif
 static int cmdargc = 0;
 // DG end
 
@@ -572,7 +576,7 @@ main
 
 #ifdef ANDROID
 __attribute__((used)) __attribute__((visibility("default")))
-int SDL_main(int argc, const char **argv)
+int SDL_main(int argc, char **argv)
 #else
 int main( int argc, const char** argv )
 #endif
@@ -601,8 +605,8 @@ int main( int argc, const char** argv )
 	{
 		common->Init( 0, NULL, NULL );
 	}
-	
-	Posix_LateInit( );
+
+    Posix_LateInit( );
 	
 	while( 1 )
 	{
@@ -740,6 +744,10 @@ void setPathsToResources (const char *pathToHomeFolder, const char *pathToResour
 
 __attribute__((used)) __attribute__((visibility("default")))
 void setPathToSDLControllerDB (const char *pathToSDLControllerDB){
+}
+
+__attribute__((used)) __attribute__((visibility("default")))
+void setUseGLES2_0State(const bool useGLES2_0) {
 }
 }
 

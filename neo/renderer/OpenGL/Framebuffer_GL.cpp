@@ -49,21 +49,21 @@ static void R_ListFramebuffers_f( const idCmdArgs& args )
 Framebuffer::Framebuffer( const char* name, int w, int h )
 {
 	fboName = name;
-	
+
 	frameBuffer = 0;
-	
+
 	memset( colorBuffers, 0, sizeof( colorBuffers ) );
 	colorFormat = 0;
-	
+
 	depthBuffer = 0;
 	depthFormat = 0;
-	
+
 	stencilBuffer = 0;
 	stencilFormat = 0;
-	
+
 	width = w;
 	height = h;
-	
+
 	msaaSamples = false;
 #ifndef ANDROID
 	if (!glConfig.directStateAccess)
@@ -76,7 +76,7 @@ Framebuffer::Framebuffer( const char* name, int w, int h )
 		glCreateFramebuffers(1, &frameBuffer);
 	}
 #endif
-	
+
 	framebuffers.Append( this );
 }
 
@@ -88,18 +88,18 @@ Framebuffer::~Framebuffer()
 void Framebuffer::Init()
 {
 	cmdSystem->AddCommand( "listFramebuffers", R_ListFramebuffers_f, CMD_FL_RENDERER, "lists framebuffers" );
-	
+
 	tr.backend.currentFramebuffer = NULL;
-	
+
 	// SHADOWMAPS
-	
+
 	int width, height;
 	width = height = r_shadowMapImageSize.GetInteger();
-	
+
 	for( int i = 0; i < MAX_SHADOWMAP_RESOLUTIONS; i++ )
 	{
 		width = height = shadowMapResolutions[i];
-		
+
 		globalFramebuffers.shadowFBO[i] = new Framebuffer( va( "_shadowMap%i", i ) , width, height );
 #ifndef ANDROID
 		if (!glConfig.directStateAccess)
@@ -114,7 +114,7 @@ void Framebuffer::Init()
 		}
 #endif
 	}
-	
+
 	// HDR
 #ifndef _WIN32
 	int screenWidth = renderSystem->GetWidth() > 0 ? renderSystem->GetWidth() : 1280;
@@ -123,58 +123,66 @@ void Framebuffer::Init()
 	int screenWidth = renderSystem->GetWidth();
 	int screenHeight = renderSystem->GetHeight();
 #endif
-	
+
 	globalFramebuffers.hdrFBO = new Framebuffer( "_hdr", screenWidth, screenHeight );
 	if (!glConfig.directStateAccess) {
 		globalFramebuffers.hdrFBO->Bind();
 	}
-	
+
 #if defined(USE_HDR_MSAA)
 	if( glConfig.multisamples )
 	{
 		globalFramebuffers.hdrFBO->AddColorBuffer( GL_RGBA16F, 0, glConfig.multisamples );
 		globalFramebuffers.hdrFBO->AddDepthBuffer( GL_DEPTH24_STENCIL8, glConfig.multisamples );
-		
+
 		globalFramebuffers.hdrFBO->AttachImage2D( GL_TEXTURE_2D_MULTISAMPLE, globalImages->currentRenderHDRImage, 0 );
 		globalFramebuffers.hdrFBO->AttachImageDepth( GL_TEXTURE_2D_MULTISAMPLE, globalImages->currentDepthImage );
 	}
 	else
 #endif
 	{
+#ifndef ANDROID
 		globalFramebuffers.hdrFBO->AddColorBuffer( GL_RGBA16F, 0 );
+#else
+		globalFramebuffers.hdrFBO->AddColorBuffer( GL_RGBA8, 0 );
+#endif
 		globalFramebuffers.hdrFBO->AddDepthBuffer( GL_DEPTH24_STENCIL8 );
 
 		globalFramebuffers.hdrFBO->AttachImage2D( GL_TEXTURE_2D, globalImages->currentRenderHDRImage, 0 );
 		globalFramebuffers.hdrFBO->AttachImageDepth( GL_TEXTURE_2D, globalImages->currentDepthImage );
 	}
-	
+
 	globalFramebuffers.hdrFBO->Check();
-	
+
 	// HDR no MSAA
 #if defined(USE_HDR_MSAA)
 	globalFramebuffers.hdrNonMSAAFBO = new Framebuffer( "_hdrNoMSAA", screenWidth, screenHeight );
 	globalFramebuffers.hdrNonMSAAFBO->Bind();
-	
+
 	globalFramebuffers.hdrNonMSAAFBO->AddColorBuffer( GL_RGBA16F, 0 );
 	globalFramebuffers.hdrNonMSAAFBO->AttachImage2D( GL_TEXTURE_2D, globalImages->currentRenderHDRImageNoMSAA, 0 );
-	
+
 	globalFramebuffers.hdrNonMSAAFBO->Check();
 #endif
-	
+
 	// HDR DOWNSCALE
-	
+
 	globalFramebuffers.hdr64FBO = new Framebuffer( "_hdr64", 64, 64 );
 	if (!glConfig.directStateAccess) {
 		globalFramebuffers.hdr64FBO->Bind();
 	}
+#ifndef ANDROID
 	globalFramebuffers.hdr64FBO->AddColorBuffer( GL_RGBA16F, 0 );
+#else
+	globalFramebuffers.hdr64FBO->AddColorBuffer( GL_RGBA8, 0 );
+#endif
 	globalFramebuffers.hdr64FBO->AttachImage2D( GL_TEXTURE_2D, globalImages->currentRenderHDRImage64, 0 );
-	
+
 	globalFramebuffers.hdr64FBO->Check();
-	
-	
+
+
 	// BLOOM
-	
+
 	for( int i = 0; i < MAX_BLOOM_BUFFERS; i++ )
 	{
 		globalFramebuffers.bloomRenderFBO[i] = new Framebuffer( va( "_bloomRender%i", i ), screenWidth, screenHeight );
@@ -185,7 +193,7 @@ void Framebuffer::Init()
 		globalFramebuffers.bloomRenderFBO[i]->AttachImage2D( GL_TEXTURE_2D, globalImages->bloomRenderImage[i], 0 );
 		globalFramebuffers.bloomRenderFBO[i]->Check();
 	}
-	
+
 	if (r_ssaoFiltering.GetBool() || r_ssgiFiltering.GetBool()) {
 		// AMBIENT OCCLUSION
 
@@ -200,9 +208,9 @@ void Framebuffer::Init()
 			globalFramebuffers.ambientOcclusionFBO[i]->Check();
 		}
 	}
-	
+
 	// HIERARCHICAL Z BUFFER
-	
+
 	for( int i = 0; i < MAX_HIERARCHICAL_ZBUFFERS; i++ )
 	{
 		globalFramebuffers.csDepthFBO[i] = new Framebuffer( va( "_csz%i", i ), screenWidth / ( 1 << i ), screenHeight / ( 1 << i ) );
@@ -213,21 +221,25 @@ void Framebuffer::Init()
 		globalFramebuffers.csDepthFBO[i]->AttachImage2D( GL_TEXTURE_2D, globalImages->hierarchicalZbufferImage, 0, i );
 		globalFramebuffers.csDepthFBO[i]->Check();
 	}
-	
+
 	// GEOMETRY BUFFER
-	
+
 	globalFramebuffers.geometryBufferFBO = new Framebuffer( "_gbuffer", screenWidth, screenHeight );
 	if (!glConfig.directStateAccess) {
 		globalFramebuffers.geometryBufferFBO->Bind();
 	}
+#ifndef ANDROID
 	globalFramebuffers.geometryBufferFBO->AddColorBuffer( GL_RGBA16F, 0 );
+#else
+	globalFramebuffers.geometryBufferFBO->AddColorBuffer( GL_RGBA8, 0 );
+#endif
 	globalFramebuffers.geometryBufferFBO->AddStencilBuffer(GL_DEPTH24_STENCIL8);
 	globalFramebuffers.geometryBufferFBO->AttachImage2D( GL_TEXTURE_2D, globalImages->currentNormalsImage, 0 );
 	globalFramebuffers.geometryBufferFBO->AttachImageDepth(GL_TEXTURE_2D, globalImages->currentDepthImage);
 	globalFramebuffers.geometryBufferFBO->Check();
-	
+
 	// SMAA
-	
+
 	globalFramebuffers.smaaEdgesFBO = new Framebuffer( "_smaaEdges", screenWidth, screenHeight );
 	if (!glConfig.directStateAccess) {
 		globalFramebuffers.smaaEdgesFBO->Bind();
@@ -235,7 +247,7 @@ void Framebuffer::Init()
 	globalFramebuffers.smaaEdgesFBO->AddColorBuffer( GL_RGBA8, 0 );
 	globalFramebuffers.smaaEdgesFBO->AttachImage2D( GL_TEXTURE_2D, globalImages->smaaEdgesImage, 0 );
 	globalFramebuffers.smaaEdgesFBO->Check();
-	
+
 	globalFramebuffers.smaaBlendFBO = new Framebuffer( "_smaaBlend", screenWidth, screenHeight );
 	if (!glConfig.directStateAccess) {
 		globalFramebuffers.smaaBlendFBO->Bind();
@@ -243,7 +255,7 @@ void Framebuffer::Init()
 	globalFramebuffers.smaaBlendFBO->AddColorBuffer( GL_RGBA8, 0 );
 	globalFramebuffers.smaaBlendFBO->AttachImage2D( GL_TEXTURE_2D, globalImages->smaaBlendImage, 0 );
 	globalFramebuffers.smaaBlendFBO->Check();
-	
+
 	if (!glConfig.directStateAccess) {
 		Unbind();
 	}
@@ -253,29 +265,29 @@ void Framebuffer::CheckFramebuffers()
 {
 	int screenWidth = renderSystem->GetWidth();
 	int screenHeight = renderSystem->GetHeight();
-	
+
 	if( globalFramebuffers.hdrFBO->GetWidth() != screenWidth || globalFramebuffers.hdrFBO->GetHeight() != screenHeight )
 	{
 		if (!glConfig.directStateAccess) {
 			Unbind();
 		}
-		
+
 		// HDR
 		globalImages->currentRenderHDRImage->Resize( screenWidth, screenHeight );
 		globalImages->currentDepthImage->Resize( screenWidth, screenHeight );
-		
+
 #if defined(USE_HDR_MSAA)
 		if( glConfig.multisamples )
 		{
 			globalImages->currentRenderHDRImageNoMSAA->Resize( screenWidth, screenHeight );
-			
+
 			globalFramebuffers.hdrNonMSAAFBO->Bind();
 			globalFramebuffers.hdrNonMSAAFBO->AttachImage2D( GL_TEXTURE_2D, globalImages->currentRenderHDRImageNoMSAA, 0 );
 			globalFramebuffers.hdrNonMSAAFBO->Check();
-			
+
 			globalFramebuffers.hdrNonMSAAFBO->width = screenWidth;
 			globalFramebuffers.hdrNonMSAAFBO->height = screenHeight;
-			
+
 			globalFramebuffers.hdrFBO->Bind();
 			globalFramebuffers.hdrFBO->AttachImage2D( GL_TEXTURE_2D_MULTISAMPLE, globalImages->currentRenderHDRImage, 0 );
 			globalFramebuffers.hdrFBO->AttachImageDepth( GL_TEXTURE_2D_MULTISAMPLE, globalImages->currentDepthImage );
@@ -291,35 +303,35 @@ void Framebuffer::CheckFramebuffers()
 			globalFramebuffers.hdrFBO->AttachImageDepth( GL_TEXTURE_2D, globalImages->currentDepthImage );
 			globalFramebuffers.hdrFBO->Check();
 		}
-		
+
 		globalFramebuffers.hdrFBO->width = screenWidth;
 		globalFramebuffers.hdrFBO->height = screenHeight;
-		
+
 		// HDR quarter
 		/*
 		globalImages->currentRenderHDRImageQuarter->Resize( screenWidth / 4, screenHeight / 4 );
-		
+
 		globalFramebuffers.hdrQuarterFBO->Bind();
 		globalFramebuffers.hdrQuarterFBO->AttachImage2D( GL_TEXTURE_2D, globalImages->currentRenderHDRImageQuarter, 0 );
 		globalFramebuffers.hdrQuarterFBO->Check();
 		*/
-		
+
 		// BLOOM
-		
+
 		for( int i = 0; i < MAX_BLOOM_BUFFERS; i++ )
 		{
 			globalImages->bloomRenderImage[i]->Resize( screenWidth / 4, screenHeight / 4 );
-			
+
 			globalFramebuffers.bloomRenderFBO[i]->width = screenWidth / 4;
 			globalFramebuffers.bloomRenderFBO[i]->height = screenHeight / 4;
-			
+
 			if (!glConfig.directStateAccess) {
 				globalFramebuffers.bloomRenderFBO[i]->Bind();
 			}
 			globalFramebuffers.bloomRenderFBO[i]->AttachImage2D( GL_TEXTURE_2D, globalImages->bloomRenderImage[i], 0 );
 			globalFramebuffers.bloomRenderFBO[i]->Check();
 		}
-		
+
 		// AMBIENT OCCLUSION
 		if (r_ssaoFiltering.GetBool() || r_ssgiFiltering.GetBool()) {
 			for (int i = 0; i < MAX_SSAO_BUFFERS; i++)
@@ -336,61 +348,61 @@ void Framebuffer::CheckFramebuffers()
 				globalFramebuffers.ambientOcclusionFBO[i]->Check();
 			}
 		}
-		
+
 		// HIERARCHICAL Z BUFFER
 
 		globalImages->hierarchicalZbufferImage->Resize( screenWidth, screenHeight, true ); //GK: Recalculate Also MipMap levels for that Texture
-		
+
 		for( int i = 0; i < MAX_HIERARCHICAL_ZBUFFERS; i++ )
 		{
 			globalFramebuffers.csDepthFBO[i]->width = screenWidth / ( 1 << i );
 			globalFramebuffers.csDepthFBO[i]->height = screenHeight / ( 1 << i );
-			
+
 			if (!glConfig.directStateAccess) {
 				globalFramebuffers.csDepthFBO[i]->Bind();
 			}
 			globalFramebuffers.csDepthFBO[i]->AttachImage2D( GL_TEXTURE_2D, globalImages->hierarchicalZbufferImage, 0, i );
 			globalFramebuffers.csDepthFBO[i]->Check();
 		}
-		
+
 		// GEOMETRY BUFFER
-		
+
 		globalImages->currentNormalsImage->Resize( screenWidth, screenHeight );
-		
+
 		globalFramebuffers.geometryBufferFBO->width = screenWidth;
 		globalFramebuffers.geometryBufferFBO->height = screenHeight;
-		
+
 		if (!glConfig.directStateAccess) {
 			globalFramebuffers.geometryBufferFBO->Bind();
 		}
 		globalFramebuffers.geometryBufferFBO->AttachImage2D( GL_TEXTURE_2D, globalImages->currentNormalsImage, 0 );
 		globalFramebuffers.geometryBufferFBO->AttachImageDepth(GL_TEXTURE_2D, globalImages->currentDepthImage);
 		globalFramebuffers.geometryBufferFBO->Check();
-		
+
 		// SMAA
-		
+
 		globalImages->smaaEdgesImage->Resize( screenWidth, screenHeight );
-		
+
 		globalFramebuffers.smaaEdgesFBO->width = screenWidth;
 		globalFramebuffers.smaaEdgesFBO->height = screenHeight;
-		
+
 		if (!glConfig.directStateAccess) {
 			globalFramebuffers.smaaEdgesFBO->Bind();
 		}
 		globalFramebuffers.smaaEdgesFBO->AttachImage2D( GL_TEXTURE_2D, globalImages->smaaEdgesImage, 0 );
 		globalFramebuffers.smaaEdgesFBO->Check();
-		
+
 		globalImages->smaaBlendImage->Resize( screenWidth, screenHeight );
-		
+
 		globalFramebuffers.smaaBlendFBO->width = screenWidth;
 		globalFramebuffers.smaaBlendFBO->height = screenHeight;
-		
+
 		if (!glConfig.directStateAccess) {
 			globalFramebuffers.smaaBlendFBO->Bind();
 		}
 		globalFramebuffers.smaaBlendFBO->AttachImage2D( GL_TEXTURE_2D, globalImages->smaaBlendImage, 0 );
 		globalFramebuffers.smaaBlendFBO->Check();
-		
+
 		if (!glConfig.directStateAccess) {
 			Unbind();
 		}
@@ -405,7 +417,7 @@ void Framebuffer::Shutdown()
 void Framebuffer::Bind()
 {
 	RENDERLOG_PRINTF( "Framebuffer::Bind( %s )\n", fboName.c_str() );
-	
+
 	if( tr.backend.currentFramebuffer != this )
 	{
 		glBindFramebuffer( GL_FRAMEBUFFER, frameBuffer );
@@ -421,7 +433,7 @@ bool Framebuffer::IsBound()
 void Framebuffer::Unbind()
 {
 	RENDERLOG_PRINTF( "Framebuffer::Unbind()\n" );
-	
+
 	//if(tr.backend.currentFramebuffer != NULL)
 	{
 		glBindFramebuffer( GL_FRAMEBUFFER, 0 );
@@ -442,9 +454,9 @@ void Framebuffer::AddColorBuffer( int format, int index, int multiSamples )
 		common->Warning( "Framebuffer::AddColorBuffer( %s ): bad index = %i", fboName.c_str(), index );
 		return;
 	}
-	
+
 	colorFormat = format;
-	
+
 	bool notCreatedYet = colorBuffers[index] == 0;
 #ifndef ANDROID
 	if (!glConfig.directStateAccess)
@@ -497,14 +509,14 @@ void Framebuffer::AddColorBuffer( int format, int index, int multiSamples )
 		}
 	}
 #endif
-	
+
 	//GL_CheckErrors();
 }
 
 void Framebuffer::AddDepthBuffer( int format, int multiSamples )
 {
 	depthFormat = format;
-	
+
 	bool notCreatedYet = depthBuffer == 0;
 #ifndef ANDROID
 	if (!glConfig.directStateAccess)
@@ -631,7 +643,7 @@ void Framebuffer::AttachImage2D( int target, const idImage* image, int index, in
 		common->Warning( "Framebuffer::AttachImage2D( %s ): invalid target", fboName.c_str() );
 		return;
 	}
-	
+
 	if( index < 0 || index >= glConfig.maxColorAttachments )
 	{
 		common->Warning( "Framebuffer::AttachImage2D( %s ): bad index = %i", fboName.c_str(), index );
@@ -718,36 +730,35 @@ void Framebuffer::Check()
 		case GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT:
 			common->Error( "Framebuffer::Check( %s ): Framebuffer incomplete, incomplete attachment", fboName.c_str() );
 			break;
-			
+
 		case GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT:
 			common->Error( "Framebuffer::Check( %s ): Framebuffer incomplete, missing attachment", fboName.c_str() );
 			break;
-#ifndef ANDROID
 		case GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER:
 			common->Error( "Framebuffer::Check( %s ): Framebuffer incomplete, missing draw buffer", fboName.c_str() );
 			break;
-			
+
 		case GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER:
 			common->Error( "Framebuffer::Check( %s ): Framebuffer incomplete, missing read buffer", fboName.c_str() );
 			break;
-#endif
+
 		case GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS:
 			common->Error( "Framebuffer::Check( %s ): Framebuffer incomplete, missing layer targets", fboName.c_str() );
 			break;
-			
+
 		case GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE:
 			common->Error( "Framebuffer::Check( %s ): Framebuffer incomplete, missing multisample", fboName.c_str() );
 			break;
-			
+
 		case GL_FRAMEBUFFER_UNSUPPORTED:
 			common->Error( "Framebuffer::Check( %s ): Unsupported framebuffer format", fboName.c_str() );
 			break;
-			
+
 		default:
 			common->Error( "Framebuffer::Check( %s ): Unknown error 0x%X", fboName.c_str(), status );
 			break;
 	};
-	
+
 	if (!glConfig.directStateAccess) {
 		glBindFramebuffer(GL_FRAMEBUFFER, prev);
 	}

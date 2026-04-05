@@ -921,7 +921,9 @@ Posix_EarlyInit/Posix_LateInit is better
   and also it needs all the flags for proper setup (without SDL_INIT_GAMECONTROLLER latest versions cause performance degregation when using a controller)
  */
 void Sys_Init() {
+#ifndef ANDROID
 	SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
+#endif
 	if( !SDL_WasInit( SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC) )
 	{
 		if( !SDL_Init( SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC ) )

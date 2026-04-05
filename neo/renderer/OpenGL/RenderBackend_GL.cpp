@@ -535,9 +535,6 @@ static void R_CheckPortableExtensions()
 									  0, NULL, true );
 		}
 	}
-#else
-	glConfig.debugOutputAvailable = false;
-#endif
 	// GL_ARB_multitexture
 	if( !glConfig.multitextureAvailable )
 	{
@@ -589,12 +586,13 @@ static void R_CheckPortableExtensions()
 		idLib::Error( "GL_ATI_separate_stencil not available" );
 	}
 
-#ifndef ANDROID
 	// generate one global Vertex Array Object (VAO)
 	if (glConfig.directStateAccess) {
 		glCreateVertexArrays(1, &glConfig.global_vao);
 	}
 	else
+#else
+	glConfig.debugOutputAvailable = false;
 #endif
 	{
 		glGenVertexArrays(1, &glConfig.global_vao);

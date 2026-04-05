@@ -179,7 +179,11 @@ static void R_HDR_RGBA16FImage_ResNative( idImage* image )
 #if defined(USE_HDR_MSAA)
 	textureSamples_t msaaSamples = r_useHDR.GetBool() ? static_cast<textureSamples_t>(glConfig.multisamples) : SAMPLE_1;
 #endif
+#ifndef ANDROID
 	image->GenerateImage(NULL, renderSystem->GetWidth(), renderSystem->GetHeight(), TF_NEAREST, TR_CLAMP, TD_RGBA16F);// , msaaSamples );
+#else
+	image->GenerateImage(NULL, renderSystem->GetWidth(), renderSystem->GetHeight(), TF_NEAREST, TR_CLAMP, TD_LOOKUP_TABLE_RGBA);// , msaaSamples );
+#endif
 }
 
 #if  defined(USE_HDR_MSAA)
@@ -191,7 +195,11 @@ static void R_HDR_RGBA16FImage_ResNative_NoMSAA( idImage* image )
 
 static void R_HDR_RGBA16FImage_ResQuarter( idImage* image )
 {
+#ifndef ANDROID
 	image->GenerateImage( NULL, renderSystem->GetWidth() / 4, renderSystem->GetHeight() / 4, TF_NEAREST, TR_CLAMP, TD_RGBA16F );
+#else
+	image->GenerateImage( NULL, renderSystem->GetWidth() / 4, renderSystem->GetHeight() / 4, TF_NEAREST, TR_CLAMP, TD_LOOKUP_TABLE_RGBA );
+#endif
 }
 
 static void R_HDR_RGBA16FImage_ResQuarter_Linear( idImage* image )
@@ -201,7 +209,12 @@ static void R_HDR_RGBA16FImage_ResQuarter_Linear( idImage* image )
 
 static void R_HDR_RGBA16FImage_Res64( idImage* image )
 {
+#ifndef ANDROID
 	image->GenerateImage( NULL, 64, 64, TF_NEAREST, TR_CLAMP, TD_RGBA16F );
+#else
+	image->GenerateImage( NULL, 64, 64, TF_NEAREST, TR_CLAMP, TD_LOOKUP_TABLE_RGBA );
+
+#endif
 }
 
 static void R_SMAAImage_ResNative( idImage* image )
@@ -231,7 +244,11 @@ static void R_HDR_RGBA8Image_ResNative(idImage* image)
 
 static void R_GeometryBufferImage_ResNative(idImage* image)
 {
+#ifndef ANDROID
 	image->GenerateImage(NULL, renderSystem->GetWidth(), renderSystem->GetHeight(), TF_LINEAR, TR_CLAMP, TD_RGBA16F );
+#else
+	image->GenerateImage(NULL, renderSystem->GetWidth(), renderSystem->GetHeight(), TF_LINEAR, TR_CLAMP, TD_LOOKUP_TABLE_RGBA );
+#endif
 }
 // RB end
 

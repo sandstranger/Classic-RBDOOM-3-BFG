@@ -249,8 +249,9 @@ void* idVertexBuffer::MapBuffer( bufferMapType_t mapType )
 	
 	buffer = NULL;
 #ifndef ANDROID
-	if (!glConfig.directStateAccess) {
+	if (!glConfig.directStateAccess)
 #endif
+	{
 		glBindBuffer(GL_ARRAY_BUFFER, apiObject);
 		if (mapType == BM_READ)
 		{
@@ -264,8 +265,7 @@ void* idVertexBuffer::MapBuffer( bufferMapType_t mapType )
 				buffer = (byte*)buffer + GetOffset();
 			}
 		}
-#ifndef ANDROID
-	else if (mapType == BM_WRITE)
+		else if (mapType == BM_WRITE)
 		{
 			// RB: removed GL_MAP_INVALIDATE_RANGE_BIT as it breaks with an optimization in the Nvidia WHQL drivers >= 344.11
 			buffer = glMapBufferRange(GL_ARRAY_BUFFER, 0, GetAllocedSize(), GL_MAP_WRITE_BIT /*| GL_MAP_INVALIDATE_RANGE_BIT*/ | GL_MAP_UNSYNCHRONIZED_BIT);
@@ -280,6 +280,7 @@ void* idVertexBuffer::MapBuffer( bufferMapType_t mapType )
 			assert(false);
 		}
 	}
+#ifndef ANDROID
 	else {
 		switch (mapType) {
 		case BM_READ:

@@ -79,12 +79,13 @@ void RB_SetMVP( const idRenderMatrix& mvp );
 glContext_t glcontext;
 
 #if ANDROID
-static unsigned int glesVersion = 300;
+const unsigned int GLES32_VERSION = 320;
+unsigned int glesVersion = GLES32_VERSION;
 static std::string glExtensions;
 bool antianalisingAvailable = false;
 
 static int isGLES32Version (){
-    return glesVersion == 320;
+    return glesVersion == GLES32_VERSION;
 }
 static bool HasExtension (const std::string &extension){
 	return glExtensions.contains(extension);

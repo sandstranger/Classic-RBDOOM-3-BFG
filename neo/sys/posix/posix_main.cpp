@@ -1805,6 +1805,7 @@ Sys_OpenURL
 */
 void idSysLocal::OpenURL( const char* url, bool quit )
 {
+#ifndef ANDROID
 	const char*	script_path;
 	idFile*		script_file;
 	char		cmdline[ 1024 ];
@@ -1848,6 +1849,7 @@ void idSysLocal::OpenURL( const char* url, bool quit )
 	// StartProcess is going to execute a system() call with that - hence the &
 	idStr::snPrintf( cmdline, 1024, "%s '%s' &",  script_path, url );
 	sys->StartProcess( cmdline, quit );
+#endif
 }
 
 

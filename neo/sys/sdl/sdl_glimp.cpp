@@ -156,12 +156,16 @@ bool GLimp_Init( glimpParms_t parms )
 	// DG: make window resizable
 	Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_MOUSE_GRABBED;
 	// DG end
-	
+
+#ifndef ANDROID
 	if( parms.fullScreen )
 		flags |= SDL_WINDOW_FULLSCREEN;
 	else if (parms.fullScreen < 0)
 		flags |= SDL_WINDOW_BORDERLESS;
-		
+#else
+	flags |= SDL_WINDOW_FULLSCREEN;
+#endif
+
 	int colorbits = 24;
 	int depthbits = 24;
 	int stencilbits = 8;
@@ -245,7 +249,7 @@ bool GLimp_Init( glimpParms_t parms )
 		
 		SDL_GL_SetAttribute( SDL_GL_MULTISAMPLEBUFFERS, parms.multiSamples ? 1 : 0 );
 		SDL_GL_SetAttribute( SDL_GL_MULTISAMPLESAMPLES, parms.multiSamples );
-		
+#ifndef ANDROID
 		// RB begin
 		if( r_useOpenGL32.GetInteger() > 0 )
 		{
@@ -271,14 +275,25 @@ bool GLimp_Init( glimpParms_t parms )
 				SDL_GL_SetAttribute( SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG );
 			}
 		}
-#ifndef ANDROID
 		if( r_useOpenGL32.GetInteger() > 1 )
 		{
 			glConfig.driverType = GLDRV_OPENGL32_CORE_PROFILE;
 		}
 #else
+		extern unsigned int glesVersion;
+		int minorGlesVersionToUse = 2;
+
+		if (glesVersion == 310) {
+			minorGlesVersionToUse = 1;
+		} else if (glesVersion == 300) {
+			minorGlesVersionToUse = 0;
+		}
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,  minorGlesVersionToUse );
 		glConfig.driverType = GLDRV_OPENGL_ES3;
 #endif
+#ifndef ANDROID
 		// RB end
 		
 		// DG: set display num for fullscreen
@@ -312,7 +327,7 @@ bool GLimp_Init( glimpParms_t parms )
 		 * the mouse cursor.
 		 */
 		
-		
+
 		 SDL_PropertiesID props = SDL_CreateProperties();
     	 SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, ENGINE_NAME);
     	 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, windowPos);
@@ -325,6 +340,9 @@ bool GLimp_Init( glimpParms_t parms )
      	 window = SDL_CreateWindowWithProperties(props);
     	 SDL_DestroyProperties(props);
 		// DG end
+#else
+		window = SDL_CreateWindow("", 0, 0, flags);
+#endif
 		
 		context = SDL_GL_CreateContext( window );
 		
@@ -357,17 +375,21 @@ bool GLimp_Init( glimpParms_t parms )
 		 doom_icon.bytes_per_pixel * 8, doom_icon.bytes_per_pixel * doom_icon.width, rmask, gmask, bmask, amask);
 #endif
 
+#ifndef ANDROID
 		 SDL_SetWindowIcon(window, surf);
-
+#endif
 		 glConfig.swapControlTearAvailable = SDL_GL_SetSwapInterval(-1);
 		 r_swapInterval.SetModified();
 			
 		// RB begin
 		SDL_GetWindowSizeInPixels( window, &glConfig.nativeScreenWidth, &glConfig.nativeScreenHeight );
 		// RB end
-		
+
+#ifndef ANDROID
 		glConfig.isFullscreen = ( SDL_GetWindowFlags( window ) & SDL_WINDOW_FULLSCREEN ) == SDL_WINDOW_FULLSCREEN;
-		
+#else
+		glConfig.isFullscreen = true;
+#endif
 		common->Printf( "Using %d color bits, %d depth, %d stencil display\n",
 						channelcolorbits, tdepthbits, tstencilbits );
 						
@@ -426,6 +448,7 @@ bool GLimp_Init( glimpParms_t parms )
 // makes sure the window will be full-screened on the right display and returns the SDL display index
 static int ScreenParmsHandleDisplayIndex( glimpParms_t parms )
 {
+#ifndef ANDROID
 	int displayIdx;
 	if( parms.fullScreen > 0 )
 	{
@@ -464,10 +487,14 @@ static int ScreenParmsHandleDisplayIndex( glimpParms_t parms )
 		SDL_SetWindowPosition( window, x, x );
 	}
 	return displayIdx;
+#else
+	return 0;
+#endif
 }
 
 static bool SetScreenParmsFullscreen( glimpParms_t parms )
 {
+#ifndef ANDROID
 	SDL_DisplayMode* m = NULL;
 	int displayIdx = ScreenParmsHandleDisplayIndex( parms );
 	if( displayIdx < 0 )
@@ -526,12 +553,14 @@ static bool SetScreenParmsFullscreen( glimpParms_t parms )
 	}
 	
 	return true;
+#else
+	return true;
+#endif
 }
 
 static bool SetScreenParmsWindowed( glimpParms_t parms )
 {
-	
-	
+#ifndef ANDROID
 	// if we're currently in fullscreen mode, we need to disable that
 	if( SDL_GetWindowFlags( window ) & SDL_WINDOW_FULLSCREEN )
 	{
@@ -545,6 +574,9 @@ static bool SetScreenParmsWindowed( glimpParms_t parms )
 	SDL_SetWindowPosition( window, parms.x, parms.y );
 	
 	return true;
+#else
+	return false;
+#endif
 }
 
 /*
@@ -554,6 +586,7 @@ GLimp_SetScreenParms
 */
 bool GLimp_SetScreenParms( glimpParms_t parms )
 {
+#ifndef ANDROID
 	if( parms.fullScreen > 0 || parms.fullScreen < 0 )
 	{
 		if( !SetScreenParmsFullscreen( parms ) )
@@ -569,6 +602,7 @@ bool GLimp_SetScreenParms( glimpParms_t parms )
 		common->Warning( "GLimp_SetScreenParms: fullScreen -1 (borderless window for multiple displays) currently unsupported!" );
 		return false;
 	}
+#endif
 	SDL_SyncWindow(window);
 	
 	// Note: the following stuff would also work with SDL1.2
@@ -576,8 +610,12 @@ bool GLimp_SetScreenParms( glimpParms_t parms )
 	
 	SDL_GL_SetAttribute( SDL_GL_MULTISAMPLEBUFFERS, parms.multiSamples ? 1 : 0 );
 	SDL_GL_SetAttribute( SDL_GL_MULTISAMPLESAMPLES, parms.multiSamples );
-	
+
+#ifndef ANDROID
 	glConfig.isFullscreen = parms.fullScreen;
+#else
+	glConfig.isFullscreen = true;
+#endif
 	glConfig.isStereoPixelFormat = parms.stereo;
 	SDL_GetWindowSizeInPixels( window, &glConfig.nativeScreenWidth, &glConfig.nativeScreenHeight );
 	glConfig.displayFrequency = parms.displayHz;

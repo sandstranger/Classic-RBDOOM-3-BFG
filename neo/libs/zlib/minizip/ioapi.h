@@ -24,7 +24,7 @@
 #ifndef _ZLIBIOAPI64_H
 #define _ZLIBIOAPI64_H
 
-#if (!defined(_WIN32)) && (!defined(WIN32)) && (!defined(__APPLE__))
+#if (!defined(_WIN32)) && (!defined(WIN32)) && (!defined(__APPLE__) && (!defined(__ANDROID__))
 
   // Linux needs this to support file operation on files larger then 4+GB
   // But might need better if/def to select just the platforms that needs them.
@@ -42,6 +42,10 @@
                 #define _FILE_OFFSET_BIT 64
         #endif
 
+#endif
+
+#if ANDROID
+#define USE_FILE32API
 #endif
 
 #include <stdio.h>

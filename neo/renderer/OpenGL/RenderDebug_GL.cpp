@@ -29,6 +29,7 @@ If you have questions concerning this license or the applicable additional terms
 ===========================================================================
 */
 
+#ifndef ANDROID
 #pragma hdrstop
 #include "precompiled.h"
 
@@ -3109,3 +3110,4 @@ void RB_ShutdownDebugTools()
 		rb_debugPolygons[i].winding.Clear();
 	}
 }
+#endif

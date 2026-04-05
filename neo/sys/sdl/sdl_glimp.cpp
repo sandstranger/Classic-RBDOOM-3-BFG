@@ -271,11 +271,14 @@ bool GLimp_Init( glimpParms_t parms )
 				SDL_GL_SetAttribute( SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG );
 			}
 		}
-		
+#ifndef ANDROID
 		if( r_useOpenGL32.GetInteger() > 1 )
 		{
 			glConfig.driverType = GLDRV_OPENGL32_CORE_PROFILE;
 		}
+#else
+		glConfig.driverType = GLDRV_OPENGL_ES3;
+#endif
 		// RB end
 		
 		// DG: set display num for fullscreen

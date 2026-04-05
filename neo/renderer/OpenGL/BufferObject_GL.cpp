@@ -39,8 +39,11 @@ extern idCVar r_showBuffers;
 
 //static const GLenum bufferUsage = GL_STATIC_DRAW;
 static const GLenum bufferUsage = GL_DYNAMIC_DRAW;
+#ifndef ANDROID
 static const GLenum bufferStorageFlags = GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT | GL_MAP_READ_BIT;
-
+#else
+static const GLenum bufferStorageFlags = GL_MAP_WRITE_BIT | GL_MAP_READ_BIT;
+#endif
 
 
 /*
@@ -224,7 +227,7 @@ void idVertexBuffer::Update( const void* data, int updateSize, int offset ) cons
 #endif
 		{
 			glBindBuffer(GL_ARRAY_BUFFER, apiObject);
-			glBufferSubData(GL_ARRAY_BUFFER, GetOffset() + offset, (GLsizeiptrARB)numBytes, data);
+			glBufferSubData(GL_ARRAY_BUFFER, GetOffset() + offset, (GLsizeiptr)numBytes, data);
 		}
 #ifndef ANDROID
 		else {
@@ -251,7 +254,11 @@ void* idVertexBuffer::MapBuffer( bufferMapType_t mapType )
 		glBindBuffer(GL_ARRAY_BUFFER, apiObject);
 		if (mapType == BM_READ)
 		{
+#ifndef ANDROID
 			buffer = glMapBufferRange(GL_ARRAY_BUFFER_ARB, 0, GetAllocedSize(), GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+#else
+            buffer = glMapBufferRange(GL_ARRAY_BUFFER, 0, GetAllocedSize(), GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+#endif
 			if (buffer != NULL)
 			{
 				buffer = (byte*)buffer + GetOffset();
@@ -502,7 +509,7 @@ void idIndexBuffer::Update( const void* data, int updateSize, int offset ) const
 #endif
 		{
 			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
-			glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, GetOffset() + offset, (GLsizeiptrARB)numBytes, data);
+			glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, GetOffset() + offset, (GLsizeiptr)numBytes, data);
 		}
 #ifndef ANDROID
 		else {
@@ -676,7 +683,11 @@ bool idUniformBuffer::AllocBufferObject( const void* data, int allocSize, buffer
 	{
 		glGenBuffers(1, (GLuint*)&apiObject);
 		glBindBuffer(GL_UNIFORM_BUFFER, apiObject);
+#ifndef ANDROID
 		glBufferData(GL_UNIFORM_BUFFER, numBytes, NULL, GL_STREAM_DRAW_ARB);
+#else
+        glBufferData(GL_UNIFORM_BUFFER, numBytes, NULL, GL_STREAM_DRAW);
+#endif
 		glBindBuffer(GL_UNIFORM_BUFFER, 0);
 	}
 #ifndef ANDROID

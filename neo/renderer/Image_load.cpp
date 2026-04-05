@@ -714,17 +714,26 @@ GenerateImage
 void idImage::GenerateImage( const byte* pic, int width, int height, textureFilter_t filterParm, textureRepeat_t repeatParm, textureUsage_t usageParm, textureSamples_t samples, bool isRenderTarget)
 {
 	PurgeImage();
-	
+
+
 	filter = filterParm;
 	repeat = repeatParm;
 	usage = usageParm;
 	cubeFiles = CF_2D;
-	
+#if ANDROID
+	extern bool antianalisingAvailable;
+	opts.textureType = ( samples > SAMPLE_1 && antianalisingAvailable ) ? TT_2D_MULTISAMPLE : TT_2D;
+#else
 	opts.textureType = ( samples > SAMPLE_1 ) ? TT_2D_MULTISAMPLE : TT_2D;
+#endif
 	opts.width = width;
 	opts.height = height;
 	opts.numLevels = 0;
+#if ANDROID
+	opts.samples = antianalisingAvailable ? samples : SAMPLE_1;
+#else
 	opts.samples = samples;
+#endif
 	opts.isRenderTarget = isRenderTarget;
 	DeriveOpts();
 	

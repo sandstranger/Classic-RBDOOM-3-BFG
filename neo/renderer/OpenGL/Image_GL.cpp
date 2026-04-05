@@ -328,6 +328,17 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight )
 	tr.backend.pc.c_copyFrameBuffer++;
 }
 
+
+#if ANDROID
+static void swapBytesRGB565(void* data, size_t pixelCount) {
+    uint16_t* pixels = static_cast<uint16_t*>(data);
+    for (size_t i = 0; i < pixelCount; ++i) {
+        uint16_t pixel = pixels[i];
+        pixels[i] = (pixel >> 8) | (pixel << 8);
+    }
+}
+#endif
+
 /*
 ========================
 idImage::SubImageUpload
@@ -399,7 +410,7 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 
 		if (opts.format == FMT_RGB565)
 		{
-#if !defined(USE_GLES3)
+#if !defined(USE_GLES3) && !ANDROID
 			glPixelStorei(GL_UNPACK_SWAP_BYTES, GL_TRUE);
 #endif
 		}
@@ -427,8 +438,26 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 				glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 			}
 
-			
+#if ANDROID
+            if (opts.format == FMT_RGB565)
+            {
+                size_t pixelCount = width * height;
+                size_t dataSize = pixelCount * 2;
+                void* tempData = malloc(dataSize);
+                if (tempData) {
+                    memcpy(tempData, pic, dataSize);
+                    swapBytesRGB565(tempData, pixelCount);
+                    glTexSubImage2D(uploadTarget, mipLevel, x, y, width, height,
+                                    dataFormat, dataType, tempData);
+                    free(tempData);
+                } else {
+                    glTexSubImage2D(uploadTarget, mipLevel, x, y, width, height,
+                                    dataFormat, dataType, pic);
+                }
+            }
+#else
 			glTexSubImage2D(uploadTarget, mipLevel, x, y, width, height, dataFormat, dataType, pic);
+#endif
 		}
 	}
 #ifndef ANDROID
@@ -440,7 +469,7 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 	
 		if( opts.format == FMT_RGB565 )
 		{
-	#if !defined(USE_GLES3)
+	#if !defined(USE_GLES3) && !ANDROID
 			glPixelStorei(GL_UNPACK_SWAP_BYTES, GL_TRUE);
 	#endif
 		}
@@ -488,7 +517,9 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 #endif
 	if (opts.format == FMT_RGB565)
 	{
+#ifndef ANDROID
 		glPixelStorei(GL_UNPACK_SWAP_BYTES, GL_FALSE);
+#endif
 	}
 	if (pixelPitch != 0)
 	{
@@ -694,7 +725,11 @@ void idImage::SetTexParametersLegacy() {
 	if (opts.format == FMT_SHADOW_ARRAY)
 	{
 		//glTexParameteri( target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+#ifndef ANDROID
 		glTexParameteri(target, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_R_TO_TEXTURE);
+#else
+        glTexParameteri(target, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+#endif
 		glTexParameteri(target, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
 	}
 }

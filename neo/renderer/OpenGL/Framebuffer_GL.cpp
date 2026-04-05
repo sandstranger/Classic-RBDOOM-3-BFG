@@ -722,7 +722,7 @@ void Framebuffer::Check()
 		case GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT:
 			common->Error( "Framebuffer::Check( %s ): Framebuffer incomplete, missing attachment", fboName.c_str() );
 			break;
-			
+#ifndef ANDROID
 		case GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER:
 			common->Error( "Framebuffer::Check( %s ): Framebuffer incomplete, missing draw buffer", fboName.c_str() );
 			break;
@@ -730,7 +730,7 @@ void Framebuffer::Check()
 		case GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER:
 			common->Error( "Framebuffer::Check( %s ): Framebuffer incomplete, missing read buffer", fboName.c_str() );
 			break;
-			
+#endif
 		case GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS:
 			common->Error( "Framebuffer::Check( %s ): Framebuffer incomplete, missing layer targets", fboName.c_str() );
 			break;

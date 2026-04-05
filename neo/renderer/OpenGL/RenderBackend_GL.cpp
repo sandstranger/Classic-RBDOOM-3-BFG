@@ -40,6 +40,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../../framework/Common_local.h"
 #if ANDROID
 #include "GLES3/gl32.h"
+using namespace std;
 #endif
 
 #ifdef USE_OPENXR
@@ -77,6 +78,19 @@ void GLimp_SwapBuffers();
 void RB_SetMVP( const idRenderMatrix& mvp );
 
 glContext_t glcontext;
+
+#if ANDROID
+static unsigned int glesVersion = 300;
+static string glExtensions;
+bool antianalisingAvailable = false;
+#endif
+
+
+#if ANDROID
+bool HasExtension (const string &extension){
+	return glExtensions.contains(extension);
+}
+#endif
 
 /*
 ==================
@@ -150,6 +164,7 @@ For ARB_debug_output
 static void CALLBACK DebugCallback( unsigned int source, unsigned int type,
 									unsigned int id, unsigned int severity, int length, const char* message, const void* userParam )
 {
+#ifndef ANDROID
 	// it probably isn't safe to do an idLib::Printf at this point
 	idStr sourceStr = "";
 	switch (source) {
@@ -219,15 +234,10 @@ static void CALLBACK DebugCallback( unsigned int source, unsigned int type,
 		severityStr = "Notification";
 		break;
 	}
-#ifndef ANDROID
-	char callstack[5000];
-	Sys_GetCallStack(callstack);
-#else
-	std::string callstack = "";
-#endif
 	// RB: printf should be thread safe on Linux
 	idLib::Printf("caught OpenGL Error:\n\tSource:%s\n\tType: %s\n\tSeverity: %s\n\tMessage: %s\n%s", sourceStr.c_str(), typeStr.c_str(), severityStr.c_str(), message, callstack.c_str());
 	// RB end
+#endif
 }
 
 static void R_PrintExtensionStatus(bool extBool, const char* extName) {
@@ -268,7 +278,7 @@ static void R_CheckPortableExtensions()
 	{
 		glConfig.vendor = VENDOR_INTEL;
 	} 
-	
+#ifndef ANDROID
 	// RB: Mesa support
 	if( idStr::Icmpn( glConfig.renderer_string, "Mesa", 4 ) == 0 || idStr::Icmpn( glConfig.renderer_string, "X.org", 5 ) == 0 || idStr::Icmpn( glConfig.renderer_string, "Gallium", 7 ) == 0 ||
 			strcmp( glConfig.vendor_string, "X.Org" ) == 0 ||
@@ -283,10 +293,11 @@ static void R_CheckPortableExtensions()
 			glConfig.driverType = GLDRV_OPENGL_MESA;
 		}
 	}
+#endif
 	// RB end
 
 #if ANDROID
-	const char* ext = (const char*)glGetString(GL_EXTENSIONS);
+	glExtensions = (const char*)glGetString(GL_EXTENSIONS);
 #endif
 #ifndef ANDROID
 	// GL_ARB_multitexture
@@ -312,10 +323,10 @@ static void R_CheckPortableExtensions()
 	// GL_EXT_texture_filter_anisotropic
 	glConfig.anisotropicFilterAvailable = GLEW_EXT_texture_filter_anisotropic != 0;
 #else
-	glConfig.multitextureAvailable = ext && strstr(ext, "GL_ARB_multitexture");
-	glConfig.textureCompressionAvailable = ext && strstr(ext, "GL_ARB_texture_compression") &&
-			strstr(ext, "GL_EXT_texture_compression_s3tc");
-	glConfig.anisotropicFilterAvailable = ext && strstr(ext, "GL_EXT_texture_filter_anisotropic");
+    glConfig.multitextureAvailable = HasExtension("GL_ARB_multitexture");
+	glConfig.textureCompressionAvailable = HasExtension("GL_ARB_texture_compression") &&
+            HasExtension("GL_EXT_texture_compression_s3tc");
+	glConfig.anisotropicFilterAvailable = HasExtension( "GL_EXT_texture_filter_anisotropic");
 #endif
 	if( glConfig.anisotropicFilterAvailable )
 	{
@@ -374,7 +385,7 @@ static void R_CheckPortableExtensions()
 		glConfig.vertexBufferObjectAvailable = GLEW_ARB_vertex_buffer_object != 0;
 	}
 #else
-	glConfig.vertexBufferObjectAvailable = ext && strstr(ext, "GL_ARB_vertex_buffer_object");
+	glConfig.vertexBufferObjectAvailable = HasExtension( "GL_ARB_vertex_buffer_object");
 #endif
 	
 	// GL_ARB_map_buffer_range, map a section of a buffer object's data store
@@ -387,7 +398,7 @@ static void R_CheckPortableExtensions()
 #ifndef ANDROID
 		glConfig.mapBufferRangeAvailable = GLEW_ARB_map_buffer_range != 0;
 #else
-		glConfig.mapBufferRangeAvailable = ext && strstr(ext, "GL_ARB_map_buffer_range");
+		glConfig.mapBufferRangeAvailable = HasExtension( "GL_ARB_map_buffer_range");
 #endif
 	}
 	
@@ -408,9 +419,9 @@ static void R_CheckPortableExtensions()
 	// GL_ARB_vertex_program / GL_ARB_fragment_program
 	glConfig.fragmentProgramAvailable = GLEW_ARB_fragment_program != 0;
 #else
-	glConfig.vertexArrayObjectAvailable = ext && strstr(ext, "GL_ARB_vertex_array_object");
-	glConfig.drawElementsBaseVertexAvailable = ext && strstr(ext, "GL_ARB_draw_elements_base_vertex");
-	glConfig.fragmentProgramAvailable = ext && strstr(ext, "GL_ARB_fragment_program");
+	glConfig.vertexArrayObjectAvailable = HasExtension( "GL_ARB_vertex_array_object");
+	glConfig.drawElementsBaseVertexAvailable = HasExtension( "GL_ARB_draw_elements_base_vertex");
+	glConfig.fragmentProgramAvailable = HasExtension( "GL_ARB_fragment_program");
 #endif
 	if( glConfig.fragmentProgramAvailable )
 	{
@@ -425,7 +436,7 @@ static void R_CheckPortableExtensions()
 #ifndef ANDROID
 	glConfig.uniformBufferAvailable = GLEW_ARB_uniform_buffer_object != 0;
 #else
-	glConfig.uniformBufferAvailable = ext && strstr(ext, "GL_ARB_uniform_buffer_object");
+	glConfig.uniformBufferAvailable = HasExtension( "GL_ARB_uniform_buffer_object");
 #endif
 	if( glConfig.uniformBufferAvailable )
 	{
@@ -464,7 +475,7 @@ static void R_CheckPortableExtensions()
 	// GREMEDY_string_marker
 	glConfig.gremedyStringMarkerAvailable = GLEW_GREMEDY_string_marker != 0;
 #else
-	glConfig.syncAvailable = ext && strstr(ext, "GL_ARB_sync");
+	glConfig.syncAvailable = HasExtension( "GL_ARB_sync");
 	glConfig.occlusionQueryAvailable = false;
 	glConfig.timerQueryAvailable = false;
 	glConfig.gremedyStringMarkerAvailable = false;
@@ -475,7 +486,7 @@ static void R_CheckPortableExtensions()
 #ifndef ANDROID
 	glConfig.framebufferObjectAvailable = GLEW_ARB_framebuffer_object != 0;
 #else
-	glConfig.framebufferObjectAvailable = ext && strstr(ext, "GL_ARB_framebuffer_object");
+	glConfig.framebufferObjectAvailable = HasExtension( "GL_ARB_framebuffer_object");
 #endif
 	R_PrintExtensionStatus(glConfig.framebufferObjectAvailable, "GL_ARB_framebuffer_object");
 	if( glConfig.framebufferObjectAvailable )
@@ -488,7 +499,7 @@ static void R_CheckPortableExtensions()
 #ifndef ANDROID
 	glConfig.framebufferBlitAvailable = GLEW_EXT_framebuffer_blit != 0;
 #else
-	glConfig.framebufferBlitAvailable = ext && strstr(ext, "GL_ARB_framebuffer_object");
+	glConfig.framebufferBlitAvailable = HasExtension( "GL_ARB_framebuffer_object");
 #endif
 	R_PrintExtensionStatus(glConfig.framebufferBlitAvailable, "GL_EXT_framebuffer_blit");
 	
@@ -604,6 +615,7 @@ all renderSystem functions will still operate properly, notably the material
 and model information functions.
 ==================
 */
+
 void idRenderBackend::Init()
 {
 	common->Printf( "----- R_InitOpenGL -----\n" );
@@ -633,6 +645,10 @@ void idRenderBackend::Init()
 	
 	float glVersion = atof( idStr(glConfig.version_string).SubStr(0, 3) );
 	float glslVersion = atof( glConfig.shading_language_string );
+#if ANDROID
+	glesVersion = getGLESVersion();
+	antianalisingAvailable = glesVersion == 320;
+#endif
 	idLib::Printf( "OpenGL Version   : %1.1f\n", glVersion );
 	idLib::Printf( "OpenGL Vendor    : %s\n", glConfig.vendor_string );
 	idLib::Printf( "OpenGL Renderer  : %s\n", glConfig.renderer_string );
@@ -881,13 +897,17 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 		}
 	}
 	// RB end
-	
-	glDrawElementsBaseVertex( GL_TRIANGLES,
+#if defined(USE_GLES3)
+    glDrawElements( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset );
+#else
+    glDrawElementsBaseVertex( GL_TRIANGLES,
 							  r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
 							  GL_INDEX_TYPE,
 							  ( triIndex_t* )indexOffset,
 							  vertOffset / sizeof( idDrawVert ) );
-							  
+#endif
+
+
 	// RB: added stats
 	pc.c_drawElements++;
 	pc.c_drawIndexes += surf->numIndexes;
@@ -917,10 +937,10 @@ void idRenderBackend::GL_StartFrame()
 		glNamedFramebufferDrawBuffer(0, GL_BACK);
 	}
 	else
-#endif
 	{
 		glDrawBuffer(GL_BACK);
 	}
+#endif
 }
 
 /*
@@ -1003,7 +1023,9 @@ void idRenderBackend::GL_SetDefaultState()
 	else
 #endif
 	{
+#ifndef ANDROID
 		glDrawBuffer(GL_BACK);
+#endif
 		glReadBuffer(GL_BACK);
 	}
 	
@@ -1213,6 +1235,7 @@ void idRenderBackend::GL_State( uint64 stateBits, bool forceGlState )
 	//
 	// fill/line mode
 	//
+#ifndef ANDROID
 	if( diff & GLS_POLYMODE_LINE )
 	{
 		if( stateBits & GLS_POLYMODE_LINE )
@@ -1224,7 +1247,8 @@ void idRenderBackend::GL_State( uint64 stateBits, bool forceGlState )
 			glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
 		}
 	}
-	
+#endif
+
 	//
 	// polygon offset
 	//
@@ -1616,8 +1640,12 @@ void idRenderBackend::CheckCVars()
 			}
 		}
 	}
-	
+
+#ifndef ANDROID
 	if( r_antiAliasing.IsModified() )
+#else
+	if( r_antiAliasing.IsModified() && antianalisingAvailable)
+#endif
 	{
 		switch( r_antiAliasing.GetInteger() )
 		{
@@ -2133,8 +2161,9 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 	// To allow stereo deghost processing, the views have to be copied to separate
 	// textures anyway, so there isn't any benefit to rendering to BACK_RIGHT for
 	// that eye.
+#ifndef ANDROID
 	glDrawBuffer( GL_BACK_LEFT );
-	
+#endif
 	// create the stereoRenderImage if we haven't already
 	static idImage* stereoRenderImages[2];
 	for( int i = 0; i < 2; i++ )
@@ -2235,10 +2264,12 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 	// make sure we draw to both eyes.  This is likely to be sub-optimal
 	// performance on most cards and drivers, but it is better than getting
 	// a confusing, half-ghosted view.
+#ifndef ANDROID
 	if( renderSystem->GetStereo3DMode() != STEREO3D_QUAD_BUFFER )
 	{
 		glDrawBuffer( GL_BACK );
 	}
+#endif
 	
 	GL_State( GLS_DEPTHFUNC_ALWAYS | GLS_CULL_TWOSIDED );
 	
@@ -2260,14 +2291,17 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 	switch( renderSystem->GetStereo3DMode() )
 	{
 		case STEREO3D_QUAD_BUFFER:
+#ifndef ANDROID
 			glDrawBuffer( GL_BACK_RIGHT );
+#endif
 			GL_SelectTexture( 0 );
 			stereoRenderImages[1]->Bind();
 			GL_SelectTexture( 1 );
 			stereoRenderImages[0]->Bind();
 			DrawElementsWithCounters( &unitSquareSurface );
-			
+#ifndef ANDROID
 			glDrawBuffer( GL_BACK_LEFT );
+#endif
 			GL_SelectTexture( 1 );
 			stereoRenderImages[1]->Bind();
 			GL_SelectTexture( 0 );

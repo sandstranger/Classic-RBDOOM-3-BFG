@@ -40,7 +40,6 @@ If you have questions concerning this license or the applicable additional terms
 #include "../../framework/Common_local.h"
 #if ANDROID
 #include "GLES3/gl32.h"
-using namespace std;
 #endif
 
 #ifdef USE_OPENXR
@@ -81,14 +80,18 @@ glContext_t glcontext;
 
 #if ANDROID
 static unsigned int glesVersion = 300;
-static string glExtensions;
+static std::string glExtensions;
 bool antianalisingAvailable = false;
-#endif
 
-
-#if ANDROID
-bool HasExtension (const string &extension){
+static int isGLES32Version (){
+    return glesVersion == 320;
+}
+static bool HasExtension (const std::string &extension){
 	return glExtensions.contains(extension);
+}
+#else
+static int isGLES32Version (){
+    return return true;
 }
 #endif
 
@@ -131,7 +134,7 @@ bool GL_CheckErrors_( const char* filename, int line )
 			case GL_INVALID_OPERATION:
 				strcpy( s, "GL_INVALID_OPERATION" );
 				break;
-#if !defined(USE_GLES2) && !defined(USE_GLES3)
+#if !defined(USE_GLES2) && !defined(USE_GLES3) && !ANDROID
 			case GL_STACK_OVERFLOW:
 				strcpy( s, "GL_STACK_OVERFLOW" );
 				break;
@@ -294,7 +297,7 @@ static void R_CheckPortableExtensions()
 		}
 	}
 #else
-        glConfig.driverType = GLDRV_OPENGL_ES3;
+    glConfig.driverType = GLDRV_OPENGL_ES3;
 #endif
 	// RB end
 
@@ -649,7 +652,7 @@ void idRenderBackend::Init()
 	float glslVersion = atof( glConfig.shading_language_string );
 #if ANDROID
 	glesVersion = getGLESVersion();
-	antianalisingAvailable = glesVersion == 320;
+	antianalisingAvailable = isGLES32Version();
 #endif
 	idLib::Printf( "OpenGL Version   : %1.1f\n", glVersion );
 	idLib::Printf( "OpenGL Vendor    : %s\n", glConfig.vendor_string );
@@ -899,16 +902,16 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 		}
 	}
 	// RB end
-#if defined(USE_GLES3)
-    glDrawElements( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset );
-#else
-    glDrawElementsBaseVertex( GL_TRIANGLES,
-							  r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
-							  GL_INDEX_TYPE,
-							  ( triIndex_t* )indexOffset,
-							  vertOffset / sizeof( idDrawVert ) );
-#endif
-
+if (!isGLES32Version()) {
+    glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes, GL_INDEX_TYPE,
+                   (triIndex_t *) indexOffset);
+} else {
+    glDrawElementsBaseVertex(GL_TRIANGLES,
+                             r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
+                             GL_INDEX_TYPE,
+                             (triIndex_t *) indexOffset,
+                             vertOffset / sizeof(idDrawVert));
+}
 
 	// RB: added stats
 	pc.c_drawElements++;
@@ -1794,15 +1797,24 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 				glDisableVertexAttribArray(PC_ATTRIB_INDEX_ST);
 				glDisableVertexAttribArray(PC_ATTRIB_INDEX_TANGENT);
 
-#if defined(USE_GLES2) || defined(USE_GLES3)
-				glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, sizeof(idShadowVertSkinned), (void*)(vertOffset + SHADOWVERTSKINNED_XYZW_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idShadowVertSkinned), (void*)(vertOffset + SHADOWVERTSKINNED_COLOR_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idShadowVertSkinned), (void*)(vertOffset + SHADOWVERTSKINNED_COLOR2_OFFSET));
-#else
-				glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, sizeof(idShadowVertSkinned), (void*)(SHADOWVERTSKINNED_XYZW_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idShadowVertSkinned), (void*)(SHADOWVERTSKINNED_COLOR_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idShadowVertSkinned), (void*)(SHADOWVERTSKINNED_COLOR2_OFFSET));
-#endif
+if (!isGLES32Version()) {
+    glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE,
+                          sizeof(idShadowVertSkinned),
+                          (void *) (vertOffset + SHADOWVERTSKINNED_XYZW_OFFSET));
+    glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE,
+                          sizeof(idShadowVertSkinned),
+                          (void *) (vertOffset + SHADOWVERTSKINNED_COLOR_OFFSET));
+    glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE,
+                          sizeof(idShadowVertSkinned),
+                          (void *) (vertOffset + SHADOWVERTSKINNED_COLOR2_OFFSET));
+} else {
+    glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE,
+                          sizeof(idShadowVertSkinned), (void *) (SHADOWVERTSKINNED_XYZW_OFFSET));
+    glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE,
+                          sizeof(idShadowVertSkinned), (void *) (SHADOWVERTSKINNED_COLOR_OFFSET));
+    glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE,
+                          sizeof(idShadowVertSkinned), (void *) (SHADOWVERTSKINNED_COLOR2_OFFSET));
+}
 			}
 #ifndef ANDROID
 			else 
@@ -1879,12 +1891,15 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 			glDisableVertexAttribArray(PC_ATTRIB_INDEX_ST);
 			glDisableVertexAttribArray(PC_ATTRIB_INDEX_TANGENT);
 
-#if defined(USE_GLES2) || defined(USE_GLES3)
-			glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, sizeof(idShadowVert), (void*)(vertOffset + SHADOWVERT_XYZW_OFFSET));
-#else
-			glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, sizeof(idShadowVert), (void*)(SHADOWVERT_XYZW_OFFSET));
-#endif
-
+            if (!isGLES32Version()) {
+                glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE,
+                                      sizeof(idShadowVert),
+                                      (void *) (vertOffset + SHADOWVERT_XYZW_OFFSET));
+            }
+            else {
+                glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE,
+                                      sizeof(idShadowVert), (void *) (SHADOWVERT_XYZW_OFFSET));
+            }
 #endif
 			vertexLayout = LAYOUT_DRAW_SHADOW_VERT;
 		}
@@ -1895,19 +1910,28 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 	
 	if( drawSurf->jointCache )
 	{
-#if defined(USE_GLES3) //defined(USE_GLES2)
-		glDrawElements( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset );
-#else
-		glDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset, vertOffset / sizeof( idShadowVertSkinned ) );
-#endif
+        if (!isGLES32Version()) {
+            glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+                           GL_INDEX_TYPE, (triIndex_t *) indexOffset);
+        }
+        else {
+            glDrawElementsBaseVertex(GL_TRIANGLES,
+                                     r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+                                     GL_INDEX_TYPE, (triIndex_t *) indexOffset,
+                                     vertOffset / sizeof(idShadowVertSkinned));
+        }
 	}
 	else
 	{
-#if defined(USE_GLES3)
-		glDrawElements( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset );
-#else
-		glDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset, vertOffset / sizeof( idShadowVert ) );
-#endif
+        if (!isGLES32Version()) {
+            glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+                           GL_INDEX_TYPE, (triIndex_t *) indexOffset);
+        } else {
+            glDrawElementsBaseVertex(GL_TRIANGLES,
+                                     r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+                                     GL_INDEX_TYPE, (triIndex_t *) indexOffset,
+                                     vertOffset / sizeof(idShadowVert));
+        }
 	}
 	
 	// RB: added stats
@@ -1923,20 +1947,28 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 		
 		if( drawSurf->jointCache )
 		{
-#if defined(USE_GLES3)
-			glDrawElements( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset );
-#else
-			glDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset, vertOffset / sizeof( idShadowVertSkinned ) );
-#endif
+            if (!isGLES32Version()) {
+                glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+                               GL_INDEX_TYPE, (triIndex_t *) indexOffset);
+            } else {
+                glDrawElementsBaseVertex(GL_TRIANGLES,
+                                         r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+                                         GL_INDEX_TYPE, (triIndex_t *) indexOffset,
+                                         vertOffset / sizeof(idShadowVertSkinned));
+            }
 		}
 		else
 		{
-#if defined(USE_GLES3)
-			glDrawElements( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset );
-#else
-			glDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset, vertOffset / sizeof( idShadowVert ) );
-#endif
-		}
+        if (!isGLES32Version()) {
+            glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+                   GL_INDEX_TYPE, (triIndex_t *) indexOffset);
+        }
+        else {
+            glDrawElementsBaseVertex(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+                             GL_INDEX_TYPE, (triIndex_t *) indexOffset,
+                             vertOffset / sizeof(idShadowVert));
+        }
+    }
 		
 		// RB: added stats
 		pc.c_shadowElements++;

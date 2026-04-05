@@ -293,6 +293,8 @@ static void R_CheckPortableExtensions()
 			glConfig.driverType = GLDRV_OPENGL_MESA;
 		}
 	}
+#else
+        glConfig.driverType = GLDRV_OPENGL_ES3;
 #endif
 	// RB end
 

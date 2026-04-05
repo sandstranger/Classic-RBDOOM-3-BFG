@@ -32,6 +32,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "precompiled.h"
 #if ANDROID
 #include <string>
+#include <GLES/gl.h>
+
 #endif
 #pragma hdrstop
 
@@ -40,6 +42,9 @@ If you have questions concerning this license or the applicable additional terms
 #include "../../framework/Common_local.h"
 #if ANDROID
 #include "GLES3/gl32.h"
+
+#define GL_TEXTURE_MAX_ANISOTROPY_EXT     0x84FE
+#define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
 #endif
 
 #ifdef USE_OPENXR
@@ -135,7 +140,7 @@ bool GL_CheckErrors_( const char* filename, int line )
 			case GL_INVALID_OPERATION:
 				strcpy( s, "GL_INVALID_OPERATION" );
 				break;
-#if !defined(USE_GLES2) && !defined(USE_GLES3) && !ANDROID
+#if !defined(USE_GLES2) && !defined(USE_GLES3)
 			case GL_STACK_OVERFLOW:
 				strcpy( s, "GL_STACK_OVERFLOW" );
 				break;
@@ -298,7 +303,7 @@ static void R_CheckPortableExtensions()
 		}
 	}
 #else
-    glConfig.driverType = GLDRV_OPENGL_ES3;
+    glConfig.driverType = GLDRV_OPENGL_MESA;
 #endif
 	// RB end
 
@@ -329,10 +334,9 @@ static void R_CheckPortableExtensions()
 	// GL_EXT_texture_filter_anisotropic
 	glConfig.anisotropicFilterAvailable = GLEW_EXT_texture_filter_anisotropic != 0;
 #else
-    glConfig.multitextureAvailable = HasExtension("GL_ARB_multitexture");
-	glConfig.textureCompressionAvailable = HasExtension("GL_ARB_texture_compression") &&
-            HasExtension("GL_EXT_texture_compression_s3tc");
-	glConfig.anisotropicFilterAvailable = HasExtension( "GL_EXT_texture_filter_anisotropic");
+    glConfig.multitextureAvailable = true;
+	glConfig.textureCompressionAvailable = false;
+	glConfig.anisotropicFilterAvailable = false;
 #endif
 	if( glConfig.anisotropicFilterAvailable )
 	{
@@ -343,7 +347,7 @@ static void R_CheckPortableExtensions()
 	{
 		glConfig.maxTextureAnisotropy = 1;
 	}
-	
+
 	// GL_ARB_direct_state_access
 	//GK: Use the core direct State Access intead (what purpose the EXT has?)
 #ifndef ANDROID
@@ -362,7 +366,17 @@ static void R_CheckPortableExtensions()
 	glConfig.textureLODBiasAvailable = false;
 #endif
 	R_PrintExtensionStatus(glConfig.textureLODBiasAvailable, "GL_EXT_texture_lod_bias");
-	
+
+#ifdef ANDROID //karin: force setup glConfig's extension support
+    glConfig.vertexBufferObjectAvailable = true;
+    glConfig.mapBufferRangeAvailable = true;
+    glConfig.vertexArrayObjectAvailable = true;
+    glConfig.drawElementsBaseVertexAvailable = true;
+    glConfig.uniformBufferAvailable = true;
+    glConfig.gpuSkinningAvailable = true;
+    glConfig.fragmentProgramAvailable = true;
+#endif
+
 	// GL_ARB_seamless_cube_map
 #ifndef ANDROID
 	glConfig.seamlessCubeMapAvailable = GLEW_ARB_seamless_cube_map != 0;
@@ -390,8 +404,6 @@ static void R_CheckPortableExtensions()
 	{
 		glConfig.vertexBufferObjectAvailable = GLEW_ARB_vertex_buffer_object != 0;
 	}
-#else
-	glConfig.vertexBufferObjectAvailable = HasExtension( "GL_ARB_vertex_buffer_object");
 #endif
 	
 	// GL_ARB_map_buffer_range, map a section of a buffer object's data store
@@ -403,8 +415,6 @@ static void R_CheckPortableExtensions()
 	{
 #ifndef ANDROID
 		glConfig.mapBufferRangeAvailable = GLEW_ARB_map_buffer_range != 0;
-#else
-		glConfig.mapBufferRangeAvailable = HasExtension( "GL_ARB_map_buffer_range");
 #endif
 	}
 	
@@ -424,25 +434,19 @@ static void R_CheckPortableExtensions()
 	
 	// GL_ARB_vertex_program / GL_ARB_fragment_program
 	glConfig.fragmentProgramAvailable = GLEW_ARB_fragment_program != 0;
-#else
-	glConfig.vertexArrayObjectAvailable = HasExtension( "GL_ARB_vertex_array_object");
-	glConfig.drawElementsBaseVertexAvailable = HasExtension( "GL_ARB_draw_elements_base_vertex");
-	glConfig.fragmentProgramAvailable = HasExtension( "GL_ARB_fragment_program");
 #endif
-	if( glConfig.fragmentProgramAvailable )
-	{
+//	if( glConfig.fragmentProgramAvailable )
+//	{
 		//glGetInteger64v( GL_MAX_TEXTURE_COORDS, ( GLint64* )&glConfig.maxTextureCoords ); //DEPRECATED
 		glGetIntegerv( GL_MAX_TEXTURE_IMAGE_UNITS, ( GLint* )&glConfig.maxTextureImageUnits );
-	}
-	
-	// GLSL, core in OpenGL > 2.0
+//	}
+
+    // GLSL, core in OpenGL > 2.0
 	glConfig.glslAvailable = ( glConfig.glVersion >= 2.0f );
 	
 	// GL_ARB_uniform_buffer_object
 #ifndef ANDROID
 	glConfig.uniformBufferAvailable = GLEW_ARB_uniform_buffer_object != 0;
-#else
-	glConfig.uniformBufferAvailable = HasExtension( "GL_ARB_uniform_buffer_object");
 #endif
 	if( glConfig.uniformBufferAvailable )
 	{
@@ -452,9 +456,10 @@ static void R_CheckPortableExtensions()
 			glConfig.uniformBufferOffsetAlignment = 256;
 		}
 	}
+#ifndef ANDROID
 	// RB: make GPU skinning optional for weak OpenGL drivers
 	glConfig.gpuSkinningAvailable = glConfig.uniformBufferAvailable && ( glConfig.driverType == GLDRV_OPENGL3X || glConfig.driverType == GLDRV_OPENGL32_CORE_PROFILE || glConfig.driverType == GLDRV_OPENGL32_COMPATIBILITY_PROFILE );
-	
+#endif
 	// ATI_separate_stencil / OpenGL 2.0 separate stencil
 #ifndef ANDROID
 	glConfig.twoSidedStencilAvailable = ( glConfig.glVersion >= 2.0f ) || GLEW_ATI_separate_stencil != 0;
@@ -481,7 +486,6 @@ static void R_CheckPortableExtensions()
 	// GREMEDY_string_marker
 	glConfig.gremedyStringMarkerAvailable = GLEW_GREMEDY_string_marker != 0;
 #else
-	glConfig.syncAvailable = HasExtension( "GL_ARB_sync");
 	glConfig.occlusionQueryAvailable = false;
 	glConfig.timerQueryAvailable = false;
 	glConfig.gremedyStringMarkerAvailable = false;
@@ -492,8 +496,10 @@ static void R_CheckPortableExtensions()
 #ifndef ANDROID
 	glConfig.framebufferObjectAvailable = GLEW_ARB_framebuffer_object != 0;
 #else
-	glConfig.framebufferObjectAvailable = HasExtension( "GL_ARB_framebuffer_object");
+    glConfig.framebufferObjectAvailable = true;
+    glConfig.syncAvailable = true;
 #endif
+
 	R_PrintExtensionStatus(glConfig.framebufferObjectAvailable, "GL_ARB_framebuffer_object");
 	if( glConfig.framebufferObjectAvailable )
 	{
@@ -646,13 +652,15 @@ void idRenderBackend::Init()
 	glConfig.shading_language_string = ( const char* )glGetString( GL_SHADING_LANGUAGE_VERSION );
 	//glConfig.extensions_string = ( const char* )glGetString( GL_EXTENSIONS );
 	//GL_CheckErrors();
-	
+
+#ifdef ANDROID //karin: force setup OpenGLES3.2
+    glConfig.version_string = "3.2";
+	glConfig.shading_language_string = "3.20";
+#endif
+
 	float glVersion = atof( idStr(glConfig.version_string).SubStr(0, 3) );
 	float glslVersion = atof( glConfig.shading_language_string );
-#if ANDROID
-	glesVersion = getGLESVersion();
-	antianalisingAvailable = isGLES32Version();
-#endif
+
 	idLib::Printf( "OpenGL Version   : %1.1f\n", glVersion );
 	idLib::Printf( "OpenGL Vendor    : %s\n", glConfig.vendor_string );
 	idLib::Printf( "OpenGL Renderer  : %s\n", glConfig.renderer_string );
@@ -971,9 +979,12 @@ may touch, including the editor.
 void idRenderBackend::GL_SetDefaultState()
 {
 	RENDERLOG_PRINTF( "--- GL_SetDefaultState ---\n" );
-	
+
+#ifndef ANDROID
 	glClearDepth( 1.0f );
-	
+#else
+    glClearDepthf( 1.0f );
+#endif
 	// make sure our GL state vector is set correctly
 	memset( &glcontext.tmu, 0, sizeof( glcontext.tmu ) );
 	currenttmu = 0;
@@ -1256,18 +1267,23 @@ void idRenderBackend::GL_State( uint64 stateBits, bool forceGlState )
 	//
 	// polygon offset
 	//
+
 	if( diff & GLS_POLYGON_OFFSET )
 	{
 		if( stateBits & GLS_POLYGON_OFFSET )
 		{
 			glPolygonOffset( polyOfsScale, polyOfsBias );
 			glEnable( GL_POLYGON_OFFSET_FILL );
+#ifndef ANDROID
 			glEnable( GL_POLYGON_OFFSET_LINE );
+#endif
 		}
 		else
 		{
 			glDisable( GL_POLYGON_OFFSET_FILL );
-			glDisable( GL_POLYGON_OFFSET_LINE );
+#ifndef ANDROID
+            glDisable( GL_POLYGON_OFFSET_LINE );
+#endif
 		}
 	}
 	
@@ -1616,6 +1632,7 @@ void idRenderBackend::CheckCVars()
 	if( r_useSeamlessCubeMap.IsModified() )
 	{
 		r_useSeamlessCubeMap.ClearModified();
+#ifndef ANDROID
 		if( glConfig.seamlessCubeMapAvailable )
 		{
 			if( r_useSeamlessCubeMap.GetBool() )
@@ -1627,6 +1644,7 @@ void idRenderBackend::CheckCVars()
 				glDisable( GL_TEXTURE_CUBE_MAP_SEAMLESS );
 			}
 		}
+#endif
 	}
 	
 	if( r_useSRGB.IsModified() )
@@ -1634,6 +1652,7 @@ void idRenderBackend::CheckCVars()
 		r_useSRGB.ClearModified();
 		if( glConfig.sRGBFramebufferAvailable )
 		{
+#ifndef ANDROID
 			if( r_useSRGB.GetBool() && r_useSRGB.GetInteger() != 3 )
 			{
 				glEnable( GL_FRAMEBUFFER_SRGB );
@@ -1642,6 +1661,7 @@ void idRenderBackend::CheckCVars()
 			{
 				glDisable( GL_FRAMEBUFFER_SRGB );
 			}
+#endif
 		}
 	}
 
@@ -2462,8 +2482,13 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 
 				GL_SelectTexture( 0 );
 				stereoRenderImages[0]->Bind();
+#ifdef ANDROID //karin: using GL_CLAMP_TO_EDGE instead of GL_CLAMP_TO_BORDER in OpenGLES
+                glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+				glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+#else
 				glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER );
 				glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER );
+#endif
 				DrawElementsWithCounters( &unitSquareSurface );
 				
 				idVec4	color2( stereoRender_warpCenterX.GetFloat(), stereoRender_warpCenterY.GetFloat(), stereoRender_warpParmZ.GetFloat(), stereoRender_warpParmW.GetFloat() );
@@ -2477,8 +2502,13 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 				
 				GL_SelectTexture( 0 );
 				stereoRenderImages[1]->Bind();
+#ifdef ANDROID //karin: using GL_CLAMP_TO_EDGE instead of GL_CLAMP_TO_BORDER in OpenGLES
+                glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+				glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+#else
 				glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER );
 				glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER );
+#endif
 				DrawElementsWithCounters( &unitSquareSurface );
 				break;
 			}

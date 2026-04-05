@@ -103,7 +103,7 @@ const uint32 NUM_FRAME_DATA	= 2;
 #if defined(USE_VULKAN)
 #include "../renderer/Vulkan/qvk.h"
 #elif defined(__ANDROID__)
-#include "GL/gl.h"
+#include <GLES3/gl32.h>
 #else
 // RB: replaced QGL with GLEW
 #include <GL/glew.h>

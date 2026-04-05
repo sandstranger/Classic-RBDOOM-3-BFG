@@ -832,10 +832,14 @@ const char* fragmentInsert =
 // RB begin
 const char* vertexInsert_GLSL_ES_3_00 =
 {
-	"#version 300 es\n"
+	"#version 320 es\n"
 	"#define PC\n"
-	"precision mediump float;\n"
-	
+    #ifdef ANDROID //karin: use high precision float in GLSL shader
+    "precision highp float;\n"
+    #else
+    "precision mediump float;\n"
+    #endif
+
 	//"#extension GL_ARB_gpu_shader5 : enable\n"
 	"\n"
 	"float saturate( float v ) { return clamp( v, 0.0, 1.0 ); }\n"
@@ -848,16 +852,32 @@ const char* vertexInsert_GLSL_ES_3_00 =
 
 const char* fragmentInsert_GLSL_ES_3_00 =
 {
-	"#version 300 es\n"
+	"#version 320 es\n"
 	"#define PC\n"
-	"precision mediump float;\n"
-	"precision lowp sampler2D;\n"
-	"precision lowp sampler2DShadow;\n"
-	"precision lowp sampler2DArray;\n"
-	"precision lowp sampler2DArrayShadow;\n"
-	"precision lowp samplerCube;\n"
-	"precision lowp samplerCubeShadow;\n"
-	"precision lowp sampler3D;\n"
+    #ifdef ANDROID //karin: use high precision float in GLSL shader
+    "precision highp float;\n"
+    #else
+    "precision mediump float;\n"
+    #endif
+    "precision lowp sampler2D;\n"
+    #ifdef ANDROID //karin: depth texture using highp precision
+    "precision highp sampler2DShadow;\n"
+    #else
+    "precision lowp sampler2DShadow;\n"
+    #endif
+    "precision lowp sampler2DArray;\n"
+    #ifdef ANDROID //karin: depth texture using highp precision
+    "precision highp sampler2DArrayShadow;\n"
+    #else
+    "precision lowp sampler2DArrayShadow;\n"
+    #endif
+    "precision lowp samplerCube;\n"
+    #ifdef ANDROID //karin: depth texture using highp precision
+    "precision highp samplerCubeShadow;\n"
+    #else
+    "precision lowp samplerCubeShadow;\n"
+    #endif
+    "precision lowp sampler3D;\n"
 	"\n"
 	"void clip( float v ) { if ( v < 0.0 ) { discard; } }\n"
 	"void clip( vec2 v ) { if ( any( lessThan( v, vec2( 0.0 ) ) ) ) { discard; } }\n"
@@ -1501,7 +1521,14 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
 	
 	// RB: tell shader debuggers what shader we look at
 	idStr filenameHint = "// filename " + idStr( name ) + "\n";
-	
+
+#ifdef ANDROID //karin: interaction shader using high precision float
+	idStr nameStr(name);
+	nameStr.StripPath();
+	const bool IsInteractionShader = nameStr.Find("interaction", false) == 0
+	                                    || nameStr.Find("ambient", false) == 0
+	 ;
+#endif
 	// RB: changed to allow multiple versions of GLSL
 	if( stage == SHADER_STAGE_VERTEX )
 	{
@@ -1510,8 +1537,21 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
 			case GLDRV_OPENGL_MESA:
 			{
 				out.ReAllocate( idStr::Length( vertexInsert_GLSL_ES_3_00 ) + in.Length() * 2, false );
+#ifdef ANDROID //karin: interaction shader using high precision float
+				idStr p(vertexInsert_GLSL_ES_3_00);
+				p.Insert(filenameHint, p.Find('\n') + 1); //karin: #version must on first line on mali GPU
+//				if(!IsInteractionShader && harm_r_useMediumPrecision.GetBool())
+//				{
+//					p.Replace("precision highp float;", "precision mediump float;");
+//					common->Printf("'%s' float precision: medium\n", nameStr.c_str());
+//				}
+//				else
+					common->Printf("'%s' float precision: high\n", nameStr.c_str());
+				out.Append(p);
+#else
 				out += filenameHint;
 				out += vertexInsert_GLSL_ES_3_00;
+#endif
 				break;
 			}
 			
@@ -1543,8 +1583,21 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
 			case GLDRV_OPENGL_MESA:
 			{
 				out.ReAllocate( idStr::Length( fragmentInsert_GLSL_ES_3_00 ) + in.Length() * 2, false );
+#ifdef ANDROID //karin: interaction shader using high precision float
+				idStr p(fragmentInsert_GLSL_ES_3_00);
+				p.Insert(filenameHint, p.Find('\n') + 1); //karin: #version must on first line on mali GPU
+		//		if(!IsInteractionShader && harm_r_useMediumPrecision.GetBool())
+		//		{
+		//			p.Replace("precision highp float;", "precision mediump float;");
+		//			common->Printf("'%s' float precision: medium\n", nameStr.c_str());
+		//		}
+		//		else
+					common->Printf("'%s' float precision: high\n", nameStr.c_str());
+				out.Append(p);
+#else
 				out += filenameHint;
 				out += fragmentInsert_GLSL_ES_3_00;
+#endif
 				break;
 			}
 			

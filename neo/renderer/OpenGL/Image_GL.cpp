@@ -27,9 +27,6 @@ If you have questions concerning this license or the applicable additional terms
 ===========================================================================
 */
 
-#if ANDROID
-#include <GLES3/gl32.h>
-#endif
 #include "precompiled.h"
 #pragma hdrstop
 /*
@@ -39,7 +36,17 @@ Contains the Image implementation for OpenGL.
 */
 
 #include "../RenderCommon.h"
+#include "renderer/DXT/DXTCodec.h"
 
+#define GL_COMPARE_R_TO_TEXTURE           0x884E
+#define GL_LUMINANCE16_ALPHA16			0x8048
+#define GL_INTENSITY				0x8049
+#define GL_INTENSITY4				0x804A
+#define GL_INTENSITY8				0x804B
+#define GL_INTENSITY12				0x804C
+#define GL_INTENSITY16				0x804D
+#define GL_TEXTURE_MAX_ANISOTROPY_EXT     0x84FE
+#define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
 /*
 ====================
 idImage::idImage
@@ -215,7 +222,11 @@ void idImage::CopyFramebufferLegacy(int x, int y, int imageWidth, int imageHeigh
 		else
 #endif
 		{
+#ifndef ANDROID
 			glCopyTexImage2D(target, 0, forceLDR ? GL_RGBA8 : GL_RGBA16F, x, y, imageWidth, imageHeight, 0);
+#else
+			glCopyTexImage2D(target, 0, GL_RGBA8, x, y, imageWidth, imageHeight, 0);
+#endif
 		}
 	}
 	else
@@ -329,16 +340,6 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight )
 }
 
 
-#if ANDROID
-static void swapBytesRGB565(void* data, size_t pixelCount) {
-    uint16_t* pixels = static_cast<uint16_t*>(data);
-    for (size_t i = 0; i < pixelCount; ++i) {
-        uint16_t pixel = pixels[i];
-        pixels[i] = (pixel >> 8) | (pixel << 8);
-    }
-}
-#endif
-
 /*
 ========================
 idImage::SubImageUpload
@@ -420,7 +421,34 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 #endif
 		if (IsCompressed())
 		{
+#ifdef ANDROID //karin: decompress texture to RGBA instead of glCompressedXXX on OpenGLES
+		idDxtDecoder decoder;
+		// Alloc more memory???
+		const int dxtWidth = Max(( width + 4 ) & ~4, ( width + 3 ) & ~3);
+		const int dxtHeight = Max(( height + 4 ) & ~4, ( height + 3 ) & ~3);
+		byte *dpic = ( byte* )Mem_Alloc(dxtWidth * dxtHeight * 4, TAG_TEMP );
+		if(dpic)
+		{
+			if(opts.format == FMT_DXT1)
+				decoder.DecompressImageDXT1((const byte *)pic, dpic, width, height);
+			else
+			{
+				if( opts.colorFormat == CFM_YCOCG_DXT5 )
+					decoder.DecompressYCoCgDXT5((const byte *)pic, dpic, width, height);
+				else if( opts.colorFormat == CFM_NORMAL_DXT5 )
+					decoder.DecompressNormalMapDXT5Renormalize((const byte *)pic, dpic, width, height);
+				else
+					decoder.DecompressImageDXT5((const byte *)pic, dpic, width, height);
+			}
+
+			glTexSubImage2D( uploadTarget, mipLevel, x, y, width, height, GL_RGBA /*dataFormat*/, GL_UNSIGNED_BYTE /*dataType*/, dpic );
+
+			// if( dpic != NULL )
+				Mem_Free( dpic );
+		}
+#else
 			glCompressedTexSubImage2D(uploadTarget, mipLevel, x, y, width, height, internalFormat, compressedSize, pic);
+#endif
 		}
 		else
 		{
@@ -438,26 +466,7 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 				glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 			}
 
-#if ANDROID
-            if (opts.format == FMT_RGB565)
-            {
-                size_t pixelCount = width * height;
-                size_t dataSize = pixelCount * 2;
-                void* tempData = malloc(dataSize);
-                if (tempData) {
-                    memcpy(tempData, pic, dataSize);
-                    swapBytesRGB565(tempData, pixelCount);
-                    glTexSubImage2D(uploadTarget, mipLevel, x, y, width, height,
-                                    dataFormat, dataType, tempData);
-                    free(tempData);
-                } else {
-                    glTexSubImage2D(uploadTarget, mipLevel, x, y, width, height,
-                                    dataFormat, dataType, pic);
-                }
-            }
-#else
 			glTexSubImage2D(uploadTarget, mipLevel, x, y, width, height, dataFormat, dataType, pic);
-#endif
 		}
 	}
 #ifndef ANDROID
@@ -699,18 +708,28 @@ void idImage::SetTexParametersLegacy() {
 		break;
 	case TR_CLAMP_TO_ZERO:
 	{
+#ifndef ANDROID
 		float color[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 		glTexParameterfv(target, GL_TEXTURE_BORDER_COLOR, color);
 		glTexParameterf(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
 		glTexParameterf(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+#else
+		glTexParameterf( target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+		glTexParameterf( target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+#endif
 	}
 	break;
 	case TR_CLAMP_TO_ZERO_ALPHA:
 	{
+#ifndef ANDROID
 		float color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		glTexParameterfv(target, GL_TEXTURE_BORDER_COLOR, color);
 		glTexParameterf(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
 		glTexParameterf(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+#else
+		glTexParameterf( target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+		glTexParameterf( target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+#endif
 	}
 	break;
 	case TR_CLAMP:
@@ -725,11 +744,7 @@ void idImage::SetTexParametersLegacy() {
 	if (opts.format == FMT_SHADOW_ARRAY)
 	{
 		//glTexParameteri( target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
-#ifndef ANDROID
 		glTexParameteri(target, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_R_TO_TEXTURE);
-#else
-        glTexParameteri(target, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
-#endif
 		glTexParameteri(target, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
 	}
 }
@@ -1065,13 +1080,16 @@ GLES 3.0+ supports shadow samplers
 
 void idImage::SetTexParameters()
 {
+#ifndef ANDROID
 	if (!glConfig.directStateAccess) {
 		SetTexParametersLegacy();
-		
 	}
 	else {
 		SetTextureParameters();
 	}
+#else
+    SetTexParametersLegacy();
+#endif
 }
 
 /*
@@ -1096,22 +1114,35 @@ void idImage::AllocImage()
 		case FMT_RGBA8:
 			//internalFormat = GL_RGBA8;
 			//internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) ) ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+#ifndef ANDROID
 			internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) ) ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+#else
+			internalFormat = GL_RGBA8;
+#endif
 			dataFormat = GL_RGBA;
 			dataType = GL_UNSIGNED_BYTE;
 			break;
 		case FMT_XRGB8:
+#ifndef ANDROID
 			internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) ) ? GL_SRGB8 : GL_RGB8;
+#else
+			internalFormat = GL_RGBA8;
+#endif
 			dataFormat = GL_RGBA;
 			dataType = GL_UNSIGNED_BYTE;
 			break;
 		case FMT_RGB565:
 			//internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) ) ? GL_SRGB : GL_RGB;
-			internalFormat = glConfig.directStateAccess? GL_RGB8 : GL_RGB;
+#ifndef ANDROID
+            internalFormat = glConfig.directStateAccess ? GL_RGB8 : GL_RGB;
+#else
+            internalFormat = GL_RGB565;
+#endif
 			dataFormat = GL_RGB;
 			dataType = GL_UNSIGNED_SHORT_5_6_5;
 			break;
 		case FMT_ALPHA:
+#ifndef ANDROID
 #if 1
 			if( ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) ) )
 			{
@@ -1119,6 +1150,7 @@ void idImage::AllocImage()
 				dataFormat = GL_RED;
 			}
 			else
+#endif
 #endif
 			{
 				internalFormat = GL_R8;
@@ -1142,19 +1174,30 @@ void idImage::AllocImage()
 			dataType = GL_UNSIGNED_BYTE;
 			break;
 		case FMT_DXT1:
+#ifndef ANDROID
 			internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) ) ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
-			//internalFormat =  GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
+#else
+			internalFormat = GL_RGBA;
+#endif
 			dataFormat = GL_RGBA;
 			dataType = GL_UNSIGNED_BYTE;
 			break;
 		case FMT_DXT5:
+#ifndef ANDROID
 			internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) && opts.colorFormat != CFM_YCOCG_DXT5 && opts.colorFormat != CFM_NORMAL_DXT5 ) ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+#else
+			internalFormat = GL_RGBA;
+#endif
 			//internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 			dataFormat = GL_RGBA;
 			dataType = GL_UNSIGNED_BYTE;
 			break;
 		case FMT_DEPTH:
+#ifndef ANDROID
 			internalFormat = glConfig.directStateAccess? GL_DEPTH_COMPONENT24 : GL_DEPTH_COMPONENT;
+#else
+			internalFormat = GL_DEPTH_COMPONENT24;
+#endif
 			dataFormat = GL_DEPTH_COMPONENT;
 			dataType = GL_UNSIGNED_BYTE;
 			break;
@@ -1168,7 +1211,11 @@ void idImage::AllocImage()
 		//SP End
 			
 		case FMT_SHADOW_ARRAY:
+#ifndef ANDROID
 			internalFormat = glConfig.directStateAccess? GL_DEPTH_COMPONENT24 : GL_DEPTH_COMPONENT;
+#else
+			internalFormat = GL_DEPTH_COMPONENT24;
+#endif
 			dataFormat = GL_DEPTH_COMPONENT;
 			dataType = GL_UNSIGNED_BYTE;
 			break;
@@ -1176,21 +1223,33 @@ void idImage::AllocImage()
 		case FMT_RGBA16F:
 			internalFormat = GL_RGBA16F;
 			dataFormat = GL_RGBA;
+#ifndef ANDROID
 			dataType = GL_UNSIGNED_BYTE;
+#else
+			dataType = GL_HALF_FLOAT;
+#endif
 			break;
 			
 		case FMT_RGBA32F:
 			internalFormat = GL_RGBA32F;
 			dataFormat = GL_RGBA;
+#ifndef ANDROID
 			dataType = GL_UNSIGNED_BYTE;
+#else
+			dataType = GL_FLOAT;
+#endif
 			break;
 			
 		case FMT_R32F:
 			internalFormat = GL_R32F;
 			dataFormat = GL_RED;
+#ifndef ANDROID
 			dataType = GL_UNSIGNED_BYTE;
+#else
+			dataType = GL_FLOAT;
+#endif
 			break;
-			
+
 		case FMT_X16:
 			internalFormat = GL_INTENSITY16;
 			dataFormat = GL_LUMINANCE;
@@ -1263,7 +1322,11 @@ void idImage::AllocImage()
 		assert(texnum != TEXTURE_NOT_LOADED);
 		glBindTexture(target, texnum);
 		if (opts.textureType == TT_2D_ARRAY) {
+#ifndef ANDROID
 			glTexImage3D(uploadTarget, 0, internalFormat, w, h, numSides, 0, dataFormat, GL_UNSIGNED_BYTE, NULL);
+#else
+			glTexImage3D( uploadTarget, 0, internalFormat, opts.width, opts.height, numSides, 0, dataFormat, internalFormat == GL_DEPTH_COMPONENT24 ? GL_UNSIGNED_INT : GL_FLOAT, NULL );
+#endif
 		}
         else if (opts.textureType == TT_2D_MULTISAMPLE) {
 #ifndef ANDROID
@@ -1273,8 +1336,7 @@ void idImage::AllocImage()
                     GL_TEXTURE_2D_MULTISAMPLE,
                     opts.samples,
                     internalFormat,
-                    w,
-                    h,
+					opts.width, opts.height,
                     GL_FALSE
             );
 #endif
@@ -1319,7 +1381,18 @@ void idImage::AllocImage()
 						{
 							HeapFree(GetProcessHeap(), 0, data);
 						}
+#elif ANDROID //karin: decompress texture instead of glCompressedXXX or ETC1 ETC2 RGBA4444 on OpenGLES
+						// alloc texture memory(compression)
+
+						compressedSize = w * h * 4;
+						byte* data = ( byte* )Mem_Alloc( compressedSize, TAG_TEMP );
+						glTexImage2D( uploadTarget + side, level, GL_RGBA /*internalFormat*/, w, h, 0, GL_RGBA /*dataFormat*/, GL_UNSIGNED_BYTE /*dataType*/, data );
+						if( data != NULL )
+						{
+							Mem_Free( data );
+						}
 #else
+
 						byte* data = (byte*)Mem_Alloc(compressedSize, TAG_TEMP);
 						glCompressedTexImage2D(uploadTarget + side, level, internalFormat, w, h, 0, compressedSize, data);
 						if (data != NULL)

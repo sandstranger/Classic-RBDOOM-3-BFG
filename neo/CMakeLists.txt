@@ -124,7 +124,6 @@ endif()
 
 if (ANDROID)
     add_definitions(-DUSE_FFMPEG)
-    include_directories(${NG_GL4ES_INCLUDE_DIR})
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
@@ -1739,10 +1738,7 @@ else()
 	list(APPEND RBDOOM3_SOURCES
 		${SYS_INCLUDES} ${SYS_SOURCES})
 
-if (NOT ANDROID)
 	find_package(OpenGL REQUIRED)
-	include_directories(${OPENGL_INCLUDE_DIRS})
-endif()
 
 	if(UNIX)
 		if(FFMPEG AND NOT ANDROID)
@@ -1960,14 +1956,15 @@ else()
 			idlib
 			external
 			-Wl,--no-whole-archive
-			${NG_GL4ES_LIBRARY}
 			${SDLx_LIBRARY}
 			${OPENAL_LIBRARY}
             ${ZLIB_LIBRARY}
             ${JPEG_LIBRARY}
 			${OpenSSL_LIBRARY}
     	    ${CMAKE_DL_LIBS}
-    	    log)
+    	    log
+    	    EGL
+            GLESv3)
 endif()
 		if (USE_OPENXR) 
 	        target_compile_options(openxr_loader PRIVATE "-Wno-error")

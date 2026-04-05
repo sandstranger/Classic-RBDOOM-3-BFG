@@ -5530,8 +5530,9 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 	//-------------------------------------------------
 	// render debug tools
 	//-------------------------------------------------
-	DBG_RenderDebugTools( drawSurfs, numDrawSurfs );
-	
+#ifndef ANDROID
+    DBG_RenderDebugTools( drawSurfs, numDrawSurfs );
+#endif
 #if !defined(USE_VULKAN)
 	// RB: convert back from HDR to LDR range
 	if( useHDR )
@@ -5772,9 +5773,9 @@ void idRenderBackend::DrawView( const void* data, const int stereoEye )
 	// RB end
 	
 	pc.c_surfaces += viewDef->numDrawSurfs;
-	
+#ifndef ANDROID
 	DBG_ShowOverdraw();
-	
+#endif
 	// render the scene
 	DrawViewInternal( cmd->viewDef, stereoEye );
 	

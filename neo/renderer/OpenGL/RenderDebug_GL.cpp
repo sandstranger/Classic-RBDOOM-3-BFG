@@ -3110,4 +3110,10 @@ void RB_ShutdownDebugTools()
 		rb_debugPolygons[i].winding.Clear();
 	}
 }
+#else
+#include "renderer/RenderCommon.h"
+
+void idRenderSystemLocal::OnFrame(){
+
+}
 #endif

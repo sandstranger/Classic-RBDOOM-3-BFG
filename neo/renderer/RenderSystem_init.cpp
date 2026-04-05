@@ -2494,9 +2494,10 @@ void idRenderSystemLocal::Shutdown()
 	
 	// free the vertex cache, which should have nothing allocated now
 	vertexCache.Shutdown();
-	
+
+#ifndef ANDROID
 	RB_ShutdownDebugTools();
-	
+#endif
 	delete guiModel;
 	
 	parallelJobManager->FreeJobList( frontEndJobList );

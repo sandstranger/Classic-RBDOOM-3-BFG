@@ -60,6 +60,11 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "posix_public.h"
 
+#if ANDROID
+#include <string>
+using namespace std;
+#endif
+
 #define					MAX_OSPATH 256
 #define					COMMAND_HISTORY 64
 
@@ -91,6 +96,11 @@ idCVar com_pid( "com_pid", "0", CVAR_INTEGER | CVAR_INIT | CVAR_SYSTEM, "process
 static int set_exit = 0;
 static char exit_spawn[ 1024 ];
 
+#if ANDROID
+extern string g_pathToHomeFolder;
+extern string g_pathToResourcesFolder;
+#endif
+
 /*
  ==============
  Sys_DefaultSavePath
@@ -98,6 +108,10 @@ static char exit_spawn[ 1024 ];
  */
 const char* Sys_DefaultSavePath()
 {
+#if ANDROID
+	return g_pathToHomeFolder.c_str();
+#endif
+
 #if defined(__APPLE__)
 	char* base_path = SDL_GetPrefPath( "", "DOOM-BFA" );
 	if( base_path )
@@ -119,6 +133,10 @@ const char* Sys_DefaultSavePath()
 
 const char* Sys_DefaultAppPath()
 {
+#if ANDROID
+	return g_pathToHomeFolder.c_str();
+#endif
+
 #if defined(__APPLE__)
 	return NULL;
 #else
@@ -529,6 +547,10 @@ void ShowSplash (void* data) {
 
 const char* Sys_DefaultBasePath()
 {
+#if ANDROID
+	basepath = Sys_EXEPath();
+	return g_pathToResourcesFolder.c_str();
+#endif
 	struct stat st;
 	idStr testbase;
 	basepath = Sys_EXEPath();

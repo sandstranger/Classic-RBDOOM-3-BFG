@@ -32,7 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 //#include "local.h"
 
 #include <pthread.h>
-#include <errno.h>
+#include <cerrno>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -46,12 +46,21 @@ static int cmdargc = 0;
 // DG end
 
 // RB begin
-#include <stdio.h> // needed for sysconf()
+#include <cstdio> // needed for sysconf()
 #include <cstring>
 // RB end
 
 #ifdef ID_MCHECK
 #include <mcheck.h>
+#endif
+
+#if ANDROID
+#include "SDL3/SDL_main.h"
+#include <string>
+using namespace std;
+
+string g_pathToHomeFolder;
+string g_pathToResourcesFolder;
 #endif
 
 /*
@@ -61,6 +70,7 @@ Sys_EXEPath
 */
 const char* Sys_EXEPath()
 {
+#ifndef ANDROID
 	static char	buf[ 1024 ];
 	idStr		linkpath;
 	int			len;
@@ -76,6 +86,9 @@ const char* Sys_EXEPath()
 		// RB end
 	}
 	return buf;
+#else
+	return g_pathToResourcesFolder.c_str();
+#endif
 }
 
 /*
@@ -556,7 +569,13 @@ void Sys_ReLaunch()
 main
 ===============
 */
+
+#ifdef ANDROID
+__attribute__((used)) __attribute__((visibility("default")))
+int SDL_main(int argc, const char **argv)
+#else
 int main( int argc, const char** argv )
+#endif
 {
 	// DG: needed for Sys_ReLaunch()
 	cmdargc = argc;
@@ -567,7 +586,11 @@ int main( int argc, const char** argv )
 	mcheck( abrt_func );
 	Sys_Printf( "memory consistency checking enabled\n" );
 #endif
-	
+
+#if ANDROID
+	chdir(g_pathToResourcesFolder.c_str());
+#endif
+
 	Posix_EarlyInit( );
 	
 	if( argc > 1 )
@@ -684,6 +707,40 @@ int Sys_Wcstrtombstr(char* Dest, const wchar_t* Source, size_t size) {
 
 int Sys_Mbstrtowcstr(wchar_t* Dest, const char* Source, size_t size) {
 	return mbstowcs(Dest, Source, size);
+}
+
+extern "C"{
+__attribute__((used)) __attribute__((visibility("default")))
+void onNativeResume() {
+}
+
+__attribute__((used)) __attribute__((visibility("default")))
+void onNativePause() {
+}
+
+__attribute__((used)) __attribute__((visibility("default")))
+bool needToShowScreenControls() {
+	return true;
+}
+
+__attribute__((used)) __attribute__((visibility("default")))
+bool needToInvokeMouseButtonsEvents(){
+	return true;
+}
+__attribute__((used)) __attribute__((visibility("default")))
+bool needToReInitGameControllers (){
+	return false;
+}
+
+__attribute__((used)) __attribute__((visibility("default")))
+void setPathsToResources (const char *pathToHomeFolder, const char *pathToResourcesFolder) {
+	g_pathToHomeFolder = pathToHomeFolder;
+	g_pathToResourcesFolder = pathToResourcesFolder;
+}
+
+__attribute__((used)) __attribute__((visibility("default")))
+void setPathToSDLControllerDB (const char *pathToSDLControllerDB){
+}
 }
 
 //GK: End

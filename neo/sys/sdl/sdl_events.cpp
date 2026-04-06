@@ -143,7 +143,11 @@ bool buttonStates[MAX_JOYSTICKS][K_LAST_KEY];	// For keeping track of button up/
 extern SDL_Window* window;
 
 
+#ifndef ANDROID
 #define	MAX_QUED_EVENTS		256
+#else
+#define	MAX_QUED_EVENTS		512
+#endif
 #define	MASK_QUED_EVENTS	( MAX_QUED_EVENTS - 1 )
 
 sysEvent_t	eventQue[MAX_QUED_EVENTS];
@@ -446,6 +450,35 @@ static int32 uniChar = 0;
 // 	}
 // }
 
+static void ResumeGame(){
+	if (cvarSystem == nullptr || soundSystem == nullptr){
+		return;
+	}
+	// unset modifier, in case alt-tab was used to leave window and ALT is still set
+	// as that can cause fullscreen-toggling when pressing enter...
+	SDL_Keymod currentmod = SDL_GetModState();
+	int newmod = SDL_KMOD_NONE;
+	if (currentmod & SDL_KMOD_CAPS) // preserve capslock
+		newmod |= SDL_KMOD_CAPS;
+
+	SDL_SetModState((SDL_Keymod)newmod);
+
+	// DG: un-pause the game when focus is gained, that also re-grabs the input
+	//     disabling the cursor is now done once in GLimp_Init() because it should always be disabled
+	soundSystem->SetMute(false);
+	cvarSystem->SetCVarBool("com_pausePlatform", false);
+	cvarSystem->SetCVarBool("com_pause", false);
+}
+
+static void PauseGame(){
+	if (cvarSystem == nullptr || soundSystem == nullptr){
+		return;
+	}
+	soundSystem->SetMute(true);
+	cvarSystem->SetCVarBool("com_pausePlatform", true);
+	cvarSystem->SetCVarBool("com_pause", true);
+}
+
 void SDL_Poll()
 {
 	sysEvent_t res = { };
@@ -505,40 +538,25 @@ void SDL_Poll()
 	{
 		switch (ev.type)
 		{
+#ifndef ANDROID
 			case SDL_EVENT_WINDOW_FOCUS_GAINED:
 			{
-				// unset modifier, in case alt-tab was used to leave window and ALT is still set
-				// as that can cause fullscreen-toggling when pressing enter...
-				SDL_Keymod currentmod = SDL_GetModState();
-				int newmod = SDL_KMOD_NONE;
-				if (currentmod & SDL_KMOD_CAPS) // preserve capslock
-					newmod |= SDL_KMOD_CAPS;
-
-				SDL_SetModState((SDL_Keymod)newmod);
-
-				// DG: un-pause the game when focus is gained, that also re-grabs the input
-				//     disabling the cursor is now done once in GLimp_Init() because it should always be disabled
-				soundSystem->SetMute(false);
-				cvarSystem->SetCVarBool("com_pausePlatform", false);
-				cvarSystem->SetCVarBool("com_pause", false);
-				// DG end
+				ResumeGame();
 				break;
 			}
 
 			case SDL_EVENT_WINDOW_FOCUS_LOST:
 				SDL_MinimizeWindow(window);
-				// DG: pause the game when focus is lost, that also un-grabs the input
-				soundSystem->SetMute(true);
-				cvarSystem->SetCVarBool("com_pausePlatform", true);
-				cvarSystem->SetCVarBool("com_pause", true);
+				PauseGame();
 				// DG end
 				break;
-
+#endif
 			case SDL_EVENT_WINDOW_MOUSE_LEAVE:
 				// mouse has left the window
 				Sys_QueEvent(SE_MOUSE_LEAVE, 0, 0, 0, NULL, 0);
 				break;
 
+#ifndef ANDROID
 				// DG: handle resizing and moving of window
 			case SDL_EVENT_WINDOW_RESIZED:
 			{
@@ -555,6 +573,7 @@ void SDL_Poll()
 
 			case SDL_EVENT_WINDOW_MOVED:
 			{
+
 				int x = ev.window.data1;
 				int y = ev.window.data2;
 				r_windowX.SetInteger(x);
@@ -562,6 +581,7 @@ void SDL_Poll()
 				cmdSystem->BufferCommandText(CMD_EXEC_APPEND, "vid_restart\n");
 				break;
 			}
+#endif
 			case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
 			{
 				com_emergencyexit.SetBool(true);
@@ -571,6 +591,7 @@ void SDL_Poll()
 			}
 			continue;
 		case SDL_EVENT_KEY_DOWN:
+#ifndef ANDROID
 			if (ev.key.key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT) > 0)
 			{
 				// DG: go to fullscreen on current display, instead of always first display
@@ -597,6 +618,7 @@ void SDL_Poll()
 				cmdSystem->BufferCommandText(CMD_EXEC_APPEND, "vid_restart\n");
 				continue; // handle next event
 			}
+#endif
 
 			// DG: ctrl-g to un-grab mouse - yeah, left ctrl shoots, then just use right ctrl :)
 			if (ev.key.key == SDLK_G && (ev.key.mod & SDL_KMOD_CTRL) > 0)
@@ -695,11 +717,6 @@ void SDL_Poll()
 
 			//return res;
 			break;
-
-		case SDL_EVENT_FINGER_DOWN:
-		case SDL_EVENT_FINGER_UP:
-		case SDL_EVENT_FINGER_MOTION:
-			continue; // Avoid 'unknown event' spam when testing with touchpad by skipping this
 
 		case SDL_EVENT_MOUSE_WHEEL:
 			//res.evType = SE_KEY;
@@ -1314,3 +1331,17 @@ void JoystickSamplingThread(void* data){
 		SDL_Delay(4);
 	}
 }
+
+#if ANDROID
+extern "C"{
+__attribute__((used)) __attribute__((visibility("default")))
+void onNativeResume() {
+	ResumeGame();
+}
+
+__attribute__((used)) __attribute__((visibility("default")))
+void onNativePause() {
+	PauseGame();
+}
+}
+#endif

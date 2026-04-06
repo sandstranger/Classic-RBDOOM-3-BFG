@@ -156,16 +156,14 @@ bool GLimp_Init( glimpParms_t parms )
 	// DG: make window resizable
 #ifndef ANDROID
 	Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_MOUSE_GRABBED;
-#else
-	Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_FULLSCREEN;
-#endif
 	// DG end
 
-#ifndef ANDROID
 	if( parms.fullScreen )
 		flags |= SDL_WINDOW_FULLSCREEN;
 	else if (parms.fullScreen < 0)
 		flags |= SDL_WINDOW_BORDERLESS;
+#else
+	Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_FULLSCREEN;
 #endif
 
 	int colorbits = 24;

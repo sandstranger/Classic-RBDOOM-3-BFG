@@ -131,6 +131,7 @@ Posix_InitSigs
 */
 void Posix_InitSigs( )
 {
+#ifndef ANDROID
 	struct sigaction action;
 	int i;
 	
@@ -164,6 +165,7 @@ void Posix_InitSigs( )
 	// then SIGTTIN or SIGTOU could be emitted, if not caught, turns into a SIGSTP
 	signal( SIGTTIN, SIG_IGN );
 	signal( SIGTTOU, SIG_IGN );
+#endif
 }
 
 /*

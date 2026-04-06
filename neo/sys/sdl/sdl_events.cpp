@@ -159,6 +159,10 @@ int			eventTail = 0;
 #include "sdl2_scancode_mappings.h"
 #include <map>
 
+#if ANDROID
+static void ReconnectGamepads();
+#endif
+
 static int SDLScanCodeToKeyNum( SDL_Scancode sc )
 {
 	int idx = int( sc );
@@ -260,8 +264,10 @@ void Sys_InitInput()
 	memset( &joystick_polls, 0, sizeof(joystick_polls) );
 	
 	in_keyboard.SetModified();
+#ifndef ANDROID
 	//GK: Insted of initializing only once the joystick run a thread that will allow the dynamic connection/disconnection of it
 	joyThread = SDL_CreateThread((SDL_ThreadFunction)JoystickSamplingThread,"Joystic",NULL);
+#endif
 	//GK:End
 	while(eventHead - eventTail < MAX_QUED_EVENTS) {
 		Sys_GenerateEvents();
@@ -279,8 +285,9 @@ void Sys_ShutdownInput()
 	kbd_polls.Clear();
 	mouse_polls.Clear();
 	joyThreadKill = true;
+#ifndef ANDROID
 	SDL_WaitThread(joyThread, NULL);
-	
+#endif
 	for (int i = 0; i < MAX_JOYSTICKS; i++) {
 		memset( &buttonStates[i], 0, sizeof( buttonStates[i] ) );
 		memset( &joyAxis[i], 0, sizeof( joyAxis[i] ) );
@@ -783,12 +790,23 @@ void SDL_Poll()
 			Sys_QueEvent(res.evType, res.evValue, res.evValue2, 0, NULL, 0);
 			break;
 			// GameController
+#if ANDROID
+       case SDL_EVENT_JOYSTICK_ADDED:
+       case SDL_EVENT_JOYSTICK_REMOVED:
+       case SDL_EVENT_GAMEPAD_ADDED:
+       case SDL_EVENT_GAMEPAD_REMAPPED:
+       case SDL_EVENT_GAMEPAD_REMOVED:
+           ReconnectGamepads();
+           break;
+#endif
 		case SDL_EVENT_JOYSTICK_AXIS_MOTION:
 		case SDL_EVENT_JOYSTICK_HAT_MOTION:
 		case SDL_EVENT_JOYSTICK_BUTTON_DOWN:
 		case SDL_EVENT_JOYSTICK_BUTTON_UP:
+#ifndef ANDROID
 		case SDL_EVENT_JOYSTICK_ADDED:
 		case SDL_EVENT_JOYSTICK_REMOVED:
+#endif
 		case SDL_EVENT_JOYSTICK_UPDATE_COMPLETE:
 		case SDL_EVENT_GAMEPAD_UPDATE_COMPLETE:
 			// Avoid 'unknown event' spam
@@ -822,11 +840,12 @@ void SDL_Poll()
 			current[reverseControllerMap[ev.gbutton.which]].buttons[ev.gbutton.button] = (ev.gbutton.down == true ? 1 : 0);
 			break;
 		//GK: Steam Deck Hack: For some reason Steam Deck spams these two events
+#ifndef ANDROID
 		case SDL_EVENT_GAMEPAD_ADDED:
 		case SDL_EVENT_GAMEPAD_REMAPPED:
 		case SDL_EVENT_KEYMAP_CHANGED:
 			continue;
-				
+#endif
 			case SDL_EVENT_QUIT:
 				PushConsoleEvent( "quit" );
 				Sys_QueEvent(no_more_events.evType, no_more_events.evValue, no_more_events.evValue2, no_more_events.evPtrLength, no_more_events.evPtr, 0); // don't handle next event, just quit.
@@ -1212,6 +1231,69 @@ static int	threadPacket[256];
 static int	threadCount;
 static int	defaultAvailable;
 
+#if ANDROID
+static int virtualControllerIndex = -1;
+
+static void CloseGamepads(){
+	for (uint32 i = 0; i < MAX_JOYSTICKS; i++) {
+		const auto controller = gcontroller[i];
+		if (controller == nullptr){
+			continue;
+		}
+		const auto controllerId = SDL_GetGamepadID (controller);
+		if (!SDL_IsJoystickVirtual(controllerId)){
+			SDL_CloseGamepad( controller );
+			gcontroller[i] = nullptr;
+		}
+	}
+}
+
+static void ReconnectGamepads() {
+    SDL_UpdateGamepads();
+    if (virtualControllerIndex != -1) {
+		CloseGamepads();
+        return;
+    }
+    int count = 0;
+    SDL_JoystickID *controllers = SDL_GetGamepads(&count);
+    for (uint32 i = 0; i < count; i++) {
+        if (SDL_IsJoystickVirtual(controllers[i])) {
+            virtualControllerIndex = i;
+            break;
+        }
+    }
+
+	CloseGamepads();
+
+    if (virtualControllerIndex != -1) {
+        gcontroller[0] = SDL_OpenGamepad(controllers[virtualControllerIndex]);
+        return;
+    }
+
+	int emptyControllerId = -1;
+
+	for (uint32 i = 0; i < MAX_JOYSTICKS; i++) {
+		if (gcontroller[i] == nullptr){
+			emptyControllerId = i;
+			break;
+		}
+	}
+
+	if (emptyControllerId!=-1){
+		for (uint32 i = 0; i < count; i++) {
+			auto controller = SDL_OpenGamepad(i);
+			if (controller != nullptr){
+				gcontroller[emptyControllerId] = controller;
+                if (session->GetSignInManager().GetMasterLocalUser() != NULL) {
+                    idLocalUserWin *user = dynamic_cast<idLocalUserWin *>(session->GetSignInManager().GetMasterLocalUser());
+                    user->SetInputDevice(i);
+                }
+				break;
+			}
+		}
+	}
+}
+#endif
 
 void JoystickSamplingThread(void* data){
 

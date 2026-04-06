@@ -368,7 +368,6 @@ bool GLimp_Init( glimpParms_t parms )
 		 doom_icon.bytes_per_pixel * 8, doom_icon.bytes_per_pixel * doom_icon.width, rmask, gmask, bmask, amask);
 #endif
 
-#ifndef ANDROID
 		 SDL_SetWindowIcon(window, surf);
 #endif
 		 glConfig.swapControlTearAvailable = SDL_GL_SetSwapInterval(-1);

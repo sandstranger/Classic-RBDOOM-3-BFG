@@ -1297,7 +1297,7 @@ void JoystickSamplingThread(void* data){
 					}
 					reverseControllerMap.insert(std::make_pair(controllers[i], i));
 					nextCheck[0]=0; //GK: Like the Windows thread constantly checking for the controller state once it's connected
-					idLib::Printf("Controller Connected: %s\n", SDL_GetGamepadName(controller));
+//					idLib::Printf("Controller Connected: %s\n", SDL_GetGamepadName(controller));
 					gcontroller[i]=controller;
 					
 					if (!haptic[i]){ //GK: Initialize Haptic Device ONLY ONCE after the controller is connected
@@ -1307,24 +1307,24 @@ void JoystickSamplingThread(void* data){
 							haptic[i] = SDL_OpenHaptic(haptics[i]); //GK: Make sure it mounted to the right controller
 							if(haptic[i]){
 								if(SDL_InitHapticRumble( haptic[i] ) < 0){
-									common->Printf("Failed to initialize rumble support with Error: %s\n", SDL_GetError());
+							//		common->Printf("Failed to initialize rumble support with Error: %s\n", SDL_GetError());
 								}
 							if ((SDL_GetHapticFeatures(haptic[i]) & SDL_HAPTIC_LEFTRIGHT)==0){ //GK: Also make sure it has support for left-right motor rumble
 								SDL_CloseHaptic(haptic[i]);
 								haptic[i] = NULL;
-								common->Printf("Failed to find rumble effect\n");
+							//	common->Printf("Failed to find rumble effect\n");
 							}
-							idLib::Printf("Found haptic Device %d\n",SDL_GetMaxHapticEffects(haptic[i]));
+//							idLib::Printf("Found haptic Device %d\n",SDL_GetMaxHapticEffects(haptic[i]));
 							} else {
-								common->Printf("Error Opening Haptic Device: %s\n", SDL_GetError());
+							//	common->Printf("Error Opening Haptic Device: %s\n", SDL_GetError());
 							}
 						
 						} else {
-							common->Printf("Failed to find Haptic devices with error: %s\n", SDL_GetError());
+						//	common->Printf("Failed to find Haptic devices with error: %s\n", SDL_GetError());
 						}
 					}
 				} else {
-					common->Warning("Error Initializing controller: %s\n", SDL_GetError());
+//					common->Warning("Error Initializing controller: %s\n", SDL_GetError());
 				}
 			} else {
 				alreadyConnected = true;

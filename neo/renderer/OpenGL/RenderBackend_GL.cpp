@@ -1696,6 +1696,11 @@ void idRenderBackend::CheckCVars()
 	// RB: turn off shadow mapping for OpenGL drivers that are too slow
 	switch( glConfig.driverType )
 	{
+#if ANDROID
+		case GLDRV_OPENGL_MESA:
+			r_fullscreen.SetInteger( 1 );
+			break;
+#endif
 		case GLDRV_OPENGL_ES2:
 		case GLDRV_OPENGL_ES3:
 			//case GLDRV_OPENGL_MESA:

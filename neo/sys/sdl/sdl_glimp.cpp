@@ -361,6 +361,7 @@ bool GLimp_Init( glimpParms_t parms )
     	amask = (doom_icon.bytes_per_pixel == 3) ? 0 : 0xff000000;
 		format = SDL_PIXELFORMAT_ABGR8888;
 #endif
+#ifndef ANDROID
 		SDL_Surface* surf = SDL_CreateSurfaceFrom(doom_icon.width, doom_icon.height, format, (void*)doom_icon.pixel_data, doom_icon.width * 4);
 #if 0
 		SDL_Surface* surf = SDL_CreateRGBSurfaceFrom((void*)doom_icon.pixel_data, doom_icon.width, doom_icon.height,
@@ -394,8 +395,10 @@ bool GLimp_Init( glimpParms_t parms )
 		glConfig.isStereoPixelFormat = parms.stereo;
 		glConfig.multisamples = parms.multiSamples;
 		glConfig.pixelAspect = 1.0f;	// FIXME: some monitor modes may be distorted
+#ifndef ANDROID
 		// should side-by-side stereo modes be consider aspect 0.5?
 		swf_cursorDPI.SetFloat(SDL_GetWindowDisplayScale(window));
+#endif
 		// RB end
 		
 		break;
@@ -617,8 +620,9 @@ bool GLimp_SetScreenParms( glimpParms_t parms )
 	SDL_GetWindowSizeInPixels( window, &glConfig.nativeScreenWidth, &glConfig.nativeScreenHeight );
 	glConfig.displayFrequency = parms.displayHz;
 	glConfig.multisamples = parms.multiSamples;
+#ifndef ANDROID
 	swf_cursorDPI.SetFloat(SDL_GetWindowDisplayScale(window));
-	
+#endif
 	return true;
 }
 

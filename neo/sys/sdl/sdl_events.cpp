@@ -1250,6 +1250,7 @@ static void CloseGamepads(){
 
 static void ReconnectGamepads() {
     SDL_UpdateGamepads();
+    reverseControllerMap.clear();
     if (virtualControllerIndex != -1) {
 		CloseGamepads();
         return;
@@ -1281,12 +1282,14 @@ static void ReconnectGamepads() {
 
 	if (emptyControllerId!=-1){
 		for (uint32 i = 0; i < count; i++) {
-			auto controller = SDL_OpenGamepad(i);
+            const auto controllerId = controllers[i];
+            const auto controller = SDL_OpenGamepad(controllerId);
 			if (controller != nullptr){
 				gcontroller[emptyControllerId] = controller;
+                reverseControllerMap.insert(std::make_pair(controllerId, i));
                 if (session->GetSignInManager().GetMasterLocalUser() != NULL) {
                     idLocalUserWin *user = dynamic_cast<idLocalUserWin *>(session->GetSignInManager().GetMasterLocalUser());
-                    user->SetInputDevice(i);
+                    user->SetInputDevice(controllerId);
                 }
 				break;
 			}

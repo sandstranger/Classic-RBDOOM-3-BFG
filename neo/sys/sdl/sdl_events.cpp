@@ -46,6 +46,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "../common/localuser.h"
 #include "../../framework/Common.h"
 
+static bool gameStarted = false;
+
 static const int MAX_JOYSTICKS = 4; //GK: This thing still works only on PC right? Apparently no
 
 // DG: those are needed for moving/resizing windows
@@ -451,7 +453,7 @@ static int32 uniChar = 0;
 // }
 
 static void ResumeGame(){
-	if (cvarSystem == nullptr || soundSystem == nullptr){
+	if (cvarSystem == nullptr || soundSystem == nullptr || !gameStarted){
 		return;
 	}
 	// unset modifier, in case alt-tab was used to leave window and ALT is still set
@@ -471,7 +473,7 @@ static void ResumeGame(){
 }
 
 static void PauseGame(){
-	if (cvarSystem == nullptr || soundSystem == nullptr){
+	if (cvarSystem == nullptr || soundSystem == nullptr || !gameStarted){
 		return;
 	}
 	soundSystem->SetMute(true);
@@ -481,6 +483,7 @@ static void PauseGame(){
 
 void SDL_Poll()
 {
+	gameStarted = true;
 	sysEvent_t res = { };
 	
 	SDL_Event ev;
@@ -556,9 +559,12 @@ void SDL_Poll()
 				Sys_QueEvent(SE_MOUSE_LEAVE, 0, 0, 0, NULL, 0);
 				break;
 
-#ifndef ANDROID
+#ifndef ANDROID				
 				// DG: handle resizing and moving of window
 			case SDL_EVENT_WINDOW_RESIZED:
+#else
+			case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+#endif
 			{
 				int w = ev.window.data1;
 				int h = ev.window.data2;
@@ -570,7 +576,7 @@ void SDL_Poll()
 				cmdSystem->BufferCommandText(CMD_EXEC_APPEND, "vid_restart\n");
 				break;
 			}
-
+#ifndef ANDROID
 			case SDL_EVENT_WINDOW_MOVED:
 			{
 

@@ -38,7 +38,6 @@ Contains the Image implementation for OpenGL.
 #include "../RenderCommon.h"
 #include "renderer/DXT/DXTCodec.h"
 
-#define GL_COMPARE_R_TO_TEXTURE           0x884E
 #define GL_LUMINANCE16_ALPHA16			0x8048
 #define GL_INTENSITY				0x8049
 #define GL_INTENSITY4				0x804A
@@ -747,7 +746,11 @@ void idImage::SetTexParametersLegacy() {
 	if (opts.format == FMT_SHADOW_ARRAY)
 	{
 		//glTexParameteri( target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+#ifndef ANDROID
 		glTexParameteri(target, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_R_TO_TEXTURE);
+#else
+        glTexParameteri(target, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+#endif
 		glTexParameteri(target, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
 	}
 }

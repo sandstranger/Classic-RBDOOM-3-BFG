@@ -122,13 +122,16 @@ idMenuHandler::GetPlatform
 */
 int idMenuHandler::GetPlatform( bool realPlatform )
 {
-
+#if ANDROID
+	return 0;
+#else
 	if( ((!common->IsNewDOOM3() && platform == 2) || (common->IsNewDOOM3() && platform == 5)) && idLib::joystick && !realPlatform )
 	{
 		return 0;
 	}
 	
 	return platform;
+#endif
 }
 
 /*

@@ -100,7 +100,7 @@ idCVar net_inviteOnly( "net_inviteOnly", "1", CVAR_BOOL | CVAR_ARCHIVE, "whether
 idCVar com_pause( "com_pause", "0", CVAR_BOOL | CVAR_SYSTEM | CVAR_NOCHEAT, "set to 1 to pause game, to 0 to unpause again" );
 // DG end
 //GK: com_game_mode
-idCVar com_game_mode("com_game_mode", "0", CVAR_INTEGER | CVAR_SYSTEM | CVAR_NOCHEAT, "Set which game to run 1: DOOM 2:DOOM2 3:DOOM3");
+idCVar com_game_mode("com_game_mode", "3", CVAR_INTEGER | CVAR_SYSTEM | CVAR_NOCHEAT, "Set which game to run 1: DOOM 2:DOOM2 3:DOOM3");
 //GK: add cvar to pause the platform bump
 idCVar com_pausePlatform("com_pausePlatform", "0", CVAR_BOOL | CVAR_SYSTEM | CVAR_NOCHEAT, "set to 1 to pause the platform bump, to 0 to unpause again");
 
@@ -143,7 +143,7 @@ GetClassicData_t GetClassicData = &GetClassicDoomData;
 
 // RB: defaulted this to 1 because we don't have a sound for the intro .bik video
 //GK : defaulted back to 0 the audio plays again (not perfectly but it will do for now)
-idCVar com_skipIntroVideos( "com_skipIntroVideos", "0", CVAR_BOOL , "skips intro videos" );
+idCVar com_skipIntroVideos( "com_skipIntroVideos", "1", CVAR_BOOL , "skips intro videos" );
 
 // For doom classic
 struct Globals;

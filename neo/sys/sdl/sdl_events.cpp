@@ -724,6 +724,11 @@ void SDL_Poll()
 			//return res;
 			break;
 
+		case SDL_EVENT_FINGER_DOWN:
+		case SDL_EVENT_FINGER_UP:
+		case SDL_EVENT_FINGER_MOTION:
+			continue; // Avoid 'unknown event' spam when testing with touchpad by skipping this
+
 		case SDL_EVENT_MOUSE_WHEEL:
 			//res.evType = SE_KEY;
 

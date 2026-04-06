@@ -284,7 +284,7 @@ bool idMenuScreen_Shell_PressStart::HandleAction( idWidgetAction& action, const 
 			}
 			
 			// RB begin
-#if defined(USE_DOOMCLASSIC)
+#if defined(USE_DOOMCLASSIC) && !ANDROID
 			if( itemList->GetMoveToIndex() == 0 )
 			{
 				common->SwitchToGame( DOOM_CLASSIC );
@@ -303,7 +303,7 @@ bool idMenuScreen_Shell_PressStart::HandleAction( idWidgetAction& action, const 
 						menuData->SetNextScreen( SHELL_AREA_ROOT, MENU_TRANSITION_SIMPLE );
 					}
 				}
-#if defined(USE_DOOMCLASSIC)
+#if defined(USE_DOOMCLASSIC) && !ANDROID
 				else if( itemList->GetMoveToIndex() == 2 )
 				{
 					common->SwitchToGame( DOOM2_CLASSIC );

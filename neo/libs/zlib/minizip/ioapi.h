@@ -44,10 +44,6 @@
 
 #endif
 
-#if ANDROID
-#define USE_FILE32API
-#endif
-
 #include <stdio.h>
 #include <stdlib.h>
 #include "../zlib.h"

@@ -89,17 +89,14 @@ unsigned int glesVersion = GLES32_VERSION;
 static std::string glExtensions;
 bool antianalisingAvailable = false;
 
-static int isGLES32Version (){
-    return glesVersion == GLES32_VERSION;
-}
 static bool HasExtension (const std::string &extension){
 	return glExtensions.contains(extension);
 }
-#else
-static int isGLES32Version (){
-    return return true;
-}
 #endif
+
+static int isGLES32Version (){
+    return true;
+}
 
 /*
 ==================

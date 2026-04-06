@@ -293,13 +293,16 @@ void idImage::CopyFramebufferDSA(int x, int y, int imageWidth, int imageHeight, 
 
 void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight, bool forceLDR )
 {
+#ifndef ANDROID
 	if (!glConfig.directStateAccess) {
 		CopyFramebufferLegacy(x, y, imageWidth, imageHeight, forceLDR);
 	}
 	else {
 		CopyFramebufferDSA(x, y, imageWidth, imageHeight, forceLDR);
 	}
-
+#else
+    CopyFramebufferLegacy(x, y, imageWidth, imageHeight, forceLDR);
+#endif
 	tr.backend.pc.c_copyFrameBuffer++;
 }
 
@@ -1199,7 +1202,11 @@ void idImage::AllocImage()
 			internalFormat = GL_DEPTH_COMPONENT24;
 #endif
 			dataFormat = GL_DEPTH_COMPONENT;
+#ifndef ANDROID
 			dataType = GL_UNSIGNED_BYTE;
+#else
+            dataType = GL_UNSIGNED_INT;
+#endif
 			break;
 
 		//SP Begin
@@ -1217,7 +1224,11 @@ void idImage::AllocImage()
 			internalFormat = GL_DEPTH_COMPONENT24;
 #endif
 			dataFormat = GL_DEPTH_COMPONENT;
+#ifndef ANDROID
 			dataType = GL_UNSIGNED_BYTE;
+#else
+            dataType = GL_UNSIGNED_INT;
+#endif
 			break;
 			
 		case FMT_RGBA16F:

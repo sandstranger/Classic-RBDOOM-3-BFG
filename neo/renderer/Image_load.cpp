@@ -378,19 +378,43 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 		}
 	}
 	const bimageFile_t& header = im.GetFileHeader();
-	
-	if( ( fileSystem->InProductionMode() && binaryFileTime != FILE_NOT_FOUND_TIMESTAMP ) || ( ( binaryFileTime != FILE_NOT_FOUND_TIMESTAMP )
-			&& ( header.colorFormat == opts.colorFormat )
-			&& ( header.format == opts.format )
-			&& ( header.textureType == opts.textureType )
-																							) )
+
+	if ((fileSystem->InProductionMode() && binaryFileTime != FILE_NOT_FOUND_TIMESTAMP) ||
+		((binaryFileTime != FILE_NOT_FOUND_TIMESTAMP)
+		 && (header.colorFormat == opts.colorFormat)
+		 #if defined(__APPLE__) && defined(USE_VULKAN)
+		 // SRS - Handle case when image read is cached and RGB565 format conversion is already done
+			&& ( header.format == opts.format || ( header.format == FMT_RGB565 && opts.format == FMT_RGBA8 ) )
+		 #elif defined(ANDROID) //karin: force convert light texture format from RGB565 to RGBA8888
+		 && ( header.format == opts.format || ( header.format == FMT_RGB565 && opts.format == FMT_RGBA8 ) )
+		 #else
+		 && (header.format == opts.format)
+		 #endif
+		 && (header.textureType == opts.textureType)
+		))
 	{
+#if defined(__APPLE__) && defined(USE_VULKAN)
+		// SRS - Set in-memory format to FMT_RGBA8 for converted FMT_RGB565 image
+		if( header.format == FMT_RGB565 )
+		{
+			opts.format = FMT_RGBA8;
+		}
+		else
+#elif defined(ANDROID) //karin: force convert light texture format from RGB565 to RGBA8888
+		if( header.format == FMT_RGB565 )
+		{
+			opts.format = FMT_RGBA8;
+		}
+		else
+#endif
+		{
+			opts.format = ( textureFormat_t )header.format;
+		}
 		actuallyloaded = true;
 		opts.width = header.width;
 		opts.height = header.height;
 		opts.numLevels = header.numLevels;
 		opts.colorFormat = ( textureColor_t )header.colorFormat;
-		opts.format = ( textureFormat_t )header.format;
 		opts.textureType = ( textureType_t )header.textureType;
 		if( cvarSystem->GetCVarBool( "fs_buildresources" ) )
 		{

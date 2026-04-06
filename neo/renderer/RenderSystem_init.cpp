@@ -155,11 +155,7 @@ idCVar r_clear( "r_clear", "2", CVAR_RENDERER, "force screen clear every frame, 
 
 idCVar r_offsetFactor( "r_offsetfactor", "0", CVAR_RENDERER | CVAR_FLOAT, "polygon offset parameter" );
 // RB: offset factor was 0, and units were -600 which caused some very ugly polygon offsets on Android so I reverted the values to the same as in Q3A
-#if defined(__ANDROID__)
-idCVar r_offsetUnits( "r_offsetunits", "-2", CVAR_RENDERER | CVAR_FLOAT, "polygon offset parameter" );
-#else
 idCVar r_offsetUnits( "r_offsetunits", "-600", CVAR_RENDERER | CVAR_FLOAT, "polygon offset parameter" );
-#endif
 // RB end
 
 idCVar r_selfShadow("r_selfShadow", "0", CVAR_RENDERER | CVAR_FLOAT, "allows all materials to cast shadows on themselves");
@@ -2771,7 +2767,11 @@ idRenderSystemLocal::IsStereoScopicRenderingSupported
 */
 bool idRenderSystemLocal::IsStereoScopicRenderingSupported() const
 {
-	return true;
+#ifdef ANDROID //karin: not support stereo glDrawBuffer(GL_LEFT*, GL_RIGHT*)
+    return false;
+#else
+    return true;
+#endif
 }
 
 /*

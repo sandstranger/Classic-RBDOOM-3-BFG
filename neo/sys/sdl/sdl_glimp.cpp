@@ -163,7 +163,7 @@ bool GLimp_Init( glimpParms_t parms )
 	else if (parms.fullScreen < 0)
 		flags |= SDL_WINDOW_BORDERLESS;
 #else
-	Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_FULLSCREEN;
+	Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MOUSE_GRABBED;
 #endif
 
 	int colorbits = 24;
@@ -707,6 +707,8 @@ GLExtension_t GLimp_ExtensionPointer(const char *name) {
 }
 */
 
+static bool grapLastState = false;
+
 void GLimp_GrabInput( int flags )
 {
 	bool grab = flags & GRAB_ENABLE;
@@ -725,13 +727,14 @@ void GLimp_GrabInput( int flags )
 		common->Warning( "GLimp_GrabInput called without window" );
 		return;
 	}
-	
-	// DG: disabling the cursor is now done once in GLimp_Init() because it should always be disabled
-	
-	// DG: check for GRAB_ENABLE instead of GRAB_HIDECURSOR because we always wanna hide it
-	SDL_SetWindowRelativeMouseMode(window, flags & GRAB_ENABLE ? true : false );
-	SDL_SetWindowMouseGrab( window, grab ? true : false );
 
+	if (grapLastState != grab){
+		grapLastState = grab;
+		// DG: disabling the cursor is now done once in GLimp_Init() because it should always be disabled
+		// DG: check for GRAB_ENABLE instead of GRAB_HIDECURSOR because we always wanna hide it
+		SDL_SetWindowRelativeMouseMode(window, flags & GRAB_ENABLE ? true : false );
+		SDL_SetWindowMouseGrab( window, grab ? true : false );
+	}
 }
 
 /*

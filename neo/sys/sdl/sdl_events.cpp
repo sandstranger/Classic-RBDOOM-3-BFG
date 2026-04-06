@@ -148,7 +148,7 @@ extern SDL_Window* window;
 #ifndef ANDROID
 #define	MAX_QUED_EVENTS		256
 #else
-#define	MAX_QUED_EVENTS		512
+#define	MAX_QUED_EVENTS		512 * 2
 #endif
 #define	MASK_QUED_EVENTS	( MAX_QUED_EVENTS - 1 )
 
@@ -1348,6 +1348,11 @@ void onNativeResume() {
 __attribute__((used)) __attribute__((visibility("default")))
 void onNativePause() {
 	PauseGame();
+}
+
+__attribute__((used)) __attribute__((visibility("default")))
+bool needToInvokeMouseButtonsEvents(){
+	return game && game->Shell_IsActive();
 }
 }
 #endif

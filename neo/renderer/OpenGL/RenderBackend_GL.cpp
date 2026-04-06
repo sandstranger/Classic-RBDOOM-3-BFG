@@ -32,7 +32,6 @@ If you have questions concerning this license or the applicable additional terms
 #include "precompiled.h"
 #if ANDROID
 #include <string>
-#include <GLES/gl.h>
 
 #endif
 #pragma hdrstop
@@ -41,8 +40,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "../RenderBackend.h"
 #include "../../framework/Common_local.h"
 #if ANDROID
-#include "GLES3/gl32.h"
 
+#define GL_MULTISAMPLE                    0x809D
 #define GL_TEXTURE_MAX_ANISOTROPY_EXT     0x84FE
 #define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
 #endif
@@ -605,7 +604,6 @@ static void R_CheckPortableExtensions()
 // RB end
 
 idStr extensions_string;
-
 /*
 ==================
 R_InitOpenGL

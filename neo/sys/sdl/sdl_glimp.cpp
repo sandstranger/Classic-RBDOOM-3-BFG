@@ -154,7 +154,11 @@ bool GLimp_Init( glimpParms_t parms )
 	
 	GLimp_PreInit(); // DG: make sure SDL is initialized
 	// DG: make window resizable
+#ifndef ANDROID
 	Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_MOUSE_GRABBED;
+#else
+	Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_FULLSCREEN;
+#endif
 	// DG end
 
 #ifndef ANDROID
@@ -162,8 +166,6 @@ bool GLimp_Init( glimpParms_t parms )
 		flags |= SDL_WINDOW_FULLSCREEN;
 	else if (parms.fullScreen < 0)
 		flags |= SDL_WINDOW_BORDERLESS;
-#else
-	flags |= SDL_WINDOW_FULLSCREEN;
 #endif
 
 	int colorbits = 24;
@@ -280,17 +282,9 @@ bool GLimp_Init( glimpParms_t parms )
 			glConfig.driverType = GLDRV_OPENGL32_CORE_PROFILE;
 		}
 #else
-		extern unsigned int glesVersion;
-		int minorGlesVersionToUse = 2;
-
-		if (glesVersion == 310) {
-			minorGlesVersionToUse = 1;
-		} else if (glesVersion == 300) {
-			minorGlesVersionToUse = 0;
-		}
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,  minorGlesVersionToUse );
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,  2 );
 		glConfig.driverType = GLDRV_OPENGL_MESA;
 #endif
 #ifndef ANDROID
@@ -430,6 +424,11 @@ bool GLimp_Init( glimpParms_t parms )
 	{
 		common->Printf( "Using GLEW %s\n", glewGetString( GLEW_VERSION ) );
 	}
+#else
+    if (!gladLoadGLES2Loader((GLADloadproc)SDL_GL_GetProcAddress)) {
+        common->FatalError("Failed to initialize GLAD\n");
+        return false;
+    }
 #endif
 	
 	// DG: disable cursor, we have two cursors in menu (because mouse isn't grabbed in menu)

@@ -386,6 +386,13 @@ else (ZLIB_FOUND)
     set(ZLIB_LIBRARY "" )
 endif (ZLIB_FOUND)
 
+	find_package(OpenGL REQUIRED)
+
+if (ANDROID)
+    include_directories("${CMAKE_CURRENT_SOURCE_DIR}/libs/glad/include")
+endif()
+
+    set (GLAD_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/glad/src/glad.c")
 
 find_package(Stb)
 
@@ -1738,8 +1745,6 @@ else()
 	list(APPEND RBDOOM3_SOURCES
 		${SYS_INCLUDES} ${SYS_SOURCES})
 
-	find_package(OpenGL REQUIRED)
-
 	if(UNIX)
 		if(FFMPEG AND NOT ANDROID)
 		if (USE_VCPKG)
@@ -1914,7 +1919,7 @@ endif()
 if (NOT ANDROID)
 	add_executable(DoomBFA WIN32 ${RBDOOM3_SOURCES} ${RBDOOM3_INCLUDES})
 else()
-	add_library(DoomBFA SHARED ${RBDOOM3_SOURCES} ${RBDOOM3_INCLUDES})
+	add_library(DoomBFA SHARED ${RBDOOM3_SOURCES} ${RBDOOM3_INCLUDES} ${GLAD_SOURCES})
 endif()
 	if (USE_PRECOMPILED_HEADERS)
 		# make sure precompiled header is created before executable is compiled
@@ -1962,9 +1967,7 @@ else()
             ${JPEG_LIBRARY}
 			${OpenSSL_LIBRARY}
     	    ${CMAKE_DL_LIBS}
-    	    log
-    	    EGL
-            GLESv3)
+    	    log)
 endif()
 		if (USE_OPENXR) 
 	        target_compile_options(openxr_loader PRIVATE "-Wno-error")

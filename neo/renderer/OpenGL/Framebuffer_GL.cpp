@@ -31,9 +31,6 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../RenderCommon.h"
 #include "../Framebuffer.h"
-#if ANDROID
-#include "GLES3/gl32.h"
-#endif
 
 #if !defined(USE_VULKAN)
 

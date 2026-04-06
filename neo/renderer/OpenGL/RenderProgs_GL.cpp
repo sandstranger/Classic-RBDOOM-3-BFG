@@ -32,9 +32,6 @@ If you have questions concerning this license or the applicable additional terms
 #include "precompiled.h"
 
 #include "../RenderCommon.h"
-#if ANDROID
-#include "GLES3/gl32.h"
-#endif
 
 idCVar r_displayGLSLCompilerMessages( "r_displayGLSLCompilerMessages", "1", CVAR_BOOL | CVAR_ARCHIVE, "Show info messages the GPU driver outputs when compiling the shaders" );
 idCVar r_alwaysExportGLSL( "r_alwaysExportGLSL", "0", CVAR_BOOL, "" );

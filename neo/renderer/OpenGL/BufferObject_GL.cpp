@@ -30,9 +30,6 @@ If you have questions concerning this license or the applicable additional terms
 #pragma hdrstop
 #include "precompiled.h"
 #include "../RenderCommon.h"
-#if ANDROID
-#include "GLES3/gl32.h"
-#endif
 
 extern idCVar r_showBuffers;
 

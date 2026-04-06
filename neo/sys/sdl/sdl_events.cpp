@@ -1211,6 +1211,9 @@ static int	defaultAvailable;
 void JoystickSamplingThread(void* data){
 
 	static int prevTime = 0;
+#if ANDROID
+	static int virtualControllerIndex = -1;
+#endif
 	static uint64 nextCheck[MAX_JOYSTICKS] = { 0 };
 	const uint64 waitTime = 5000;// 000; // poll every 5 seconds to see if a controller was connected
 	while(1){
@@ -1253,6 +1256,34 @@ void JoystickSamplingThread(void* data){
 		reverseControllerMap.clear();
 		count = 4; //GK: Clean time
 	}
+
+#if ANDROID
+	if (virtualControllerIndex == -1) {
+		for (uint32 i = 0; i < count; i++) {
+			if (SDL_IsJoystickVirtual(controllers[i])) {
+				virtualControllerIndex = i;
+				break;
+			}
+		}
+
+		if (virtualControllerIndex != -1) {
+			for (uint32 i = 0; i < count; i++) {
+				if (gcontroller[i]!= nullptr){
+					SDL_CloseGamepad( gcontroller[i] );
+					gcontroller[i] = nullptr;
+				}
+			}
+			gcontroller[0] = SDL_OpenGamepad(controllers[virtualControllerIndex]);
+		}
+
+        if (virtualControllerIndex != -1){
+            SDL_free(haptics);
+            SDL_free(controllers);
+            return;
+        }
+	}
+#endif
+
 	for( uint32 i = 0; i < count; i++ )
 	{
 		if( SDL_IsGamepad( controllers[i] ) )

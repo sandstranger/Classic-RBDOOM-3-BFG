@@ -99,6 +99,7 @@ static char exit_spawn[ 1024 ];
 #if ANDROID
 extern string g_pathToHomeFolder;
 extern string g_pathToResourcesFolder;
+extern string g_pathToSDLControllerDB;
 #endif
 
 /*
@@ -923,12 +924,38 @@ Posix_EarlyInit/Posix_LateInit is better
 void Sys_Init() {
 #ifndef ANDROID
 	SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
+#else
+#ifdef ANDROID
+	SDL_SetHint(SDL_HINT_TV_REMOTE_AS_JOYSTICK, "0");
+	SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "1");
+	SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT_CORRELATE_XINPUT, "1");
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3, "1");
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAMDECK, "1");
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_WII, "1");
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_COMBINE_JOY_CONS, "1");
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "1");
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4, "1");
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SWITCH, "1");
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_JOY_CONS, "1");
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM, "1");
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_GAMECUBE, "1");
+	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5, "1");
 #endif
-	if( !SDL_WasInit( SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC) )
+
+#endif
+	if( !SDL_WasInit( SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC) )
 	{
-		if( !SDL_Init( SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC ) )
+		if( !SDL_Init( SDL_INIT_VIDEO | SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC ) )
 			common->FatalError( "Error while initializing SDL: %s", SDL_GetError() );
 	}
+
+#if ANDROID
+    if (SDL_AddGamepadMappingsFromFile(g_pathToSDLControllerDB.c_str()) < 0) {
+        SDL_Log("Couldn't load mappings: %s\n", SDL_GetError());
+    } else{
+        SDL_Log("Custom controller db was loaded from: %s", g_pathToSDLControllerDB.c_str());
+    }
+#endif
  }
 
 /*

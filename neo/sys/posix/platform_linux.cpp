@@ -65,6 +65,7 @@ using namespace std;
 
 string g_pathToHomeFolder;
 string g_pathToResourcesFolder;
+string g_pathToSDLControllerDB;
 #endif
 
 /*
@@ -732,6 +733,7 @@ void setPathsToResources (const char *pathToHomeFolder, const char *pathToResour
 
 __attribute__((used)) __attribute__((visibility("default")))
 void setPathToSDLControllerDB (const char *pathToSDLControllerDB){
+	g_pathToSDLControllerDB = pathToSDLControllerDB;
 }
 
 __attribute__((used)) __attribute__((visibility("default")))

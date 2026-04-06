@@ -73,6 +73,7 @@ Posix_ClearSigs
 */
 void Posix_ClearSigs( )
 {
+#ifndef ANDROID
 	struct sigaction action;
 	int i;
 	
@@ -90,6 +91,7 @@ void Posix_ClearSigs( )
 		}
 		i++;
 	}
+#endif
 }
 
 /*

@@ -86,10 +86,6 @@ glContext_t glcontext;
 static std::string glExtensions;
 static bool g_enableDXTSupport = false;
 
-static bool HasExtension (const std::string &extension){
-	return glExtensions.contains(extension);
-}
-
 extern "C"{
 __attribute__((used)) __attribute__((visibility("default")))
 void updateEnableDXTSupportState(const bool enableDXTSupport) {
@@ -513,7 +509,7 @@ static void R_CheckPortableExtensions()
 #ifndef ANDROID
 	glConfig.framebufferBlitAvailable = GLEW_EXT_framebuffer_blit != 0;
 #else
-	glConfig.framebufferBlitAvailable = HasExtension( "GL_ARB_framebuffer_object");
+	glConfig.framebufferBlitAvailable = glExtensions.contains( "GL_EXT_framebuffer_blit");
 #endif
 	R_PrintExtensionStatus(glConfig.framebufferBlitAvailable, "GL_EXT_framebuffer_blit");
 	

@@ -509,7 +509,8 @@ static void R_CheckPortableExtensions()
 #ifndef ANDROID
 	glConfig.framebufferBlitAvailable = GLEW_EXT_framebuffer_blit != 0;
 #else
-	glConfig.framebufferBlitAvailable = glExtensions.contains( "GL_EXT_framebuffer_blit");
+	glConfig.framebufferBlitAvailable = glExtensions.contains( "GL_EXT_framebuffer_blit") ||
+			glExtensions.contains("GL_NV_framebuffer_blit");
 #endif
 	R_PrintExtensionStatus(glConfig.framebufferBlitAvailable, "GL_EXT_framebuffer_blit");
 	

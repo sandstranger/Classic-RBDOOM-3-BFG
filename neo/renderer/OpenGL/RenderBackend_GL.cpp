@@ -86,7 +86,6 @@ glContext_t glcontext;
 const unsigned int GLES32_VERSION = 320;
 unsigned int glesVersion = GLES32_VERSION;
 static std::string glExtensions;
-bool antianalisingAvailable = false;
 
 static bool HasExtension (const std::string &extension){
 	return glExtensions.contains(extension);
@@ -331,8 +330,9 @@ static void R_CheckPortableExtensions()
 	glConfig.anisotropicFilterAvailable = GLEW_EXT_texture_filter_anisotropic != 0;
 #else
     glConfig.multitextureAvailable = true;
-	glConfig.textureCompressionAvailable = false;
-	glConfig.anisotropicFilterAvailable = false;
+	glConfig.textureCompressionAvailable = glExtensions.contains("GL_EXT_texture_compression_s3tc");
+	glConfig.anisotropicFilterAvailable = glExtensions.contains("GL_EXT_texture_filter_anisotropic") &&
+			glTexStorage2DMultisample!=nullptr;
 #endif
 	if( glConfig.anisotropicFilterAvailable )
 	{
@@ -1663,7 +1663,7 @@ void idRenderBackend::CheckCVars()
 #ifndef ANDROID
 	if( r_antiAliasing.IsModified() )
 #else
-	if( r_antiAliasing.IsModified() && antianalisingAvailable)
+	if( r_antiAliasing.IsModified() && glConfig.anisotropicFilterAvailable)
 #endif
 	{
 		switch( r_antiAliasing.GetInteger() )
@@ -1699,7 +1699,7 @@ void idRenderBackend::CheckCVars()
 #if ANDROID
 		case GLDRV_OPENGL_MESA:
 			r_fullscreen.SetInteger( 1 );
-			break;
+            break;
 #endif
 		case GLDRV_OPENGL_ES2:
 		case GLDRV_OPENGL_ES3:

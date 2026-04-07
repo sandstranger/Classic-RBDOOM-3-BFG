@@ -745,8 +745,7 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 	usage = usageParm;
 	cubeFiles = CF_2D;
 #if ANDROID
-	extern bool antianalisingAvailable;
-	opts.textureType = ( samples > SAMPLE_1 && antianalisingAvailable ) ? TT_2D_MULTISAMPLE : TT_2D;
+	opts.textureType = ( samples > SAMPLE_1 && glConfig.anisotropicFilterAvailable ) ? TT_2D_MULTISAMPLE : TT_2D;
 #else
 	opts.textureType = ( samples > SAMPLE_1 ) ? TT_2D_MULTISAMPLE : TT_2D;
 #endif
@@ -754,7 +753,7 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 	opts.height = height;
 	opts.numLevels = 0;
 #if ANDROID
-	opts.samples = antianalisingAvailable ? samples : SAMPLE_1;
+	opts.samples = glConfig.anisotropicFilterAvailable ? samples : SAMPLE_1;
 #else
 	opts.samples = samples;
 #endif

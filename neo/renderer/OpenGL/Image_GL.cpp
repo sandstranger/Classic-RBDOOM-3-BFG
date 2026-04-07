@@ -424,29 +424,34 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 		if (IsCompressed())
 		{
 #ifdef ANDROID //karin: decompress texture to RGBA instead of glCompressedXXX on OpenGLES
-		idDxtDecoder decoder;
-		// Alloc more memory???
-		const int dxtWidth = Max(( width + 4 ) & ~4, ( width + 3 ) & ~3);
-		const int dxtHeight = Max(( height + 4 ) & ~4, ( height + 3 ) & ~3);
-		byte *dpic = ( byte* )Mem_Alloc(dxtWidth * dxtHeight * 4, TAG_TEMP );
-		if(dpic)
-		{
-			if(opts.format == FMT_DXT1)
-				decoder.DecompressImageDXT1((const byte *)pic, dpic, width, height);
-			else
-			{
-				if( opts.colorFormat == CFM_YCOCG_DXT5 )
-					decoder.DecompressYCoCgDXT5((const byte *)pic, dpic, width, height);
-				else if( opts.colorFormat == CFM_NORMAL_DXT5 )
-					decoder.DecompressNormalMapDXT5Renormalize((const byte *)pic, dpic, width, height);
-				else
-					decoder.DecompressImageDXT5((const byte *)pic, dpic, width, height);
-			}
+			if (!glConfig.textureCompressionAvailable) {
+				idDxtDecoder decoder;
+				// Alloc more memory???
+				const int dxtWidth = Max((width + 4) & ~4, (width + 3) & ~3);
+				const int dxtHeight = Max((height + 4) & ~4, (height + 3) & ~3);
+				byte *dpic = (byte *) Mem_Alloc(dxtWidth * dxtHeight * 4, TAG_TEMP);
+				if (dpic) {
+					if (opts.format == FMT_DXT1)
+						decoder.DecompressImageDXT1((const byte *) pic, dpic, width, height);
+					else {
+						if (opts.colorFormat == CFM_YCOCG_DXT5)
+							decoder.DecompressYCoCgDXT5((const byte *) pic, dpic, width, height);
+						else if (opts.colorFormat == CFM_NORMAL_DXT5)
+							decoder.DecompressNormalMapDXT5Renormalize((const byte *) pic, dpic,
+																	   width,
+																	   height);
+						else
+							decoder.DecompressImageDXT5((const byte *) pic, dpic, width, height);
+					}
 
-			glTexSubImage2D( uploadTarget, mipLevel, x, y, width, height, GL_RGBA /*dataFormat*/, GL_UNSIGNED_BYTE /*dataType*/, dpic );
-
-			// if( dpic != NULL )
-				Mem_Free( dpic );
+					glTexSubImage2D(uploadTarget, mipLevel, x, y, width, height,
+									GL_RGBA /*dataFormat*/,
+									GL_UNSIGNED_BYTE /*dataType*/, dpic);
+					Mem_Free(dpic);
+				} else {
+					glCompressedTexSubImage2D(uploadTarget, mipLevel, x, y, width, height,
+											  internalFormat, compressedSize, pic);
+				}
 		}
 #else
 			glCompressedTexSubImage2D(uploadTarget, mipLevel, x, y, width, height, internalFormat, compressedSize, pic);
@@ -1183,7 +1188,7 @@ void idImage::AllocImage()
 #ifndef ANDROID
 			internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) ) ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 #else
-			internalFormat = GL_RGBA;
+			internalFormat = !glConfig.textureCompressionAvailable ? GL_RGBA : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 #endif
 			dataFormat = GL_RGBA;
 			dataType = GL_UNSIGNED_BYTE;
@@ -1192,7 +1197,7 @@ void idImage::AllocImage()
 #ifndef ANDROID
 			internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) && opts.colorFormat != CFM_YCOCG_DXT5 && opts.colorFormat != CFM_NORMAL_DXT5 ) ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 #else
-			internalFormat = GL_RGBA;
+			internalFormat = !glConfig.textureCompressionAvailable ? GL_RGBA : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 #endif
 			//internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 			dataFormat = GL_RGBA;
@@ -1346,13 +1351,15 @@ void idImage::AllocImage()
 #ifndef ANDROID
 			glTexImage2DMultisample(uploadTarget, opts.samples, internalFormat, w, h, GL_FALSE);
 #else
-            glTexStorage2DMultisample(
-                    GL_TEXTURE_2D_MULTISAMPLE,
-                    opts.samples,
-                    internalFormat,
-					opts.width, opts.height,
-                    GL_FALSE
-            );
+			if (glTexStorage2DMultisample!= nullptr) {
+				glTexStorage2DMultisample(
+						GL_TEXTURE_2D_MULTISAMPLE,
+						opts.samples,
+						internalFormat,
+						w, h,
+						GL_FALSE
+				);
+			}
 #endif
 		}else{
 			if (opts.textureType == TT_CUBIC)
@@ -1397,13 +1404,22 @@ void idImage::AllocImage()
 						}
 #elif ANDROID //karin: decompress texture instead of glCompressedXXX or ETC1 ETC2 RGBA4444 on OpenGLES
 						// alloc texture memory(compression)
-
-						compressedSize = w * h * 4;
-						byte* data = ( byte* )Mem_Alloc( compressedSize, TAG_TEMP );
-						glTexImage2D( uploadTarget + side, level, GL_RGBA /*internalFormat*/, w, h, 0, GL_RGBA /*dataFormat*/, GL_UNSIGNED_BYTE /*dataType*/, data );
-						if( data != NULL )
-						{
-							Mem_Free( data );
+						if (!glConfig.textureCompressionAvailable) {
+							compressedSize = w * h * 4;
+							byte *data = (byte *) Mem_Alloc(compressedSize, TAG_TEMP);
+							glTexImage2D(uploadTarget + side, level, GL_RGBA /*internalFormat*/, w,
+										 h, 0, GL_RGBA /*dataFormat*/,
+										 GL_UNSIGNED_BYTE /*dataType*/, data);
+							if (data != nullptr) {
+								Mem_Free(data);
+							}
+						} else{
+							byte* data = (byte*)Mem_Alloc(compressedSize, TAG_TEMP);
+							glCompressedTexImage2D(uploadTarget + side, level, internalFormat, w, h, 0, compressedSize, data);
+							if (data != nullptr)
+							{
+								Mem_Free(data);
+							}
 						}
 #else
 

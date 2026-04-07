@@ -300,7 +300,7 @@ static void R_CheckPortableExtensions()
 		}
 	}
 #else
-    glConfig.driverType = GLDRV_OPENGL_MESA;
+    glConfig.driverType = GLDRV_OPENGL_ES3;
 #endif
 	// RB end
 
@@ -652,8 +652,8 @@ void idRenderBackend::Init()
 	//GL_CheckErrors();
 
 #ifdef ANDROID //karin: force setup OpenGLES3.2
-    glConfig.version_string = "3.2";
-	glConfig.shading_language_string = "3.20";
+    glConfig.version_string = "4.1";
+	glConfig.shading_language_string = "4.10";
 #endif
 
 	float glVersion = atof( idStr(glConfig.version_string).SubStr(0, 3) );
@@ -1706,8 +1706,7 @@ void idRenderBackend::CheckCVars()
 #endif
 		case GLDRV_OPENGL_ES2:
 		case GLDRV_OPENGL_ES3:
-			//case GLDRV_OPENGL_MESA:
-			r_useShadowMapping.SetInteger( 0 );
+			r_fullscreen.SetInteger( 1 );
 			break;
 			
 		default:

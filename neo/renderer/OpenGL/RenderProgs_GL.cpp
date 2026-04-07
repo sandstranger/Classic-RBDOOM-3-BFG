@@ -32,10 +32,31 @@ If you have questions concerning this license or the applicable additional terms
 #include "precompiled.h"
 
 #include "../RenderCommon.h"
+#if ANDROID
+#include "SDL3/SDL.h"
+#include <string>
+#endif
 
 idCVar r_displayGLSLCompilerMessages( "r_displayGLSLCompilerMessages", "1", CVAR_BOOL | CVAR_ARCHIVE, "Show info messages the GPU driver outputs when compiling the shaders" );
 idCVar r_alwaysExportGLSL( "r_alwaysExportGLSL", "0", CVAR_BOOL, "" );
 idCVar r_oldGLSLVersion("r_oldGLSLVersion", "0.0", CVAR_FLOAT | CVAR_ARCHIVE | CVAR_RENDERER | CVAR_ROM, "Internal use ONLY: Stores and checks if the version of GLSL is changed");
+
+#if ANDROID
+typedef char* (*GLSLtoGLSLES_t)(const char*, GLenum, unsigned int, unsigned int, int*);
+static GLSLtoGLSLES_t GLSLtoGLSLES_c = nullptr;
+
+static std::string ConvertShaderToGLES(const char* shaderSource, rpStage_t shaderStage)
+{
+	if (GLSLtoGLSLES_c == nullptr) {
+		GLSLtoGLSLES_c =(GLSLtoGLSLES_t) SDL_LoadFunction(SDL_LoadObject("libng_gl4es.so"), "GLSLtoGLSLES_c");
+	}
+    const unsigned int targetGLESVersion = 320;
+    const unsigned int sourceGLVersion = 410;
+    const auto stage = shaderStage == SHADER_STAGE_VERTEX ? GL_VERTEX_SHADER : GL_FRAGMENT_SHADER;
+    int returnCode = 0;
+    return GLSLtoGLSLES_c(shaderSource, stage,targetGLESVersion,sourceGLVersion,&returnCode);
+}
+#endif
 
 /*
 ========================
@@ -228,8 +249,10 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 		idStr hlslCode( hlslFileBuffer );
 		idStr programHLSL = StripDeadCode( hlslCode, inFile, compileMacros, shader.builtin );
 		programGLSL = ConvertCG2GLSL( programHLSL, inFile.c_str(), shader.stage, programUniforms, false, hasGPUSkinning );
-		
-		fileSystem->WriteFile( outFileHLSL, programHLSL.c_str(), programHLSL.Length(), "fs_savepath" );
+#if ANDROID
+        programGLSL = ConvertShaderToGLES(programGLSL.c_str(), shader.stage).c_str();
+#endif
+        fileSystem->WriteFile( outFileHLSL, programHLSL.c_str(), programHLSL.Length(), "fs_savepath" );
 		fileSystem->WriteFile( outFileGLSL, programGLSL.c_str(), programGLSL.Length(), "fs_savepath" );
 		fileSystem->WriteFile( outFileUniforms, programUniforms.c_str(), programUniforms.Length(), "fs_savepath" );
 	}

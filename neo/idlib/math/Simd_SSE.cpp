@@ -40,7 +40,11 @@ If you have questions concerning this license or the applicable additional terms
 
 #if defined(USE_INTRINSICS)
 
-#include <xmmintrin.h>
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+    #include "sse2neon.h"
+#else
+    #include <xmmintrin.h>
+#endif
 
 #ifndef M_PI // DG: this is already defined in math.h
 #define M_PI	3.14159265358979323846f

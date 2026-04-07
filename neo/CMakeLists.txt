@@ -81,6 +81,7 @@ else()
 	set(CPU_ARCH x86)
 endif()
 
+
 set(CPU_TYPE "" CACHE STRING "When set, passes this string as CPU-ID which will be embedded into the binary.")
 
 set(UWP_PATH "" CACHE STRING "When set, passes this string as the game's base search folder.")
@@ -89,10 +90,14 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "(x86|i686|amd64|x86_64)")
 	set(CPU_OPTIMIZATION "-mmmx -msse -msse2" CACHE STRING "Which CPU specific optimitations should be used beside the compiler's default?")
 endif()
 
+if (NOT ANDROID)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86|i686|amd64|x86_64)")
     set(USE_INTRINSICS ON)
 else()
     set(USE_INTRINSICS OFF)
+endif()
+else()
+    set(USE_INTRINSICS ON)
 endif()
 
 option (MAKE_DLL "Make game.dll solution" ON)
@@ -390,6 +395,7 @@ endif (ZLIB_FOUND)
 
 if (ANDROID)
     include_directories("${CMAKE_CURRENT_SOURCE_DIR}/libs/glad/include")
+    include_directories("${CMAKE_CURRENT_SOURCE_DIR}/libs/sse2neon")
 endif()
 
     set (GLAD_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/glad/src/glad.c")

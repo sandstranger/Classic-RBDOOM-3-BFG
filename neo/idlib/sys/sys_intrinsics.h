@@ -30,7 +30,11 @@ If you have questions concerning this license or the applicable additional terms
 #define __SYS_INTRIINSICS_H__
 
 #if defined(USE_INTRINSICS)
-#include <emmintrin.h>
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+    #include "sse2neon.h"
+#else
+	#include <emmintrin.h>
+#endif
 #endif
 
 #if defined(_MSC_VER) && defined(__clang__)

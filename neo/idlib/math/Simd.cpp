@@ -78,21 +78,28 @@ void idSIMD::InitProcessor( const char* module, bool forceGeneric )
 		if( processor == NULL )
 		{
 #if defined(USE_INTRINSICS)
-			if( ( cpuid & CPUID_MMX ) && ( cpuid & CPUID_SSE ) )
-			{
-				processor = new( TAG_MATH ) idSIMD_SSE;
-			}
-			else
-#endif
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+			processor = new( TAG_MATH ) idSIMD_SSE;
+            idLib::common->Printf( "USING SIMD" );
+#elif defined(__SSE2__)
+    		if( ( cpuid & CPUID_MMX ) && ( cpuid & CPUID_SSE ) )
+	        {
+        		processor = new( TAG_MATH ) idSIMD_SSE;
+   		    }
+           else
 			{
 				processor = generic;
 			}
+#endif
+#else
+            processor = generic;
+#endif
 			processor->cpuid = cpuid;
 		}
 		
 		newProcessor = processor;
 	}
-	
+
 	if( newProcessor != SIMDProcessor )
 	{
 		SIMDProcessor = newProcessor;
@@ -1388,8 +1395,12 @@ void idSIMD::Test_f( const idCmdArgs& args )
 		idStr argString = args.Args();
 		
 		argString.Replace( " ", "" );
-		
+
+
 #if defined(USE_INTRINSICS)
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+		p_simd = new( TAG_MATH ) idSIMD_SSE;
+#else
 		if( idStr::Icmp( argString, "SSE" ) == 0 )
 		{
 			if( !( cpuid & CPUID_MMX ) || !( cpuid & CPUID_SSE ) )
@@ -1400,6 +1411,7 @@ void idSIMD::Test_f( const idCmdArgs& args )
 			p_simd = new( TAG_MATH ) idSIMD_SSE;
 		}
 		else
+#endif
 #endif
 		{
 			common->Printf( "invalid argument, use: MMX, 3DNow, SSE, SSE2, SSE3, AltiVec\n" );

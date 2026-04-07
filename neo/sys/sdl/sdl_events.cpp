@@ -709,7 +709,11 @@ void SDL_Poll()
 		case SDL_EVENT_MOUSE_MOTION:
 			// DG: return event with absolute mouse-coordinates when in menu
 			// to fix cursor problems in windowed mode
+#ifndef ANDROID
 			if (game && game->Shell_IsActive())
+#else
+			if (game && (game->Shell_IsActive() || game->IsPDAOpen()))
+#endif
 			{
 				// res.evType = SE_MOUSE_ABSOLUTE;
 				// res.evValue = ev.motion.x;
@@ -1473,7 +1477,7 @@ void onNativePause() {
 
 __attribute__((used)) __attribute__((visibility("default")))
 bool needToInvokeMouseButtonsEvents(){
-	return game && game->Shell_IsActive();
+	return game!= nullptr && (game->Shell_IsActive() || game->IsPDAOpen());
 }
 }
 #endif

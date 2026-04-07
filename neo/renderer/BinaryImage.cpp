@@ -42,9 +42,52 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderCommon.h"
 #include "DXT/DXTCodec.h"
 #include "Color/ColorSpace.h"
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#include <cstdint>
+#endif
+
 
 idCVar image_highQualityCompression( "image_highQualityCompression", "0", CVAR_BOOL, "Use high quality (slow) compression" );
 idCVar r_useHighQualitySky( "r_useHighQualitySky", "0", CVAR_BOOL | CVAR_ARCHIVE, "Use high quality skyboxes" );
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+static inline void Decode4Rgb565ToRgba8888_NEON( const byte* src, byte* dst )
+{
+	uint8x8_t srcBytes = vld1_u8( (const uint8_t*)src );
+	srcBytes = vrev16_u8( srcBytes );
+
+	uint16x4_t rgb = vreinterpret_u16_u8( srcBytes );
+
+	const uint16x4_t maskG = vdup_n_u16( 0x07E0 );
+	const uint16x4_t maskB = vdup_n_u16( 0x001F );
+
+	uint16x4_t r5 = vshr_n_u16( rgb, 11 );
+	uint16x4_t g6 = vshr_n_u16( vand_u16( rgb, maskG ), 5 );
+	uint16x4_t b5 = vand_u16( rgb, maskB );
+
+	uint32x4_t r32 = vaddq_u32( vmull_n_u16( r5, 527 ), vdupq_n_u32( 23 ) );
+	uint32x4_t g32 = vaddq_u32( vmull_n_u16( g6, 259 ), vdupq_n_u32( 33 ) );
+	uint32x4_t b32 = vaddq_u32( vmull_n_u16( b5, 527 ), vdupq_n_u32( 23 ) );
+
+	uint16x4_t r16 = vshrn_n_u32( r32, 6 );
+	uint16x4_t g16 = vshrn_n_u32( g32, 6 );
+	uint16x4_t b16 = vshrn_n_u32( b32, 6 );
+
+	uint16_t rr[4], gg[4], bb[4];
+	vst1_u16( rr, r16 );
+	vst1_u16( gg, g16 );
+	vst1_u16( bb, b16 );
+
+	for( int i = 0; i < 4; ++i )
+	{
+		dst[i * 4 + 0] = (byte)rr[i];
+		dst[i * 4 + 1] = (byte)gg[i];
+		dst[i * 4 + 2] = (byte)bb[i];
+		dst[i * 4 + 3] = 0xFF;
+	}
+}
+#endif
 
 /*
 ========================
@@ -558,23 +601,28 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile* bFile, ID_TIME_T sourceTimeSt
 		{
 			//SRS - Make sure we have an integer number of RGBA8 storage slots
 			assert( img.dataSize % 4 == 0 );
-			for( int pixelIndex = img.dataSize / 2 - 2; pixelIndex >= 0; pixelIndex -= 2 )
+			const int pixelCount = img.dataSize / 4;
+			int p = pixelCount;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+			while( p >= 4 )
 			{
-#if 1
-				// SRS - Option 1: Scale and shift algorithm
-				uint16 pixelValue_rgb565 = img.data[pixelIndex + 0] << 8 | img.data[pixelIndex + 1];
-				img.data[pixelIndex * 2 + 0] = ( ( ( pixelValue_rgb565 ) >> 11 ) * 527 + 23 ) >> 6;
-				img.data[pixelIndex * 2 + 1] = ( ( ( pixelValue_rgb565 & 0x07E0 ) >>  5 ) * 259 + 33 ) >> 6;
-				img.data[pixelIndex * 2 + 2] = ( ( ( pixelValue_rgb565 & 0x001F ) ) * 527 + 23 ) >> 6;
-#else
-				// SRS - Option 2: Shift and combine algorithm - is this faster?
-				uint8 pixelValue_rgb565_hi = img.data[pixelIndex + 0];
-				uint8 pixelValue_rgb565_lo = img.data[pixelIndex + 1];
-				img.data[pixelIndex * 2 + 0] = ( pixelValue_rgb565_hi & 0xF8 ) | ( pixelValue_rgb565_hi          >> 5 );
-				img.data[pixelIndex * 2 + 1] = ( pixelValue_rgb565_hi        << 5 ) | ( ( pixelValue_rgb565_lo & 0xE0 ) >> 3 ) | ( ( pixelValue_rgb565_hi & 0x07 ) >> 1 );
-				img.data[pixelIndex * 2 + 2] = ( pixelValue_rgb565_lo        << 3 ) | ( ( pixelValue_rgb565_lo & 0x1F ) >> 2 );
+				p -= 4;
+
+				const byte* src = img.data + p * 2;
+				byte* dst = img.data + p * 4;
+
+				Decode4Rgb565ToRgba8888_NEON( src, dst );
+			}
 #endif
-				img.data[pixelIndex * 2 + 3] = 0xFF;
+			while( p > 0 )
+			{
+				--p;
+
+				uint16 pixelValue_rgb565 = img.data[p * 2 + 0] << 8 | img.data[p * 2 + 1];
+				img.data[p * 4 + 0] = ( ( ( pixelValue_rgb565 ) >> 11 ) * 527 + 23 ) >> 6;
+				img.data[p * 4 + 1] = ( ( ( pixelValue_rgb565 & 0x07E0 ) >>  5 ) * 259 + 33 ) >> 6;
+				img.data[p * 4 + 2] = ( ( ( pixelValue_rgb565 & 0x001F ) ) * 527 + 23 ) >> 6;
+				img.data[p * 4 + 3] = 0xFF;
 			}
 		}
 #else

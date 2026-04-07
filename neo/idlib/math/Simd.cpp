@@ -80,7 +80,6 @@ void idSIMD::InitProcessor( const char* module, bool forceGeneric )
 #if defined(USE_INTRINSICS)
 #if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
 			processor = new( TAG_MATH ) idSIMD_SSE;
-            idLib::common->Printf( "USING SIMD" );
 #elif defined(__SSE2__)
     		if( ( cpuid & CPUID_MMX ) && ( cpuid & CPUID_SSE ) )
 	        {

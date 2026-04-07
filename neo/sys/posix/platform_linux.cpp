@@ -716,11 +716,6 @@ int Sys_Mbstrtowcstr(wchar_t* Dest, const char* Source, size_t size) {
 
 extern "C"{
 __attribute__((used)) __attribute__((visibility("default")))
-bool needToShowScreenControls() {
-	return true;
-}
-
-__attribute__((used)) __attribute__((visibility("default")))
 bool needToReInitGameControllers (){
 	return false;
 }

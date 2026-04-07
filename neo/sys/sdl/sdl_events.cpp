@@ -1479,5 +1479,10 @@ __attribute__((used)) __attribute__((visibility("default")))
 bool needToInvokeMouseButtonsEvents(){
 	return game!= nullptr && (game->Shell_IsActive() || game->IsPDAOpen());
 }
+
+__attribute__((used)) __attribute__((visibility("default")))
+bool needToShowScreenControls() {
+    return !needToInvokeMouseButtonsEvents();
+}
 }
 #endif

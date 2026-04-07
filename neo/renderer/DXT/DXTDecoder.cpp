@@ -34,12 +34,31 @@ Contains the DxtDecoder implementation.
 #pragma hdrstop
 #include "DXTCodec_local.h"
 #include "DXTCodec.h"
-
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#include <cstdint>
+#endif
 /*
 ========================
 idDxtDecoder::EmitBlock
 ========================
 */
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+void idDxtDecoder::EmitBlock( byte* outPtr, int x, int y, const byte* colorBlock )
+{
+    outPtr += ( y * width + x ) * 4;
+    uint8x16_t row0 = vld1q_u8( colorBlock );
+    uint8x16_t row1 = vld1q_u8( colorBlock + 16 );
+    uint8x16_t row2 = vld1q_u8( colorBlock + 32 );
+    uint8x16_t row3 = vld1q_u8( colorBlock + 48 );
+
+    int stride = width * 4;
+    vst1q_u8( outPtr, row0 ); outPtr += stride;
+    vst1q_u8( outPtr, row1 ); outPtr += stride;
+    vst1q_u8( outPtr, row2 ); outPtr += stride;
+    vst1q_u8( outPtr, row3 );
+}
+#else
 void idDxtDecoder::EmitBlock( byte* outPtr, int x, int y, const byte* colorBlock )
 {
 	outPtr += ( y * width + x ) * 4;
@@ -49,12 +68,63 @@ void idDxtDecoder::EmitBlock( byte* outPtr, int x, int y, const byte* colorBlock
 		outPtr += width * 4;
 	}
 }
+#endif
 
 /*
 ========================
 idDxtDecoder::DecodeAlphaValues
 ========================
 */
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+void idDxtDecoder::DecodeAlphaValues( byte* colorBlock, const int offset )
+{
+    uint8_t alphas[8];
+    alphas[0] = ReadByte();
+    alphas[1] = ReadByte();
+
+    if( alphas[0] > alphas[1] ) {
+        alphas[2] = ( 6 * alphas[0] + 1 * alphas[1] ) / 7;
+        alphas[3] = ( 5 * alphas[0] + 2 * alphas[1] ) / 7;
+        alphas[4] = ( 4 * alphas[0] + 3 * alphas[1] ) / 7;
+        alphas[5] = ( 3 * alphas[0] + 4 * alphas[1] ) / 7;
+        alphas[6] = ( 2 * alphas[0] + 5 * alphas[1] ) / 7;
+        alphas[7] = ( 1 * alphas[0] + 6 * alphas[1] ) / 7;
+    } else {
+        alphas[2] = ( 4 * alphas[0] + 1 * alphas[1] ) / 5;
+        alphas[3] = ( 3 * alphas[0] + 2 * alphas[1] ) / 5;
+        alphas[4] = ( 2 * alphas[0] + 3 * alphas[1] ) / 5;
+        alphas[5] = ( 1 * alphas[0] + 4 * alphas[1] ) / 5;
+        alphas[6] = 0;
+        alphas[7] = 255;
+    }
+
+    uint8x8_t aPalette = vld1_u8(alphas);
+
+    uint8_t rawIndices[8];
+    for(int i = 0; i < 6; ++i) rawIndices[i] = ReadByte();
+
+    uint64_t bits = *(uint64_t*)rawIndices;
+    alignas(16) uint8_t idx[16];
+    for(int i = 0; i < 16; ++i) {
+        idx[i] = (uint8_t)((bits >> (i * 3)) & 7);
+    }
+
+    uint8x8_t lowIdx = vld1_u8(&idx[0]);
+    uint8x8_t highIdx = vld1_u8(&idx[8]);
+
+    uint8x8_t resLow = vtbl1_u8(aPalette, lowIdx);
+    uint8x8_t resHigh = vtbl1_u8(aPalette, highIdx);
+
+    uint8x16_t finalAlphas = vcombine_u8(resLow, resHigh);
+
+    byte* pixelStart = colorBlock;
+
+    uint8x16x4_t rgba = vld4q_u8(pixelStart);
+
+    rgba.val[offset] = finalAlphas;
+    vst4q_u8(pixelStart, rgba);
+}
+#else
 void idDxtDecoder::DecodeAlphaValues( byte* colorBlock, const int offset )
 {
 	int i;
@@ -99,12 +169,75 @@ void idDxtDecoder::DecodeAlphaValues( byte* colorBlock, const int offset )
 		indexes >>= 3;
 	}
 }
-
+#endif
 /*
 ========================
 idDxtDecoder::DecodeColorValues
 ========================
 */
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+void idDxtDecoder::DecodeColorValues( byte* colorBlock, bool noBlack, bool writeAlpha )
+{
+	alignas(16) uint8_t colors[4][4];
+
+	unsigned short color0 = ReadUShort();
+	unsigned short color1 = ReadUShort();
+
+	ColorFrom565( color0, colors[0] );
+	ColorFrom565( color1, colors[1] );
+	colors[0][3] = 255;
+	colors[1][3] = 255;
+
+	if( noBlack || color0 > color1 ) {
+		for(int c=0; c<3; ++c) {
+			colors[2][c] = ( 2 * colors[0][c] + colors[1][c] ) / 3;
+			colors[3][c] = ( colors[0][c] + 2 * colors[1][c] ) / 3;
+		}
+		colors[2][3] = 255;
+		colors[3][3] = 255;
+	} else {
+		for(int c=0; c<3; ++c) {
+			colors[2][c] = ( colors[0][c] + colors[1][c] ) >> 1;
+			colors[3][c] = 0;
+		}
+		colors[2][3] = 255;
+		colors[3][3] = 0;
+	}
+
+	uint32x4_t cV = vld1q_u32((const uint32_t*)colors);
+
+	uint32_t indexes = ReadUInt();
+
+	uint32x4_t rgbMask = vdupq_n_u32(0x00FFFFFF);
+
+	for( int i = 0; i < 4; i++ )
+	{
+		uint32_t pix0_idx = (indexes >> 0) & 3;
+		uint32_t pix1_idx = (indexes >> 2) & 3;
+		uint32_t pix2_idx = (indexes >> 4) & 3;
+		uint32_t pix3_idx = (indexes >> 6) & 3;
+		indexes >>= 8;
+
+		uint32_t p0, p1, p2, p3;
+		uint32_t* palette_ptr = (uint32_t*)colors;
+		p0 = palette_ptr[pix0_idx];
+		p1 = palette_ptr[pix1_idx];
+		p2 = palette_ptr[pix2_idx];
+		p3 = palette_ptr[pix3_idx];
+
+		uint32x4_t newPixels = { p0, p1, p2, p3 };
+		uint32_t* target = (uint32_t*)(colorBlock + i * 16);
+
+		if( writeAlpha ) {
+			vst1q_u32(target, newPixels);
+		} else {
+			uint32x4_t oldPixels = vld1q_u32(target);
+			uint32x4_t result = vbslq_u32(rgbMask, newPixels, oldPixels);
+			vst1q_u32(target, result);
+		}
+	}
+}
+#else
 void idDxtDecoder::DecodeColorValues( byte* colorBlock, bool noBlack, bool writeAlpha )
 {
 	byte colors[4][4];
@@ -156,7 +289,7 @@ void idDxtDecoder::DecodeColorValues( byte* colorBlock, bool noBlack, bool write
 		indexes >>= 2;
 	}
 }
-
+#endif
 /*
 ========================
 idDxtDecoder::DecodeCTX1Values
@@ -261,6 +394,58 @@ void idDxtDecoder::DecompressImageDXT5_nVidia7x( const byte* inBuf, byte* outBuf
 idDxtDecoder::DecompressYCoCgDXT5
 ========================
 */
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+static inline byte DescaleYCoCgByte( byte c, int scale )
+{
+    int v = int( c ) - 128;
+    v /= scale;
+    return byte( v + 128 );
+}
+
+void idDxtDecoder::DecompressYCoCgDXT5( const byte* inBuf, byte* outBuf, int _width, int _height )
+{
+    DecompressImageDXT5_nVidia7x( inBuf, outBuf, _width, _height );
+
+    const int pixelCount = _width * _height;
+    int i = 0;
+
+    for( ; i + 8 <= pixelCount; i += 8 )
+    {
+        uint8x8x4_t px = vld4_u8( outBuf + i * 4 );
+
+        alignas( 8 ) byte r[8];
+        alignas( 8 ) byte g[8];
+        alignas( 8 ) byte b[8];
+
+        vst1_u8( r, px.val[0] );
+        vst1_u8( g, px.val[1] );
+        vst1_u8( b, px.val[2] );
+
+        for( int lane = 0; lane < 8; ++lane )
+        {
+            const int scale = ( b[lane] >> 3 ) + 1;
+            r[lane] = DescaleYCoCgByte( r[lane], scale );
+            g[lane] = DescaleYCoCgByte( g[lane], scale );
+            b[lane] = 0;
+        }
+
+        px.val[0] = vld1_u8( r );
+        px.val[1] = vld1_u8( g );
+        px.val[2] = vld1_u8( b );
+
+        vst4_u8( outBuf + i * 4, px );
+    }
+
+    for( ; i < pixelCount; ++i )
+    {
+        const int scale = ( outBuf[i * 4 + 2] >> 3 ) + 1;
+        outBuf[i * 4 + 0] = byte( ( int( outBuf[i * 4 + 0] ) - 128 ) / scale + 128 );
+        outBuf[i * 4 + 1] = byte( ( int( outBuf[i * 4 + 1] ) - 128 ) / scale + 128 );
+        outBuf[i * 4 + 2] = 0;
+    }
+}
+#else
 void idDxtDecoder::DecompressYCoCgDXT5( const byte* inBuf, byte* outBuf, int _width, int _height )
 {
 	DecompressImageDXT5_nVidia7x( inBuf, outBuf, _width, _height );
@@ -273,7 +458,7 @@ void idDxtDecoder::DecompressYCoCgDXT5( const byte* inBuf, byte* outBuf, int _wi
 		outBuf[i * 4 + 2] = 0;	// this translates to a scale factor of 1 for uncompressed
 	}
 }
-
+#endif
 
 /*
 ========================
@@ -506,6 +691,88 @@ void idDxtDecoder::DecompressNormalMapDXT1Renormalize( const byte* inBuf, byte* 
 idDxtDecoder::DecompressNormalMapDXT5Renormalize
 ========================
 */
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+void idDxtDecoder::DecompressNormalMapDXT5Renormalize( const byte* inBuf, byte* outBuf, int _width, int _height )
+{
+    byte block[64];
+
+    this->width = _width;
+    this->height = _height;
+    this->inData = inBuf;
+
+    const float32x4_t v_scale = vdupq_n_f32(2.0f / 255.0f);
+    const float32x4_t v_minus_one = vdupq_n_f32(-1.0f);
+    const float32x4_t v_half = vdupq_n_f32(0.5f);
+    const float32x4_t v_255 = vdupq_n_f32(255.0f);
+
+    for( int j = 0; j < _height; j += 4 )
+    {
+        for( int i = 0; i < _width; i += 4 )
+        {
+            DecodeAlphaValues( block, 3 );
+            DecodeColorValues( block, false, false );
+
+            for( int k = 0; k < 64; k += 16 )
+            {
+                float x[4], y[4], z[4];
+
+                for(int p = 0; p < 4; p++) {
+#if 0
+                    x[p] = block[k + p*4 + 0];
+                    y[p] = block[k + p*4 + 1];
+                    z[p] = block[k + p*4 + 3];
+#else
+                    x[p] = block[k + p*4 + 3];
+                    y[p] = block[k + p*4 + 1];
+                    z[p] = block[k + p*4 + 2];
+#endif
+                }
+
+                float32x4_t vx = vmlaq_f32(v_minus_one, vld1q_f32(x), v_scale);
+                float32x4_t vy = vmlaq_f32(v_minus_one, vld1q_f32(y), v_scale);
+                float32x4_t vz = vmlaq_f32(v_minus_one, vld1q_f32(z), v_scale);
+
+                float32x4_t dot = vmulq_f32(vx, vx);
+                dot = vmlaq_f32(dot, vy, vy);
+                dot = vmlaq_f32(dot, vz, vz);
+
+                float32x4_t rsq = vrsqrteq_f32(dot);
+                rsq = vmulq_f32(rsq, vrsqrtsq_f32(dot, vmulq_f32(rsq, rsq)));
+
+                vx = vmulq_f32(vx, rsq);
+                vy = vmulq_f32(vy, rsq);
+                vz = vmulq_f32(vz, rsq);
+
+                vx = vmlaq_f32(v_half, vmlaq_f32(v_half, vx, v_half), v_255);
+                vy = vmlaq_f32(v_half, vmlaq_f32(v_half, vy, v_half), v_255);
+                vz = vmlaq_f32(v_half, vmlaq_f32(v_half, vz, v_half), v_255);
+
+                uint32x4_t ix = vcvtq_u32_f32(vx);
+                uint32x4_t iy = vcvtq_u32_f32(vy);
+                uint32x4_t iz = vcvtq_u32_f32(vz);
+
+                block[k + 0*4 + 0] = vgetq_lane_u32(ix, 0);
+                block[k + 0*4 + 1] = vgetq_lane_u32(iy, 0);
+                block[k + 0*4 + 2] = vgetq_lane_u32(iz, 0);
+
+                block[k + 1*4 + 0] = vgetq_lane_u32(ix, 1);
+                block[k + 1*4 + 1] = vgetq_lane_u32(iy, 1);
+                block[k + 1*4 + 2] = vgetq_lane_u32(iz, 1);
+
+                block[k + 2*4 + 0] = vgetq_lane_u32(ix, 2);
+                block[k + 2*4 + 1] = vgetq_lane_u32(iy, 2);
+                block[k + 2*4 + 2] = vgetq_lane_u32(iz, 2);
+
+                block[k + 3*4 + 0] = vgetq_lane_u32(ix, 3);
+                block[k + 3*4 + 1] = vgetq_lane_u32(iy, 3);
+                block[k + 3*4 + 2] = vgetq_lane_u32(iz, 3);
+            }
+
+            EmitBlock( outBuf, i, j, block );
+        }
+    }
+}
+#else
 void idDxtDecoder::DecompressNormalMapDXT5Renormalize( const byte* inBuf, byte* outBuf, int _width, int _height )
 {
 	byte block[64];
@@ -546,7 +813,7 @@ void idDxtDecoder::DecompressNormalMapDXT5Renormalize( const byte* inBuf, byte* 
 		}
 	}
 }
-
+#endif
 /*
 ========================
 idDxtDecoder::BiasScaleNormalY

@@ -86,9 +86,17 @@ glContext_t glcontext;
 const unsigned int GLES32_VERSION = 320;
 unsigned int glesVersion = GLES32_VERSION;
 static std::string glExtensions;
+static bool g_enableDXTSupport = false;
 
 static bool HasExtension (const std::string &extension){
 	return glExtensions.contains(extension);
+}
+
+extern "C"{
+__attribute__((used)) __attribute__((visibility("default")))
+void enableDXTSupport() {
+	g_enableDXTSupport = true;
+}
 }
 #endif
 
@@ -330,7 +338,7 @@ static void R_CheckPortableExtensions()
 	glConfig.anisotropicFilterAvailable = GLEW_EXT_texture_filter_anisotropic != 0;
 #else
     glConfig.multitextureAvailable = true;
-	glConfig.textureCompressionAvailable = glExtensions.contains("GL_EXT_texture_compression_s3tc");
+	glConfig.textureCompressionAvailable = g_enableDXTSupport && glExtensions.contains("GL_EXT_texture_compression_s3tc");
 	glConfig.anisotropicFilterAvailable = glExtensions.contains("GL_EXT_texture_filter_anisotropic") &&
 			glTexStorage2DMultisample!=nullptr;
 #endif

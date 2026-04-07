@@ -489,6 +489,63 @@ void idDxtDecoder::DecompressYCoCgCTX1DXT5A( const byte* inBuf, byte* outBuf, in
 idDxtDecoder::DecodeNormalYValues
 ========================
 */
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+void idDxtDecoder::DecodeNormalYValues( byte* normalBlock, const int offsetY, byte& c0, byte& c1 )
+{
+    unsigned short normal0 = ReadUShort();
+    unsigned short normal1 = ReadUShort();
+
+    assert( normal0 >= normal1 );
+
+    const byte ny0 = NormalYFrom565( normal0 );
+    const byte ny1 = NormalYFrom565( normal1 );
+    const byte ny2 = byte( ( 2 * ny0 + ny1 ) / 3 );
+    const byte ny3 = byte( ( ny0 + 2 * ny1 ) / 3 );
+
+    c0 = NormalBiasFrom565( normal0 );
+    c1 = NormalScaleFrom565( normal0 );
+
+    const uint8_t yTableBytes[8] =
+            {
+                    ny0, ny1, ny2, ny3,
+                    0, 0, 0, 0
+            };
+
+    const uint8x8_t yTable = vld1_u8( yTableBytes );
+
+    unsigned int indexes = ReadUInt();
+
+    uint8_t idxBytes0[8];
+    uint8_t idxBytes1[8];
+
+    for( int i = 0; i < 8; ++i )
+    {
+        idxBytes0[i] = ( uint8_t )( indexes & 3 );
+        indexes >>= 2;
+    }
+    for( int i = 0; i < 8; ++i )
+    {
+        idxBytes1[i] = ( uint8_t )( indexes & 3 );
+        indexes >>= 2;
+    }
+
+    const uint8x8_t idx0 = vld1_u8( idxBytes0 );
+    const uint8x8_t idx1 = vld1_u8( idxBytes1 );
+
+    const uint8x8_t out0 = vtbl1_u8( yTable, idx0 );
+    const uint8x8_t out1 = vtbl1_u8( yTable, idx1 );
+
+    uint8_t yOut[16];
+    vst1_u8( yOut + 0, out0 );
+    vst1_u8( yOut + 8, out1 );
+
+    byte* normalYPtr = normalBlock + offsetY;
+    for( int i = 0; i < 16; ++i )
+    {
+        normalYPtr[i * 4] = yOut[i];
+    }
+}
+#else
 void idDxtDecoder::DecodeNormalYValues( byte* normalBlock, const int offsetY, byte& c0, byte& c1 )
 {
 	int i;
@@ -518,7 +575,7 @@ void idDxtDecoder::DecodeNormalYValues( byte* normalBlock, const int offsetY, by
 		indexes >>= 2;
 	}
 }
-
+#endif
 /*
 ========================
 UShortSqrt
@@ -579,6 +636,76 @@ void idDxtDecoder::DeriveNormalZValues( byte* normalBlock )
 idDxtDecoder::UnRotateNormals
 ========================
 */
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+void UnRotateNormals( const byte* block, float* normals, byte c0, byte c1 )
+{
+    const float angle = -( float( c0 ) / 255.0f ) * idMath::PI;
+    const float s = sinf( angle );
+    const float c = cosf( angle );
+
+    const int scale = ( c1 >> 3 ) + 1;
+
+    const float32x4_t sVec      = vdupq_n_f32( s );
+    const float32x4_t cVec      = vdupq_n_f32( c );
+    const float32x4_t mulVec    = vdupq_n_f32( 2.0f / 255.0f );
+    const float32x4_t minusOne  = vdupq_n_f32( -1.0f );
+    const float32x4_t biasVec   = vdupq_n_f32( 128.0f );
+    const float32x4_t invScale  = vdupq_n_f32( 1.0f / float( scale ) );
+
+    for( int i = 0; i < 16; i += 8 )
+    {
+        const uint8x8x4_t px = vld4_u8( (const uint8_t*)( block + i * 4 ) );
+
+        // R -> x
+        uint16x8_t r16 = vmovl_u8( px.val[0] );
+        uint32x4_t r32_0 = vmovl_u16( vget_low_u16( r16 ) );
+        uint32x4_t r32_1 = vmovl_u16( vget_high_u16( r16 ) );
+
+        // G -> y
+        uint16x8_t g16 = vmovl_u8( px.val[1] );
+        uint32x4_t g32_0 = vmovl_u16( vget_low_u16( g16 ) );
+        uint32x4_t g32_1 = vmovl_u16( vget_high_u16( g16 ) );
+
+        float32x4_t x0 = vcvtq_f32_u32( r32_0 );
+        float32x4_t x1 = vcvtq_f32_u32( r32_1 );
+        float32x4_t y0 = vcvtq_f32_u32( g32_0 );
+        float32x4_t y1 = vcvtq_f32_u32( g32_1 );
+
+        x0 = vmlaq_n_f32( minusOne, x0, 2.0f / 255.0f );
+        x1 = vmlaq_n_f32( minusOne, x1, 2.0f / 255.0f );
+
+        y0 = vaddq_f32( vmulq_f32( vsubq_f32( y0, biasVec ), invScale ), biasVec );
+        y1 = vaddq_f32( vmulq_f32( vsubq_f32( y1, biasVec ), invScale ), biasVec );
+        y0 = vmlaq_n_f32( minusOne, y0, 2.0f / 255.0f );
+        y1 = vmlaq_n_f32( minusOne, y1, 2.0f / 255.0f );
+
+        float32x4_t rx0 = vmlsq_f32( vmulq_f32( cVec, x0 ), sVec, y0 );
+        float32x4_t ry0 = vmlaq_f32( vmulq_f32( sVec, x0 ), cVec, y0 );
+
+        float32x4_t rx1 = vmlsq_f32( vmulq_f32( cVec, x1 ), sVec, y1 );
+        float32x4_t ry1 = vmlaq_f32( vmulq_f32( sVec, x1 ), cVec, y1 );
+
+        float rx[4], ry[4];
+        vst1q_f32( rx, rx0 );
+        vst1q_f32( ry, ry0 );
+
+        for( int k = 0; k < 4; ++k )
+        {
+            normals[( i + k ) * 4 + 0] = rx[k];
+            normals[( i + k ) * 4 + 1] = ry[k];
+        }
+
+        vst1q_f32( rx, rx1 );
+        vst1q_f32( ry, ry1 );
+
+        for( int k = 0; k < 4; ++k )
+        {
+            normals[( i + 4 + k ) * 4 + 0] = rx[k];
+            normals[( i + 4 + k ) * 4 + 1] = ry[k];
+        }
+    }
+}
+#else
 void UnRotateNormals( const byte* block, float* normals, byte c0, byte c1 )
 {
 	int rotation = c0;
@@ -597,7 +724,7 @@ void UnRotateNormals( const byte* block, float* normals, byte c0, byte c1 )
 		normals[i * 4 + 1] = ry;
 	}
 }
-
+#endif
 /*
 ========================
 idDxtDecoder::DecompressNormalMapDXT1
@@ -850,6 +977,63 @@ void BiasScaleNormals( const byte* block, float* normals, const byte c0, const b
 idDxtDecoder::DecompressNormalMapDXT5
 ========================
 */
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+void idDxtDecoder::DecompressNormalMapDXT5( const byte* inBuf, byte* outBuf, int _width, int _height ) {
+    byte block[64];
+    byte c0, c1;
+
+    this->width = _width;
+    this->height = _height;
+    this->inData = inBuf;
+
+    for (int j = 0; j < _height; j += 4) {
+        for (int i = 0; i < _width; i += 4) {
+            DecodeAlphaValues(block, 0);
+            DecodeNormalYValues(block, 1, c0, c1);
+
+            float normals[16 * 4];
+            UnRotateNormals(block, normals, c0, c1);
+
+            const float32x4_t one = vdupq_n_f32(1.0f);
+            const float32x4_t zero = vdupq_n_f32(0.0f);
+
+            for (int k = 0; k < 16; k += 4) {
+                // normals layout: 4 floats per pixel (x, y, z, w), 4 pixels at a time
+                float32x4x4_t n = vld4q_f32(&normals[k * 4]);
+
+                float32x4_t x = n.val[0];
+                float32x4_t y = n.val[1];
+
+                float32x4_t xx = vmulq_f32(x, x);
+                float32x4_t yy = vmulq_f32(y, y);
+                float32x4_t z = vsubq_f32(one, vaddq_f32(xx, yy));
+                z = vmaxq_f32(z, zero);
+
+                float x4[4];
+                float y4[4];
+                float z4[4];
+
+                vst1q_f32(x4, x);
+                vst1q_f32(y4, y);
+                vst1q_f32(z4, z);
+
+                for (int lane = 0; lane < 4; ++lane) {
+                    const int p = k + lane;
+                    const float nx = x4[lane];
+                    const float ny = y4[lane];
+                    const float nz = sqrtf(z4[lane]);
+
+                    block[p * 4 + 0] = byte(idMath::Ftob((nx + 1.0f) * 127.5f));
+                    block[p * 4 + 1] = byte(idMath::Ftob((ny + 1.0f) * 127.5f));
+                    block[p * 4 + 2] = byte(idMath::Ftob((nz + 1.0f) * 127.5f));
+                }
+            }
+
+            EmitBlock(outBuf, i, j, block);
+        }
+    }
+}
+#else
 void idDxtDecoder::DecompressNormalMapDXT5( const byte* inBuf, byte* outBuf, int _width, int _height )
 {
 	byte block[64];
@@ -892,7 +1076,7 @@ void idDxtDecoder::DecompressNormalMapDXT5( const byte* inBuf, byte* outBuf, int
 		}
 	}
 }
-
+#endif
 /*
 ========================
 idDxtDecoder::DecompressNormalMapDXN2

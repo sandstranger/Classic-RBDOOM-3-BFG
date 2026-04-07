@@ -644,11 +644,14 @@ idDxtDecoder::ReadUInt
 */
 ID_INLINE unsigned int idDxtDecoder::ReadUInt()
 {
-	unsigned int i = *( ( unsigned int* )inData );
-	inData += 4;
-	return i;
+    unsigned int v =
+            ( unsigned int )inData[0] |
+            ( ( unsigned int )inData[1] << 8 ) |
+            ( ( unsigned int )inData[2] << 16 ) |
+            ( ( unsigned int )inData[3] << 24 );
+    inData += 4;
+    return v;
 }
-
 /*
 ========================
 idDxtDecoder::ColorTo565

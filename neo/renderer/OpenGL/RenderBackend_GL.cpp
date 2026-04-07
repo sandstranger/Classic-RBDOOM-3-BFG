@@ -83,8 +83,6 @@ void RB_SetMVP( const idRenderMatrix& mvp );
 glContext_t glcontext;
 
 #if ANDROID
-const unsigned int GLES32_VERSION = 320;
-unsigned int glesVersion = GLES32_VERSION;
 static std::string glExtensions;
 static bool g_enableDXTSupport = false;
 

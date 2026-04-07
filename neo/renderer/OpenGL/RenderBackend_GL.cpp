@@ -495,7 +495,7 @@ static void R_CheckPortableExtensions()
 	glConfig.framebufferObjectAvailable = GLEW_ARB_framebuffer_object != 0;
 #else
     glConfig.framebufferObjectAvailable = true;
-    glConfig.syncAvailable = true;
+    glConfig.syncAvailable = glExtensions.contains("GL_OES_EGL_sync") || glExtensions.contains("GL_APPLE_sync") ;
 #endif
 
 	R_PrintExtensionStatus(glConfig.framebufferObjectAvailable, "GL_ARB_framebuffer_object");

@@ -94,8 +94,8 @@ static bool HasExtension (const std::string &extension){
 
 extern "C"{
 __attribute__((used)) __attribute__((visibility("default")))
-void enableDXTSupport() {
-	g_enableDXTSupport = true;
+void updateEnableDXTSupportState(const bool enableDXTSupport) {
+	g_enableDXTSupport = enableDXTSupport;
 }
 }
 #endif

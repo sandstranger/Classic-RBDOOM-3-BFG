@@ -45,14 +45,16 @@ extern idCVar s_showPerfData;
 extern idCVar s_volume_dB;
 
 #if ANDROID
+ALCdevice*			device;
+
 void SetMute(bool mute){
 	if( mute )
 	{
-		alListenerf( AL_GAIN, 0.0f );
+        alcDevicePauseSOFT(device);
 	}
 	else
 	{
-		alListenerf( AL_GAIN, common->GetCurrentGame() == DOOM3_BFG ? DBtoLinear( s_volume_dB.GetFloat() ) : 1.0f );
+        alcDeviceResumeSOFT(device);
 	}
 }
 #endif
@@ -251,6 +253,9 @@ void idSoundHardware_OpenAL::Init()
 		common->Warning( "idSoundHardware_OpenAL::Init: alcOpenDevice() failed\n" );
 		return;
 	}
+#if ANDROID
+	device = openalDevice;
+#endif
 	//GK: Set this for EFX support
 	ALCint att[4] = {0};
 	att[0] = ALC_MAX_AUXILIARY_SENDS;
@@ -411,6 +416,9 @@ void idSoundHardware_OpenAL::Shutdown()
 	
 	alcCloseDevice( openalDevice );
 	openalDevice = NULL;
+#if ANDROID
+    device = nullptr;
+#endif
 }
 
 void idSoundHardware_OpenAL::ShutdownReverbSystem()
@@ -516,7 +524,8 @@ void idSoundHardware_OpenAL::Update()
 		listenerOrientation[4] = ((idSoundWorldLocal*)soundSystem->GetPlayingSoundWorld())->listener.axis[2].z;
 		listenerOrientation[5] = -((idSoundWorldLocal*)soundSystem->GetPlayingSoundWorld())->listener.axis[2].x;
 	}
-	
+
+#ifndef ANDROID
 	if( soundSystem->IsMuted() )
 	{
 		alListenerf( AL_GAIN, 0.0f );
@@ -525,6 +534,7 @@ void idSoundHardware_OpenAL::Update()
 	{
 		alListenerf( AL_GAIN, common->GetCurrentGame() == DOOM3_BFG ? DBtoLinear( s_volume_dB.GetFloat() ) : 1.0f );
 	}
+#endif
 	if (common->GetCurrentGame() == DOOM3_BFG && game->IsInGame()) {
 		alListenerfv(AL_POSITION, listenerPosition);
 		alListenerfv(AL_ORIENTATION, listenerOrientation);

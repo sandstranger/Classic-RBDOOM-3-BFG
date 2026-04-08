@@ -129,6 +129,7 @@ endif()
 
 if (ANDROID)
     add_definitions(-DUSE_FFMPEG)
+    add_definitions(-DAL_ALEXT_PROTOTYPES)
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang")

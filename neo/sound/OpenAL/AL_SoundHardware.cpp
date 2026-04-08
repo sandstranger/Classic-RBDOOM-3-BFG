@@ -48,6 +48,10 @@ extern idCVar s_volume_dB;
 ALCdevice*			device;
 
 void SetMute(bool mute){
+	if (device == nullptr){
+		return;
+	}
+
 	if( mute )
 	{
         alcDevicePauseSOFT(device);

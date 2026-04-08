@@ -44,6 +44,19 @@ extern idCVar s_device;
 extern idCVar s_showPerfData;
 extern idCVar s_volume_dB;
 
+#if ANDROID
+void SetMute(bool mute){
+	if( mute )
+	{
+		alListenerf( AL_GAIN, 0.0f );
+	}
+	else
+	{
+		alListenerf( AL_GAIN, common->GetCurrentGame() == DOOM3_BFG ? DBtoLinear( s_volume_dB.GetFloat() ) : 1.0f );
+	}
+}
+#endif
+
 /*
 ========================
 idSoundHardware_OpenAL::idSoundHardware_OpenAL

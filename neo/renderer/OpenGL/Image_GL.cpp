@@ -448,11 +448,12 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 									GL_RGBA /*dataFormat*/,
 									GL_UNSIGNED_BYTE /*dataType*/, dpic);
 					Mem_Free(dpic);
-				} else {
-					glCompressedTexSubImage2D(uploadTarget, mipLevel, x, y, width, height,
-											  internalFormat, compressedSize, pic);
 				}
 		}
+        else {
+                glCompressedTexSubImage2D(uploadTarget, mipLevel, x, y, width, height,
+                                          internalFormat, compressedSize, pic);
+        }
 #else
 			glCompressedTexSubImage2D(uploadTarget, mipLevel, x, y, width, height, internalFormat, compressedSize, pic);
 #endif

@@ -478,9 +478,10 @@ static void ResumeGame(){
 
 	// DG: un-pause the game when focus is gained, that also re-grabs the input
 	//     disabling the cursor is now done once in GLimp_Init() because it should always be disabled
-	soundSystem->SetMute(false);
 #if ANDROID
     SetMute(false);
+#else
+	soundSystem->SetMute(false);
 #endif
     cvarSystem->SetCVarBool("com_pausePlatform", false);
 	cvarSystem->SetCVarBool("com_pause", false);
@@ -490,9 +491,10 @@ static void PauseGame(){
 	if (cvarSystem == nullptr || soundSystem == nullptr || !gameStarted){
 		return;
 	}
-	soundSystem->SetMute(true);
 #if ANDROID
     SetMute(true);
+#else
+	soundSystem->SetMute(true);
 #endif
 	cvarSystem->SetCVarBool("com_pausePlatform", true);
 	cvarSystem->SetCVarBool("com_pause", true);

@@ -525,7 +525,6 @@ void idSoundHardware_OpenAL::Update()
 		listenerOrientation[5] = -((idSoundWorldLocal*)soundSystem->GetPlayingSoundWorld())->listener.axis[2].x;
 	}
 
-#ifndef ANDROID
 	if( soundSystem->IsMuted() )
 	{
 		alListenerf( AL_GAIN, 0.0f );
@@ -534,7 +533,6 @@ void idSoundHardware_OpenAL::Update()
 	{
 		alListenerf( AL_GAIN, common->GetCurrentGame() == DOOM3_BFG ? DBtoLinear( s_volume_dB.GetFloat() ) : 1.0f );
 	}
-#endif
 	if (common->GetCurrentGame() == DOOM3_BFG && game->IsInGame()) {
 		alListenerfv(AL_POSITION, listenerPosition);
 		alListenerfv(AL_ORIENTATION, listenerOrientation);

@@ -408,10 +408,15 @@ bool GLimp_Init( glimpParms_t parms )
 	
 	if( !window )
 	{
-		common->Printf( "No usable GL mode found: %s", SDL_GetError() );
+        common->FatalError("No usable GL mode found: %s", SDL_GetError() );
 		return false;
 	}
-	
+
+	if (!context) {
+		common->FatalError("GL context failed: %s\n", SDL_GetError());
+		return false;
+	}
+
 #ifdef __APPLE__
 	glewExperimental = GL_TRUE;
 #endif
@@ -429,7 +434,7 @@ bool GLimp_Init( glimpParms_t parms )
 	}
 #else
 	SDL_GL_MakeCurrent(window, context);
-	
+
 	if (!gladLoadGLES2Loader((GLADloadproc)SDL_GL_GetProcAddress)) {
         common->FatalError("Failed to initialize GLAD\n");
         return false;

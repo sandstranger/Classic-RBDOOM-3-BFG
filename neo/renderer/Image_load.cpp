@@ -739,13 +739,17 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 {
 	PurgeImage();
 
+#if ANDROID
+	extern bool isGLES32Version();
+	bool multisamplingAvailable = isGLES32Version();
+#endif
 
 	filter = filterParm;
 	repeat = repeatParm;
 	usage = usageParm;
 	cubeFiles = CF_2D;
 #if ANDROID
-	opts.textureType = ( samples > SAMPLE_1 && glConfig.anisotropicFilterAvailable ) ? TT_2D_MULTISAMPLE : TT_2D;
+	opts.textureType = ( samples > SAMPLE_1 && multisamplingAvailable ) ? TT_2D_MULTISAMPLE : TT_2D;
 #else
 	opts.textureType = ( samples > SAMPLE_1 ) ? TT_2D_MULTISAMPLE : TT_2D;
 #endif
@@ -753,7 +757,7 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 	opts.height = height;
 	opts.numLevels = 0;
 #if ANDROID
-	opts.samples = glConfig.anisotropicFilterAvailable ? samples : SAMPLE_1;
+	opts.samples = multisamplingAvailable ? samples : SAMPLE_1;
 #else
 	opts.samples = samples;
 #endif

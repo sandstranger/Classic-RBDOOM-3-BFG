@@ -101,11 +101,11 @@ void setGLESVersion(const int targetGLESVersion) {
 	glesVersion = targetGLESVersion;
 }
 }
-int isGLES32Version (){
+bool isGLES32Version (){
     return glesVersion == DEFAULT_GLES_VERSION;
 }
 #else
-int isGLES32Version (){
+bool isGLES32Version (){
     return true;
 }
 #endif
@@ -346,8 +346,7 @@ static void R_CheckPortableExtensions()
 #else
     glConfig.multitextureAvailable = true;
 	glConfig.textureCompressionAvailable = g_enableDXTSupport && glExtensions.contains("GL_EXT_texture_compression_s3tc");
-	glConfig.anisotropicFilterAvailable = glExtensions.contains("GL_EXT_texture_filter_anisotropic") &&
-			isGLES32Version() && glTexStorage2DMultisample!=nullptr;
+	glConfig.anisotropicFilterAvailable = glExtensions.contains("GL_EXT_texture_filter_anisotropic");
 #endif
 	if( glConfig.anisotropicFilterAvailable )
 	{
@@ -1697,7 +1696,7 @@ void idRenderBackend::CheckCVars()
 #ifndef ANDROID
 	if( r_antiAliasing.IsModified() )
 #else
-	if( r_antiAliasing.IsModified() && glConfig.anisotropicFilterAvailable)
+	if( r_antiAliasing.IsModified() && isGLES32Version())
 #endif
 	{
 		switch( r_antiAliasing.GetInteger() )

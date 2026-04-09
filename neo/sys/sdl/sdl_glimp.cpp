@@ -405,7 +405,8 @@ bool GLimp_Init( glimpParms_t parms )
 		
 		break;
 	}
-	
+
+#ifndef ANDROID
 	if( !window )
 	{
         common->FatalError("No usable GL mode found: %s", SDL_GetError() );
@@ -416,7 +417,13 @@ bool GLimp_Init( glimpParms_t parms )
 		common->FatalError("GL context failed: %s\n", SDL_GetError());
 		return false;
 	}
-
+#else
+	if( !window || !context )
+	{
+		common->FatalError("Your device does not support OpenGL ES 3.2.\nThis port requires GLES 3.2.");
+		return false;
+	}
+#endif
 #ifdef __APPLE__
 	glewExperimental = GL_TRUE;
 #endif

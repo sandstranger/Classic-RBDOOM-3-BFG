@@ -381,7 +381,7 @@ static void R_CheckPortableExtensions()
     glConfig.vertexBufferObjectAvailable = true;
     glConfig.mapBufferRangeAvailable = true;
     glConfig.vertexArrayObjectAvailable = true;
-    glConfig.drawElementsBaseVertexAvailable = true;
+    glConfig.drawElementsBaseVertexAvailable = glExtensions.contains("GL_EXT_draw_elements_base_vertex");
     glConfig.uniformBufferAvailable = true;
     glConfig.gpuSkinningAvailable = true;
     glConfig.fragmentProgramAvailable = true;

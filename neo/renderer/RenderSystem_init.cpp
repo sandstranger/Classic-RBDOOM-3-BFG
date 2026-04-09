@@ -2785,11 +2785,7 @@ idRenderSystemLocal::IsStereoScopicRenderingSupported
 */
 bool idRenderSystemLocal::IsStereoScopicRenderingSupported() const
 {
-#ifdef ANDROID //karin: not support stereo glDrawBuffer(GL_LEFT*, GL_RIGHT*)
-    return false;
-#else
     return true;
-#endif
 }
 
 /*

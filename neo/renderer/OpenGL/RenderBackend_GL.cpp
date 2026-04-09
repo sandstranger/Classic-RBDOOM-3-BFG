@@ -81,6 +81,7 @@ void GLimp_SwapBuffers();
 void RB_SetMVP( const idRenderMatrix& mvp );
 
 glContext_t glcontext;
+static uintptr_t currentVertOffset = ~0;
 
 #if ANDROID
 const int DEFAULT_GLES_VERSION = 320;
@@ -889,13 +890,15 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 #endif
 	{
 		// RB: 64 bit fixes, changed GLuint to GLintptr
-		if ((GLintptr)currentIndexBuffer != (GLintptr)indexBuffer->GetAPIObject() || !r_useStateCaching.GetBool())
+		if ((GLintptr)currentIndexBuffer != (GLintptr)indexBuffer->GetAPIObject() ||
+        !r_useStateCaching.GetBool() || (currentVertOffset != vertOffset))
 		{
 			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLintptr)indexBuffer->GetAPIObject());
 			currentIndexBuffer = (GLintptr)indexBuffer->GetAPIObject();
 		}
 
-		if ((vertexLayout != LAYOUT_DRAW_VERT) || ((GLintptr)currentVertexBuffer != (GLintptr)vertexBuffer->GetAPIObject()) || !r_useStateCaching.GetBool())
+		if ((vertexLayout != LAYOUT_DRAW_VERT) || ((GLintptr)currentVertexBuffer != (GLintptr)vertexBuffer->GetAPIObject()) ||
+        !r_useStateCaching.GetBool() || (currentVertOffset != vertOffset))
 		{
             glBindBuffer(GL_ARRAY_BUFFER, (GLintptr)vertexBuffer->GetAPIObject());
 			currentVertexBuffer = (GLintptr)vertexBuffer->GetAPIObject();
@@ -929,7 +932,8 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 									  sizeof(idDrawVert), (void *) (DRAWVERT_TANGENT_OFFSET));
 			}
 			vertexLayout = LAYOUT_DRAW_VERT;
-		}
+            currentVertOffset = vertOffset;
+        }
 	}
 	// RB end
 if (!isGLES32Version()) {
@@ -1798,7 +1802,8 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 	RENDERLOG_PRINTF( "Binding Buffers: %p %p\n", vertexBuffer, indexBuffer );
 	
 	// RB: 64 bit fixes, changed GLuint to GLintptr
-	if((GLintptr)currentIndexBuffer != ( GLintptr )indexBuffer->GetAPIObject() || !r_useStateCaching.GetBool() )
+	if((GLintptr)currentIndexBuffer != ( GLintptr )indexBuffer->GetAPIObject()
+            || (currentVertOffset != vertOffset) || !r_useStateCaching.GetBool() )
 	{
 #ifndef ANDROID
 		if (glConfig.directStateAccess) {
@@ -1827,7 +1832,8 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 		const GLintptr ubo = jointBuffer.GetAPIObject();
 		glBindBufferRange( GL_UNIFORM_BUFFER, 0, ubo, jointBuffer.GetOffset(), jointBuffer.GetSize() );
 		
-		if( ( vertexLayout != LAYOUT_DRAW_SHADOW_VERT_SKINNED ) || ((GLintptr)currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) || !r_useStateCaching.GetBool() )
+		if( ( vertexLayout != LAYOUT_DRAW_SHADOW_VERT_SKINNED ) || ((GLintptr)currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() )
+        || !r_useStateCaching.GetBool() || (currentVertOffset != vertOffset) )
 		{
 #ifndef ANDROID
 			if (!glConfig.directStateAccess)
@@ -1885,12 +1891,14 @@ if (!isGLES32Version()) {
 			}
 #endif
 			vertexLayout = LAYOUT_DRAW_SHADOW_VERT_SKINNED;
+            currentVertOffset = vertOffset;
 		}
 		glBindVertexArray(glConfig.global_vao);
 	}
 	else
 	{
-		if( ( vertexLayout != LAYOUT_DRAW_SHADOW_VERT ) || ((GLintptr)currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) || !r_useStateCaching.GetBool() )
+		if( ( vertexLayout != LAYOUT_DRAW_SHADOW_VERT ) || ((GLintptr)currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) ||
+        (currentVertOffset != vertOffset) || !r_useStateCaching.GetBool() )
 		{
 #ifndef ANDROID
 			if (!glConfig.directStateAccess) {
@@ -1948,6 +1956,7 @@ if (!isGLES32Version()) {
             }
 #endif
 			vertexLayout = LAYOUT_DRAW_SHADOW_VERT;
+            currentVertOffset = vertOffset;
 		}
 	}
 	// RB end

@@ -891,14 +891,14 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 	{
 		// RB: 64 bit fixes, changed GLuint to GLintptr
 		if ((GLintptr)currentIndexBuffer != (GLintptr)indexBuffer->GetAPIObject() ||
-        !r_useStateCaching.GetBool() || (currentVertOffset != vertOffset))
+        !r_useStateCaching.GetBool() || (!isGLES32Version() && currentVertOffset != vertOffset))
 		{
 			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLintptr)indexBuffer->GetAPIObject());
 			currentIndexBuffer = (GLintptr)indexBuffer->GetAPIObject();
 		}
 
 		if ((vertexLayout != LAYOUT_DRAW_VERT) || ((GLintptr)currentVertexBuffer != (GLintptr)vertexBuffer->GetAPIObject()) ||
-        !r_useStateCaching.GetBool() || (currentVertOffset != vertOffset))
+        !r_useStateCaching.GetBool() || (!isGLES32Version() && currentVertOffset != vertOffset))
 		{
             glBindBuffer(GL_ARRAY_BUFFER, (GLintptr)vertexBuffer->GetAPIObject());
 			currentVertexBuffer = (GLintptr)vertexBuffer->GetAPIObject();
@@ -932,7 +932,9 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 									  sizeof(idDrawVert), (void *) (DRAWVERT_TANGENT_OFFSET));
 			}
 			vertexLayout = LAYOUT_DRAW_VERT;
-            currentVertOffset = vertOffset;
+            if (!isGLES32Version()) {
+                currentVertOffset = vertOffset;
+            }
         }
 	}
 	// RB end
@@ -1803,7 +1805,7 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 	
 	// RB: 64 bit fixes, changed GLuint to GLintptr
 	if((GLintptr)currentIndexBuffer != ( GLintptr )indexBuffer->GetAPIObject()
-            || (currentVertOffset != vertOffset) || !r_useStateCaching.GetBool() )
+            || (!isGLES32Version() && currentVertOffset != vertOffset) || !r_useStateCaching.GetBool() )
 	{
 #ifndef ANDROID
 		if (glConfig.directStateAccess) {
@@ -1833,7 +1835,7 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 		glBindBufferRange( GL_UNIFORM_BUFFER, 0, ubo, jointBuffer.GetOffset(), jointBuffer.GetSize() );
 		
 		if( ( vertexLayout != LAYOUT_DRAW_SHADOW_VERT_SKINNED ) || ((GLintptr)currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() )
-        || !r_useStateCaching.GetBool() || (currentVertOffset != vertOffset) )
+        || !r_useStateCaching.GetBool() || (!isGLES32Version() && currentVertOffset != vertOffset) )
 		{
 #ifndef ANDROID
 			if (!glConfig.directStateAccess)
@@ -1891,14 +1893,16 @@ if (!isGLES32Version()) {
 			}
 #endif
 			vertexLayout = LAYOUT_DRAW_SHADOW_VERT_SKINNED;
-            currentVertOffset = vertOffset;
+            if (!isGLES32Version()) {
+                currentVertOffset = vertOffset;
+            }
 		}
 		glBindVertexArray(glConfig.global_vao);
 	}
 	else
 	{
 		if( ( vertexLayout != LAYOUT_DRAW_SHADOW_VERT ) || ((GLintptr)currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) ||
-        (currentVertOffset != vertOffset) || !r_useStateCaching.GetBool() )
+        (!isGLES32Version() && currentVertOffset != vertOffset) || !r_useStateCaching.GetBool() )
 		{
 #ifndef ANDROID
 			if (!glConfig.directStateAccess) {
@@ -1956,7 +1960,9 @@ if (!isGLES32Version()) {
             }
 #endif
 			vertexLayout = LAYOUT_DRAW_SHADOW_VERT;
-            currentVertOffset = vertOffset;
+            if (!isGLES32Version()) {
+                currentVertOffset = vertOffset;
+            }
 		}
 	}
 	// RB end

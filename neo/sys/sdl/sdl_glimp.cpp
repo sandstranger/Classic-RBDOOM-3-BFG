@@ -423,6 +423,17 @@ bool GLimp_Init( glimpParms_t parms )
 		common->FatalError("Your device does not support OpenGL ES 3.2.\nThis port requires GLES 3.2.");
 		return false;
 	}
+
+    int maj = 0, min = 0;
+    SDL_GL_GetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, &maj);
+    SDL_GL_GetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, &min);
+
+    bool hasGlES3_2 =(maj > 3) ||(maj == 3 && min >= 2);
+    if (!hasGlES3_2)
+    {
+        common->FatalError("Your device does not support OpenGL ES 3.2.\nThis port requires GLES 3.2.");
+    }
+
 #endif
 #ifdef __APPLE__
 	glewExperimental = GL_TRUE;

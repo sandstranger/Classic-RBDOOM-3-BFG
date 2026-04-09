@@ -61,6 +61,12 @@ idCVar r_useOpenGL32( "r_useOpenGL32", "1", CVAR_INTEGER, "0 = OpenGL 3.x, 1 = O
 #endif
 // RB end
 
+#if ANDROID
+#define GLES3_2_VERSION 320
+#define GLES3_1_VERSION 310
+#define GLES3_0_VERSION 300
+#endif
+
 extern idCVar r_fullscreen;
 extern idCVar swf_cursorDPI;
 
@@ -280,9 +286,21 @@ bool GLimp_Init( glimpParms_t parms )
 			glConfig.driverType = GLDRV_OPENGL32_CORE_PROFILE;
 		}
 #else
+		extern int glesVersion;
+		int glesMinorVersion = 2;
+
+		if (glesVersion == GLES3_2_VERSION) {
+			glesMinorVersion = 2;
+		}
+		else if (glesVersion == GLES3_1_VERSION) {
+			glesMinorVersion = 1;
+		} else if (glesVersion == GLES3_0_VERSION) {
+			glesMinorVersion = 0;
+		}
+
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,  2 );
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,  glesMinorVersion );
 		glConfig.driverType = GLDRV_OPENGL_ES3;
 #endif
 #ifndef ANDROID
@@ -420,20 +438,9 @@ bool GLimp_Init( glimpParms_t parms )
 #else
 	if( !window || !context )
 	{
-		common->FatalError("Your device does not support OpenGL ES 3.2.\nThis port requires GLES 3.2.");
+		common->FatalError("Your device does not support OpenGL ES 3.X.\nThis port requires GLES 3.X support.");
 		return false;
 	}
-
-    int maj = 0, min = 0;
-    SDL_GL_GetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, &maj);
-    SDL_GL_GetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, &min);
-
-    bool hasGlES3_2 =(maj > 3) ||(maj == 3 && min >= 2);
-    if (!hasGlES3_2)
-    {
-        common->FatalError("Your device does not support OpenGL ES 3.2.\nThis port requires GLES 3.2.");
-    }
-
 #endif
 #ifdef __APPLE__
 	glewExperimental = GL_TRUE;

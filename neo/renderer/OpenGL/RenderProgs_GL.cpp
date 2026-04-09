@@ -50,11 +50,11 @@ static std::string ConvertShaderToGLES(const char* shaderSource, rpStage_t shade
 	if (GLSLtoGLSLES_c == nullptr) {
 		GLSLtoGLSLES_c =(GLSLtoGLSLES_t) SDL_LoadFunction(SDL_LoadObject("libng_gl4es.so"), "GLSLtoGLSLES_c");
 	}
-    const unsigned int targetGLESVersion = 320;
+	extern int glesVersion;
     const unsigned int sourceGLVersion = 410;
     const auto stage = shaderStage == SHADER_STAGE_VERTEX ? GL_VERTEX_SHADER : GL_FRAGMENT_SHADER;
     int returnCode = 0;
-    return GLSLtoGLSLES_c(shaderSource, stage,targetGLESVersion,sourceGLVersion,&returnCode);
+    return GLSLtoGLSLES_c(shaderSource, stage,glesVersion,sourceGLVersion,&returnCode);
 }
 #endif
 

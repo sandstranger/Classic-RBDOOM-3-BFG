@@ -83,20 +83,32 @@ void RB_SetMVP( const idRenderMatrix& mvp );
 glContext_t glcontext;
 
 #if ANDROID
+const int DEFAULT_GLES_VERSION = 320;
+
 static std::string glExtensions;
+int glesVersion = DEFAULT_GLES_VERSION;
 static bool g_enableDXTSupport = false;
 
 extern "C"{
 __attribute__((used)) __attribute__((visibility("default")))
-void updateEnableDXTSupportState(const bool enableDXTSupport) {
+void setHardwareDXTSupport(const bool enableDXTSupport) {
 	g_enableDXTSupport = enableDXTSupport;
 }
+
+__attribute__((used)) __attribute__((visibility("default")))
+void setGLESVersion(const int targetGLESVersion) {
+	glesVersion = targetGLESVersion;
+}
+}
+int isGLES32Version (){
+    return glesVersion == DEFAULT_GLES_VERSION;
+}
+#else
+int isGLES32Version (){
+    return true;
 }
 #endif
 
-static int isGLES32Version (){
-    return true;
-}
 
 /*
 ==================
@@ -137,7 +149,7 @@ bool GL_CheckErrors_( const char* filename, int line )
 			case GL_INVALID_OPERATION:
 				strcpy( s, "GL_INVALID_OPERATION" );
 				break;
-#if !defined(USE_GLES2) && !defined(USE_GLES3)
+#if !defined(USE_GLES2) && !defined(USE_GLES3) && !ANDROID
 			case GL_STACK_OVERFLOW:
 				strcpy( s, "GL_STACK_OVERFLOW" );
 				break;
@@ -334,7 +346,7 @@ static void R_CheckPortableExtensions()
     glConfig.multitextureAvailable = true;
 	glConfig.textureCompressionAvailable = g_enableDXTSupport && glExtensions.contains("GL_EXT_texture_compression_s3tc");
 	glConfig.anisotropicFilterAvailable = glExtensions.contains("GL_EXT_texture_filter_anisotropic") &&
-			glTexStorage2DMultisample!=nullptr;
+			isGLES32Version() && glTexStorage2DMultisample!=nullptr;
 #endif
 	if( glConfig.anisotropicFilterAvailable )
 	{
@@ -885,8 +897,7 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 
 		if ((vertexLayout != LAYOUT_DRAW_VERT) || ((GLintptr)currentVertexBuffer != (GLintptr)vertexBuffer->GetAPIObject()) || !r_useStateCaching.GetBool())
 		{
-			
-			glBindBuffer(GL_ARRAY_BUFFER, (GLintptr)vertexBuffer->GetAPIObject());
+            glBindBuffer(GL_ARRAY_BUFFER, (GLintptr)vertexBuffer->GetAPIObject());
 			currentVertexBuffer = (GLintptr)vertexBuffer->GetAPIObject();
 
 			glEnableVertexAttribArray(PC_ATTRIB_INDEX_VERTEX);
@@ -896,13 +907,27 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 			glEnableVertexAttribArray(PC_ATTRIB_INDEX_ST);
 			glEnableVertexAttribArray(PC_ATTRIB_INDEX_TANGENT);
 
-			glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 3, GL_FLOAT, GL_FALSE, sizeof(idDrawVert), (void*)(DRAWVERT_XYZ_OFFSET));
-			glVertexAttribPointer(PC_ATTRIB_INDEX_NORMAL, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idDrawVert), (void*)(DRAWVERT_NORMAL_OFFSET));
-			glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idDrawVert), (void*)(DRAWVERT_COLOR_OFFSET));
-			glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idDrawVert), (void*)(DRAWVERT_COLOR2_OFFSET));
-			glVertexAttribPointer(PC_ATTRIB_INDEX_ST, 2, GL_HALF_FLOAT, GL_TRUE, sizeof(idDrawVert), (void*)(DRAWVERT_ST_OFFSET));
-			glVertexAttribPointer(PC_ATTRIB_INDEX_TANGENT, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idDrawVert), (void*)(DRAWVERT_TANGENT_OFFSET));
-
+			if (!isGLES32Version()){
+				glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 3, GL_FLOAT, GL_FALSE, sizeof(idDrawVert), (void*)(vertOffset + DRAWVERT_XYZ_OFFSET));
+				glVertexAttribPointer(PC_ATTRIB_INDEX_NORMAL, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idDrawVert), (void*)(vertOffset + DRAWVERT_NORMAL_OFFSET));
+				glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idDrawVert), (void*)(vertOffset + DRAWVERT_COLOR_OFFSET));
+				glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idDrawVert), (void*)(vertOffset + DRAWVERT_COLOR2_OFFSET));
+				glVertexAttribPointer(PC_ATTRIB_INDEX_ST, 2, GL_HALF_FLOAT, GL_TRUE, sizeof(idDrawVert), (void*)(vertOffset + DRAWVERT_ST_OFFSET));
+				glVertexAttribPointer(PC_ATTRIB_INDEX_TANGENT, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idDrawVert), (void*)(vertOffset + DRAWVERT_TANGENT_OFFSET));
+			} else {
+				glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 3, GL_FLOAT, GL_FALSE,
+									  sizeof(idDrawVert), (void *) (DRAWVERT_XYZ_OFFSET));
+				glVertexAttribPointer(PC_ATTRIB_INDEX_NORMAL, 4, GL_UNSIGNED_BYTE, GL_TRUE,
+									  sizeof(idDrawVert), (void *) (DRAWVERT_NORMAL_OFFSET));
+				glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE,
+									  sizeof(idDrawVert), (void *) (DRAWVERT_COLOR_OFFSET));
+				glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE,
+									  sizeof(idDrawVert), (void *) (DRAWVERT_COLOR2_OFFSET));
+				glVertexAttribPointer(PC_ATTRIB_INDEX_ST, 2, GL_HALF_FLOAT, GL_TRUE,
+									  sizeof(idDrawVert), (void *) (DRAWVERT_ST_OFFSET));
+				glVertexAttribPointer(PC_ATTRIB_INDEX_TANGENT, 4, GL_UNSIGNED_BYTE, GL_TRUE,
+									  sizeof(idDrawVert), (void *) (DRAWVERT_TANGENT_OFFSET));
+			}
 			vertexLayout = LAYOUT_DRAW_VERT;
 		}
 	}

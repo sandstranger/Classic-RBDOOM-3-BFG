@@ -345,6 +345,7 @@ bool GLimp_Init( glimpParms_t parms )
 			continue;
 		}
 
+
 		Uint32 rmask, gmask, bmask, amask;
 		SDL_PixelFormat format;
 #if SDL_BYTEORDER == SDL_BIG_ENDIAN
@@ -427,7 +428,9 @@ bool GLimp_Init( glimpParms_t parms )
 		common->Printf( "Using GLEW %s\n", glewGetString( GLEW_VERSION ) );
 	}
 #else
-    if (!gladLoadGLES2Loader((GLADloadproc)SDL_GL_GetProcAddress)) {
+	SDL_GL_MakeCurrent(window, context);
+	
+	if (!gladLoadGLES2Loader((GLADloadproc)SDL_GL_GetProcAddress)) {
         common->FatalError("Failed to initialize GLAD\n");
         return false;
     }

@@ -1189,7 +1189,7 @@ void idImage::AllocImage()
 #ifndef ANDROID
 			internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) ) ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 #else
-			internalFormat = !glConfig.textureCompressionAvailable ? GL_RGBA : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
+			internalFormat = !glConfig.textureCompressionAvailable ? GL_RGBA8 : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 #endif
 			dataFormat = GL_RGBA;
 			dataType = GL_UNSIGNED_BYTE;
@@ -1198,7 +1198,7 @@ void idImage::AllocImage()
 #ifndef ANDROID
 			internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) && opts.colorFormat != CFM_YCOCG_DXT5 && opts.colorFormat != CFM_NORMAL_DXT5 ) ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 #else
-			internalFormat = !glConfig.textureCompressionAvailable ? GL_RGBA : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+			internalFormat = !glConfig.textureCompressionAvailable ? GL_RGBA8 : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 #endif
 			//internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 			dataFormat = GL_RGBA;
@@ -1408,7 +1408,7 @@ void idImage::AllocImage()
 						if (!glConfig.textureCompressionAvailable) {
 							compressedSize = w * h * 4;
 							byte *data = (byte *) Mem_Alloc(compressedSize, TAG_TEMP);
-							glTexImage2D(uploadTarget + side, level, GL_RGBA /*internalFormat*/, w,
+							glTexImage2D(uploadTarget + side, level, GL_RGBA8 /*internalFormat*/, w,
 										 h, 0, GL_RGBA /*dataFormat*/,
 										 GL_UNSIGNED_BYTE /*dataType*/, data);
 							if (data != nullptr) {

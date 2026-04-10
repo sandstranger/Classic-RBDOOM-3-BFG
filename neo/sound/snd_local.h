@@ -34,10 +34,19 @@ If you have questions concerning this license or the applicable additional terms
 #include "WaveFile.h"
 
 // Maximum number of voices we can have allocated
-#define MAX_HARDWARE_VOICES 24
-#define MAX_HARDWARE_CHANNELS 48
-#define MAX_SOUND_BUFFERS ( MAX_HARDWARE_VOICES * 3 ) // 48
-#define MAX_CHANNELS_PER_VOICE 2
+#define MAX_HARDWARE_VOICES 48
+
+// A single voice can play multiple channels (up to 5.1, but most commonly stereo)
+// This is the maximum number of channels which can play simultaneously
+// This is limited primarily by seeking on the optical drive, secondarily by memory consumption, and tertiarily by CPU time spent mixing
+#define MAX_HARDWARE_CHANNELS 64
+
+// We may need up to 3 buffers for each hardware voice if they are all long sounds
+#define MAX_SOUND_BUFFERS ( MAX_HARDWARE_VOICES * 3 )
+
+// Maximum number of channels in a sound sample
+#define MAX_CHANNELS_PER_VOICE	8
+
 /*
 ========================
 MsecToSamples

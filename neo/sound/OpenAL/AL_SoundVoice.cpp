@@ -398,8 +398,10 @@ int idSoundVoice_OpenAL::SubmitBuffer( idSoundSample_OpenAL* sample, int bufferN
 					format = sample->NumChannels() == 1 ? AL_FORMAT_MONO8 : AL_FORMAT_STEREO8;
 					break;
 				case 16:
-				case 32:
 					format = sample->NumChannels() == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16;
+					break;
+				case 32:
+					format = sample->NumChannels() == 1 ? AL_FORMAT_MONO_FLOAT32 : AL_FORMAT_STEREO_FLOAT32;
 					break;
 				}
 			}
@@ -487,7 +489,6 @@ bool idSoundVoice_OpenAL::Update()
 	//GK: Set the EFX in the last moment
 	alSource3i(openalSource, AL_AUXILIARY_SEND_FILTER, AL_EFFECTSLOT_NULL, 0, AL_FILTER_NULL);
 	alSource3i(openalSource, AL_AUXILIARY_SEND_FILTER, AL_EFFECTSLOT_NULL, 1, AL_FILTER_NULL);
-#ifndef ANDROID
 	if (alIsEffectRef(((idSoundHardware_OpenAL*)soundSystemLocal.hardware)->EAX) == AL_TRUE && ((idSoundHardware_OpenAL*)soundSystemLocal.hardware)->EAX > 0) { //GK: OpenAL thinks that 0 is valid effect
 		if (GetOcclusion() > 0.0f) {
 			alSourcei(openalSource, AL_DIRECT_FILTER, ((idSoundHardware_OpenAL*)soundSystemLocal.hardware)->voicefilter);
@@ -501,7 +502,6 @@ bool idSoundVoice_OpenAL::Update()
 			alSource3i(openalSource, AL_AUXILIARY_SEND_FILTER, ((idSoundHardware_OpenAL*)soundSystemLocal.hardware)->slot, 0, GetOcclusion() > 0.0f ? ((idSoundHardware_OpenAL*)soundSystemLocal.hardware)->voicefilter : AL_FILTER_NULL);
 		}
 	}
-#endif
 	return true;
 }
 

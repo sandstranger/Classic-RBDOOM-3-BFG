@@ -271,12 +271,11 @@ void idSoundHardware_OpenAL::Init()
 		common->FatalError( "idSoundHardware_OpenAL::Init: alcMakeContextCurrent( %p) failed with code: %d\n", openalContext, error );
 		return;
 	}
-
 	//GK: And check if it works
-	hasEFX = false;
+	hasEFX = true;
 	ALCint size = 0;
 	alcGetIntegerv(openalDevice, ALC_MAX_AUXILIARY_SENDS, 1, &size);
-	if (!hasEFX) {
+	if (!alcIsExtensionPresent(openalDevice, "ALC_EXT_EFX") || size == 0) {
 		hasEFX = false;
 		common->Printf("No EAX support");
 	} else {
@@ -398,15 +397,12 @@ void idSoundHardware_OpenAL::Shutdown()
 	I_ShutdownSoundHardwareAL();
 #endif
 
-#ifndef ANDROID
 	if (alIsFilterRef(voicefilter) == AL_TRUE) {
 		alDeleteFiltersRef(1, &voicefilter);
 	}
-#endif
 
 	ShutdownReverbSystem();
 
-#ifndef ANDROID
 	if (alIsAuxiliaryEffectSlotRef(slot) == AL_TRUE) {
 		alAuxiliaryEffectSlotiRef(slot, AL_EFFECTSLOT_EFFECT, AL_EFFECT_NULL);
 		alDeleteAuxiliaryEffectSlotsRef(1, &slot);
@@ -416,8 +412,7 @@ void idSoundHardware_OpenAL::Shutdown()
 		alAuxiliaryEffectSlotiRef(voiceslot, AL_EFFECTSLOT_EFFECT, AL_EFFECT_NULL);
 		alDeleteAuxiliaryEffectSlotsRef(1, &voiceslot);
 	}
-#endif
-
+	
 	alcMakeContextCurrent( NULL );
 	
 	alcDestroyContext( openalContext );
@@ -432,13 +427,11 @@ void idSoundHardware_OpenAL::Shutdown()
 
 void idSoundHardware_OpenAL::ShutdownReverbSystem()
 {
-#ifndef ANDROID
 	alAuxiliaryEffectSlotiRef(slot, AL_EFFECTSLOT_EFFECT, AL_EFFECT_NULL);
 	if (alIsEffectRef(EAX) == AL_TRUE) {
 		alDeleteEffectsRef(1, &EAX);
 		EAX = 0;
 	}
-#endif
 }
 
 /*
@@ -573,9 +566,6 @@ void idSoundHardware_OpenAL::Update()
 
 void idSoundHardware_OpenAL::UpdateEAXEffect(idSoundEffect* effect)
 {
-#if ANDROID
-    return;
-#endif
 	EFXEAXREVERBPROPERTIES EnvironmentParameters;
 	if (alIsEffectRef(EAX) == AL_TRUE) {
 		alDeleteEffectsRef(1, &EAX);

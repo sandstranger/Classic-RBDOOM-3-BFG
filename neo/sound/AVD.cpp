@@ -380,8 +380,10 @@ bool DecodeALAudio(byte** audio, int* len, int *rate, ALenum *sample, int* loopS
 		*sample = dec_ctx->ch_layout.nb_channels == 2 ? AL_FORMAT_STEREO8 : AL_FORMAT_MONO8;
 		break;
 	case 2:
-	case 4:
 		*sample = dec_ctx->ch_layout.nb_channels == 2 ? AL_FORMAT_STEREO16 : AL_FORMAT_MONO16;
+		break;
+	case 4:
+		*sample = dec_ctx->ch_layout.nb_channels == 2 ? AL_FORMAT_STEREO_FLOAT32 : AL_FORMAT_MONO_FLOAT32;
 		break;
 	}
 	if (av_new_packet(&packet, 1) == 0) {

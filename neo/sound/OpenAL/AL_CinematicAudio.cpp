@@ -67,10 +67,8 @@ void CinematicAudio_OpenAL::InitAudio(void* audioContext)
 		av_sample_cin = dec_ctx2->ch_layout.nb_channels == 2 ? AL_FORMAT_STEREO8 : AL_FORMAT_MONO8;
 		break;
 	case 2:
-		av_sample_cin = dec_ctx2->ch_layout.nb_channels == 2 ? AL_FORMAT_STEREO16 : AL_FORMAT_MONO16;
-		break;
 	case 4:
-		av_sample_cin = dec_ctx2->ch_layout.nb_channels == 2 ? AL_FORMAT_STEREO_FLOAT32 : AL_FORMAT_MONO_FLOAT32;
+		av_sample_cin = dec_ctx2->ch_layout.nb_channels == 2 ? AL_FORMAT_STEREO16 : AL_FORMAT_MONO16;
 		break;
 	}
 	common->Printf("Video audio stream found:\n\tSample Rate: %dHz\n\tSample Format: %s\n", av_rate_cin, GetSampleName(av_sample_cin));

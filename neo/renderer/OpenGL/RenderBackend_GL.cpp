@@ -85,8 +85,6 @@ static uintptr_t currentVertOffset = ~0;
 
 #if ANDROID
 const int DEFAULT_GLES_VERSION = 320;
-
-static std::string glExtensions;
 int glesVersion = DEFAULT_GLES_VERSION;
 static bool g_enableDXTSupport = false;
 
@@ -316,10 +314,6 @@ static void R_CheckPortableExtensions()
     glConfig.driverType = GLDRV_OPENGL_ES3;
 #endif
 	// RB end
-
-#if ANDROID
-	glExtensions = (const char*)glGetString(GL_EXTENSIONS);
-#endif
 #ifndef ANDROID
 	// GL_ARB_multitexture
 	if( glConfig.driverType != GLDRV_OPENGL3X )
@@ -345,8 +339,8 @@ static void R_CheckPortableExtensions()
 	glConfig.anisotropicFilterAvailable = GLEW_EXT_texture_filter_anisotropic != 0;
 #else
     glConfig.multitextureAvailable = true;
-	glConfig.textureCompressionAvailable = g_enableDXTSupport && glExtensions.contains("GL_EXT_texture_compression_s3tc");
-	glConfig.anisotropicFilterAvailable = glExtensions.contains("GL_EXT_texture_filter_anisotropic");
+	glConfig.textureCompressionAvailable = g_enableDXTSupport && GLAD_GL_EXT_texture_compression_s3tc!=0;
+	glConfig.anisotropicFilterAvailable = GLAD_GL_EXT_texture_filter_anisotropic !=0;
 #endif
 	if( glConfig.anisotropicFilterAvailable )
 	{
@@ -381,7 +375,7 @@ static void R_CheckPortableExtensions()
     glConfig.vertexBufferObjectAvailable = true;
     glConfig.mapBufferRangeAvailable = true;
     glConfig.vertexArrayObjectAvailable = true;
-    glConfig.drawElementsBaseVertexAvailable = glExtensions.contains("GL_EXT_draw_elements_base_vertex");
+    glConfig.drawElementsBaseVertexAvailable = GLAD_GL_EXT_draw_elements_base_vertex!=0;
     glConfig.uniformBufferAvailable = true;
     glConfig.gpuSkinningAvailable = true;
     glConfig.fragmentProgramAvailable = true;
@@ -507,7 +501,7 @@ static void R_CheckPortableExtensions()
 	glConfig.framebufferObjectAvailable = GLEW_ARB_framebuffer_object != 0;
 #else
     glConfig.framebufferObjectAvailable = true;
-    glConfig.syncAvailable = glExtensions.contains("GL_OES_EGL_sync") || glExtensions.contains("GL_APPLE_sync") ;
+    glConfig.syncAvailable = true;
 #endif
 
 	R_PrintExtensionStatus(glConfig.framebufferObjectAvailable, "GL_ARB_framebuffer_object");
@@ -521,8 +515,7 @@ static void R_CheckPortableExtensions()
 #ifndef ANDROID
 	glConfig.framebufferBlitAvailable = GLEW_EXT_framebuffer_blit != 0;
 #else
-	glConfig.framebufferBlitAvailable = glExtensions.contains( "GL_EXT_framebuffer_blit") ||
-			glExtensions.contains("GL_NV_framebuffer_blit");
+	glConfig.framebufferBlitAvailable = true;
 #endif
 	R_PrintExtensionStatus(glConfig.framebufferBlitAvailable, "GL_EXT_framebuffer_blit");
 	

@@ -119,8 +119,8 @@ private:
 	bool					triggered;
 	ALuint					openalSource;
 	ALuint					openalStreamingOffset;
-	ALuint					openalStreamingBuffer[8];
-	ALuint					lastopenalStreamingBuffer[8];
+	ALuint					openalStreamingBuffer[3];
+	ALuint					lastopenalStreamingBuffer[3];
 };
 
 /*

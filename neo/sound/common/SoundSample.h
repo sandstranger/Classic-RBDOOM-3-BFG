@@ -46,9 +46,6 @@ public:
 	}
 	bool useavi = false; //GK:Keep track on whenever we are about to load non wav audio files
 	// Loads and initializes the resource based on the name.
-	idList<sampleBuffer_t, TAG_AUDIO> buffers;
-	idWaveFile::waveFmt_t	format;
-
 	virtual void	 LoadResource() = 0;
 
 	void			SetName(const char* n)
@@ -176,9 +173,12 @@ protected:
 	uint32			lastPlayedTime;
 
 	int				totalBufferSize;	// total size of all the buffers
+	idList<sampleBuffer_t, TAG_AUDIO> buffers;
 
 	int				playBegin;
 	int				playLength;
+
+	idWaveFile::waveFmt_t	format;
 
 	idList<byte, TAG_AMPLITUDE> amplitude;
 };

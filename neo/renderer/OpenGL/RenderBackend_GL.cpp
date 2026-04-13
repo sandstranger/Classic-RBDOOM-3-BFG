@@ -311,7 +311,7 @@ static void R_CheckPortableExtensions()
 		}
 	}
 #else
-    glConfig.driverType = GLDRV_OPENGL_ES3;
+    glConfig.driverType = GLDRV_OPENGL_MESA_CORE_PROFILE;
 #endif
 	// RB end
 #ifndef ANDROID
@@ -1723,7 +1723,7 @@ void idRenderBackend::CheckCVars()
 	switch( glConfig.driverType )
 	{
 #if ANDROID
-		case GLDRV_OPENGL_MESA:
+		case GLDRV_OPENGL_MESA_CORE_PROFILE:
 			r_fullscreen.SetInteger( 1 );
             break;
 #endif

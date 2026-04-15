@@ -421,8 +421,10 @@ bool GLimp_Init( glimpParms_t parms )
 		parms.height = glConfig.nativeScreenHeight;
 		parms.fullScreen = true;
 		glConfig.isFullscreen = true;
-		r_customWidth.SetInteger(parms.width);
-		r_customHeight.SetInteger(parms.height);
+		r_customWidth.SetInteger(glConfig.nativeScreenWidth);
+		r_customHeight.SetInteger(glConfig.nativeScreenHeight);
+		r_windowWidth.SetInteger(glConfig.nativeScreenWidth);
+		r_windowHeight.SetInteger(glConfig.nativeScreenHeight);
 		r_fullscreen.SetInteger(1);
 #endif
 		common->Printf( "Using %d color bits, %d depth, %d stencil display\n",

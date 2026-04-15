@@ -589,7 +589,10 @@ void SDL_Poll()
 				int h = ev.window.data2;
 				r_windowWidth.SetInteger(w);
 				r_windowHeight.SetInteger(h);
-
+#if ANDROID
+				r_customWidth.SetInteger(w);
+				r_customHeight.SetInteger(h);
+#endif
 				glConfig.nativeScreenWidth = w;
 				glConfig.nativeScreenHeight = h;
 				cmdSystem->BufferCommandText(CMD_EXEC_APPEND, "vid_restart\n");

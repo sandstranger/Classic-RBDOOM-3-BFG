@@ -44,6 +44,10 @@ If you have questions concerning this license or the applicable additional terms
 #include "renderer/RenderCommon.h"
 #include "sdl_local.h"
 
+#if ANDROID
+#include <vector>
+#endif
+
 idCVar in_nograb( "in_nograb", "0", CVAR_SYSTEM | CVAR_NOCHEAT, "prevents input grabbing" );
 
 // RB: FIXME this shit. We need the OpenGL alpha channel for advanced rendering effects
@@ -75,6 +79,20 @@ static bool grabbed = false;
 static SDL_GLContext context = NULL;
 
 SDL_Window* window = NULL;
+
+#if ANDROID
+static std::vector<int> supportedRefreshRates;
+
+extern "C"{
+__attribute__((used)) __attribute__((visibility("default")))
+void setRefreshRates(const int* targetRefreshRates, int size) {
+	for (int i = 0; i < size; i++)
+	{
+		supportedRefreshRates.push_back(targetRefreshRates[i]);
+	}
+}
+}
+#endif
 
 /*
 ===================
@@ -890,10 +908,10 @@ R_GetModeListForDisplay
 */
 bool R_GetRefreshListForDisplay(const unsigned requestedDisplayNum, idList<int>& refreshList)
 {
+	refreshList.Clear();
+#ifndef ANDROID
 	assert(requestedDisplayNum >= 0);
 	unsigned displayIndex = requestedDisplayNum + 1;
-
-	refreshList.Clear();
 	int count = 0;
 	SDL_DisplayID* displays = SDL_GetDisplays(&count);
 	// DG: SDL2 implementation
@@ -946,6 +964,12 @@ bool R_GetRefreshListForDisplay(const unsigned requestedDisplayNum, idList<int>&
 	SDL_free(modes);
 	return true;
 	// DG end
+#else
+	for (const int refreshRate : supportedRefreshRates) {
+		refreshList.AddUnique(refreshRate);
+	}
+	return true;
+#endif
 }
 
 bool R_GetScreenResolution(const unsigned displayNum, int& w, int& h, int& hz) {

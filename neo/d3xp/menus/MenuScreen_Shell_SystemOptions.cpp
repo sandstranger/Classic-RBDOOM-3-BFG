@@ -30,6 +30,9 @@ If you have questions concerning this license or the applicable additional terms
 #include "precompiled.h"
 #pragma hdrstop
 #include "../Game_local.h"
+#if ANDROID
+#include <vector>
+#endif
 
 const static int NUM_SYSTEM_OPTIONS_OPTIONS = 8;
 
@@ -44,6 +47,21 @@ extern idCVar r_lightScale;
 idList<int> refreshList;
 int numOfDisplays;
 static bool resetVideo = false;
+
+#if ANDROID
+static std::vector<int> refreshRates = {60, 120};
+
+extern "C"{
+__attribute__((used)) __attribute__((visibility("default")))
+void setCurrentScreenRefreshRate(int targetRefreshRate) {
+	if (std::find(refreshRates.begin(), refreshRates.end(), targetRefreshRate) == refreshRates.end())
+	{
+		refreshRates.push_back(targetRefreshRate);
+	}
+}
+}
+
+#endif
 
 /*
 ========================
@@ -552,9 +570,17 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 		case SYSTEM_FIELD_FRAMERATE:
 		{
 			if (R_GetRefreshListForDisplay(r_fullscreen.GetInteger() > 0 ? r_fullscreen.GetInteger() - 1 : 0, refreshList)) {
+#ifndef ANDROID
 				idList<int> framerateList = refreshList;
 				framerateList.AddUnique(60);
 				framerateList.AddUnique(120);
+#else
+				idList<int> framerateList;
+				for (const auto rate : refreshRates)
+				{
+					framerateList.AddUnique(rate);
+				}
+#endif
 				int fps = AdjustOption(com_engineHz.GetInteger(), framerateList.Ptr(), framerateList.Num(), adjustAmount);
 				com_engineHz.SetInteger(fps);
 				if (refreshList.Find(fps) != NULL) {
@@ -562,8 +588,18 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 				}
 			}
 			else {
+#ifndef ANDROID
 				static const int numValues = 2;
 				static const int values[numValues] = { 60, 120 };
+#else
+				const int numValues = refreshRates.size();
+				int values[numValues];
+
+				for(int i = 0; i < numValues; i++)
+				{
+					values[i] = refreshRates[i];
+				}
+#endif
 				com_engineHz.SetInteger(AdjustOption(com_engineHz.GetInteger(), values, numValues, adjustAmount));
 			}
 			break;

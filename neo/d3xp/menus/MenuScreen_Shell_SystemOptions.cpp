@@ -556,6 +556,7 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 			if (R_GetRefreshListForDisplay(r_fullscreen.GetInteger() > 0 ? r_fullscreen.GetInteger() - 1 : 0, refreshList)) {
 				idList<int> framerateList = refreshList;
 				framerateList.AddUnique(30);
+				framerateList.AddUnique(40);
 				framerateList.AddUnique(60);
 				framerateList.AddUnique(120);
 				int fps = AdjustOption(com_engineHz.GetInteger(), framerateList.Ptr(), framerateList.Num(), adjustAmount);
@@ -565,8 +566,8 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 				}
 			}
 			else {
-				static const int numValues = 3;
-				static const int values[numValues] = { 30,60, 120 };
+				static const int numValues = 4;
+				static const int values[numValues] = { 30,40,60, 120 };
 				com_engineHz.SetInteger(AdjustOption(com_engineHz.GetInteger(), values, numValues, adjustAmount));
 			}
 			break;

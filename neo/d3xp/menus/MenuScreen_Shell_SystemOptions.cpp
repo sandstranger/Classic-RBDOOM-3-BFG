@@ -577,6 +577,7 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 		}
 		case SYSTEM_FIELD_FULLSCREEN_MODE:
 		{
+#ifndef ANDROID
 			idList<int> screenValues;
 			screenValues.Clear();
 
@@ -586,6 +587,9 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 				screenValues.AddUnique(i + 1);
 			}
 			r_fullscreen.SetInteger(AdjustOption(r_fullscreen.GetInteger(), screenValues.Ptr(), screenValues.Num(), adjustAmount));
+#else
+			r_fullscreen.SetInteger(1);
+#endif
 			break;
 		}
 		case SYSTEM_FIELD_MOTIONBLUR:

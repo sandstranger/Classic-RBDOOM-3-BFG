@@ -417,7 +417,13 @@ bool GLimp_Init( glimpParms_t parms )
 #ifndef ANDROID
 		glConfig.isFullscreen = ( SDL_GetWindowFlags( window ) & SDL_WINDOW_FULLSCREEN ) == SDL_WINDOW_FULLSCREEN;
 #else
+		parms.width = glConfig.nativeScreenWidth;
+		parms.height = glConfig.nativeScreenHeight;
+		parms.fullScreen = true;
 		glConfig.isFullscreen = true;
+		r_customWidth.SetInteger(parms.width);
+		r_customHeight.SetInteger(parms.height);
+		r_fullscreen.SetInteger(1);
 #endif
 		common->Printf( "Using %d color bits, %d depth, %d stencil display\n",
 						channelcolorbits, tdepthbits, tstencilbits );
@@ -973,7 +979,7 @@ bool R_GetRefreshListForDisplay(const unsigned requestedDisplayNum, idList<int>&
 }
 
 bool R_GetScreenResolution(const unsigned displayNum, int& w, int& h, int& hz) {
-
+#ifndef ANDROID
 	SDL_DisplayID display = SDL_GetDisplayFromIndex(displayNum);
 	const SDL_DisplayMode* current = SDL_GetCurrentDisplayMode(display);
 	if (current != NULL) {
@@ -983,6 +989,9 @@ bool R_GetScreenResolution(const unsigned displayNum, int& w, int& h, int& hz) {
 		return true;
 	}
 	return false;
+#else
+	return false;
+#endif
 
 }
 

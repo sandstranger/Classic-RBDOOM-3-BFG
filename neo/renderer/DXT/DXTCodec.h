@@ -317,7 +317,7 @@ idDxtEncoder::CompressImageDXT1Fast
 */
 ID_INLINE void idDxtEncoder::CompressImageDXT1Fast( const byte* inBuf, byte* outBuf, int _width, int _height )
 {
-#if defined(USE_INTRINSICS)
+#if defined(USE_INTRINSICS) && !defined(__ARM_ARCH_7A__)
 	CompressImageDXT1Fast_SSE2( inBuf, outBuf, _width, _height );
 #else
 	CompressImageDXT1Fast_Generic( inBuf, outBuf, _width, _height );
@@ -331,7 +331,7 @@ idDxtEncoder::CompressImageDXT1AlphaFast
 */
 ID_INLINE void idDxtEncoder::CompressImageDXT1AlphaFast( const byte* inBuf, byte* outBuf, int _width, int _height )
 {
-#if defined(USE_INTRINSICS)
+#if defined(USE_INTRINSICS) && !defined(__ARM_ARCH_7A__)
 	CompressImageDXT1AlphaFast_SSE2( inBuf, outBuf, _width, _height );
 #else
 	CompressImageDXT1AlphaFast_Generic( inBuf, outBuf, _width, _height );
@@ -345,7 +345,7 @@ idDxtEncoder::CompressImageDXT5Fast
 */
 ID_INLINE void idDxtEncoder::CompressImageDXT5Fast( const byte* inBuf, byte* outBuf, int _width, int _height )
 {
-#if defined(USE_INTRINSICS)
+#if defined(USE_INTRINSICS) && !defined(__ARM_ARCH_7A__)
 	CompressImageDXT5Fast_SSE2( inBuf, outBuf, _width, _height );
 #else
 	CompressImageDXT5Fast_Generic( inBuf, outBuf, _width, _height );
@@ -369,7 +369,7 @@ idDxtEncoder::CompressYCoCgDXT5Fast
 */
 ID_INLINE void idDxtEncoder::CompressYCoCgDXT5Fast( const byte* inBuf, byte* outBuf, int _width, int _height )
 {
-#if defined(USE_INTRINSICS)
+#if defined(USE_INTRINSICS) && !defined(__ARM_ARCH_7A__)
 	CompressYCoCgDXT5Fast_SSE2( inBuf, outBuf, _width, _height );
 #else
 	CompressYCoCgDXT5Fast_Generic( inBuf, outBuf, _width, _height );
@@ -393,7 +393,7 @@ idDxtEncoder::CompressNormalMapDXT5Fast
 */
 ID_INLINE void idDxtEncoder::CompressNormalMapDXT5Fast( const byte* inBuf, byte* outBuf, int _width, int _height )
 {
-#if defined(USE_INTRINSICS)
+#if defined(USE_INTRINSICS) && !defined(__ARM_ARCH_7A__)
 	CompressNormalMapDXT5Fast_SSE2( inBuf, outBuf, _width, _height );
 #else
 	CompressNormalMapDXT5Fast_Generic( inBuf, outBuf, _width, _height );

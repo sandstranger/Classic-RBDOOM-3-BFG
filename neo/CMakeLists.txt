@@ -396,7 +396,6 @@ endif (ZLIB_FOUND)
 
 if (ANDROID)
     include_directories("${CMAKE_CURRENT_SOURCE_DIR}/libs/glad/include")
-    include_directories("${CMAKE_CURRENT_SOURCE_DIR}/libs/sse2neon")
 endif()
 
     set (GLAD_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/glad/src/glad.c")

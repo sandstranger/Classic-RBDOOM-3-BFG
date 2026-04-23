@@ -407,12 +407,10 @@ void R_SetNewMode( const bool fullInit )
 
 	for (int i = 0; i < 4; i++)
 	{
-#ifndef ANDROID
 		if (i == 0 && stereoRender_enable.GetInteger() != STEREO3D_QUAD_BUFFER)
 		{
 			continue;		// don't even try for a stereo mode
 		}
-#endif
 		// get the mode list for this monitor
 		idList<vidMode_t> modeList;
 
@@ -523,7 +521,6 @@ void R_SetNewMode( const bool fullInit )
 			parms.multiSamples = 0;
 			break;
 		}
-#ifndef ANDROID
 		if (stereoRender_enable.GetInteger() == STEREO3D_VR) {
 			parms.multiSamples = 0;
 		}
@@ -536,9 +533,6 @@ void R_SetNewMode( const bool fullInit )
 		{
 			parms.stereo = false;
 		}
-#else
-		parms.stereo = false;
-#endif
 
 		if (fullInit)
 		{
@@ -2830,11 +2824,7 @@ idRenderSystemLocal::GetStereoScopicRenderingMode
 */
 stereo3DMode_t idRenderSystemLocal::GetStereoScopicRenderingMode() const
 {
-#ifndef ANDROID
 	return ( !IsStereoScopicRenderingSupported() ) ? STEREO3D_OFF : ( stereo3DMode_t )stereoRender_enable.GetInteger();
-#else
-	return STEREO3D_OFF;
-#endif
 }
 
 /*
@@ -2844,11 +2834,7 @@ idRenderSystemLocal::IsStereoScopicRenderingSupported
 */
 void idRenderSystemLocal::EnableStereoScopicRendering( const stereo3DMode_t mode ) const
 {
-#ifndef ANDROID
 	stereoRender_enable.SetInteger( mode );
-#else
-	stereoRender_enable.SetInteger( 0 );
-#endif
 }
 
 /*

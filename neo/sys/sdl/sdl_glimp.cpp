@@ -919,7 +919,7 @@ bool R_GetRefreshListForDisplay(const unsigned requestedDisplayNum, idList<int>&
 	refreshList.Clear();
 #ifndef ANDROID
 	assert(requestedDisplayNum >= 0);
-	unsigned displayIndex = requestedDisplayNum + 1;
+	unsigned displayIndex = requestedDisplayNum;
 	int count = 0;
 	SDL_DisplayID* displays = SDL_GetDisplays(&count);
 	// DG: SDL2 implementation
@@ -930,7 +930,7 @@ bool R_GetRefreshListForDisplay(const unsigned requestedDisplayNum, idList<int>&
 		SDL_free(displays);
 		return false;
 	}
-	SDL_DisplayID displayId = displays[displayIndex - 1];
+	SDL_DisplayID displayId = displays[displayIndex];
 	SDL_free(displays);
 
 	int numModes = 0;

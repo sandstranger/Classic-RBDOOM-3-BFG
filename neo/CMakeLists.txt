@@ -392,7 +392,9 @@ else (ZLIB_FOUND)
     set(ZLIB_LIBRARY "" )
 endif (ZLIB_FOUND)
 
+if (NOT ANDROID)
 	find_package(OpenGL REQUIRED)
+endif ()
 
 if (ANDROID)
     include_directories("${CMAKE_CURRENT_SOURCE_DIR}/libs/glad/include")

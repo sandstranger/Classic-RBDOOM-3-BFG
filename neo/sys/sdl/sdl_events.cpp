@@ -1357,7 +1357,6 @@ void JoystickSamplingThread(void* data){
 		}
 
         if (virtualControllerIndex != -1){
-            SDL_free(haptics);
             SDL_free(controllers);
             return;
         }

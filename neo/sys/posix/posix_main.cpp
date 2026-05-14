@@ -943,9 +943,9 @@ void Sys_Init() {
 #endif
 
 #endif
-	if( !SDL_WasInit( SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC) )
+	if( !SDL_WasInit( SDL_INIT_VIDEO | SDL_INIT_GAMEPAD) )
 	{
-		if( !SDL_Init( SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_HAPTIC ) )
+		if( !SDL_Init( SDL_INIT_VIDEO | SDL_INIT_GAMEPAD) )
 			common->FatalError( "Error while initializing SDL: %s", SDL_GetError() );
 	}
 

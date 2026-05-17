@@ -647,6 +647,7 @@ void G_DoLoadLevel ()
 	::g->skyflatnum = R_FlatNumForName ( SKYFLATNAME );
 	//GK: Re-render the sky buffer on every map 
 	//in order to have a color similar to the sky flat
+	::g->initFire = false;
 	if (::g->skybuffer) {
 		free(::g->skybuffer);
 		::g->skybuffer = NULL;

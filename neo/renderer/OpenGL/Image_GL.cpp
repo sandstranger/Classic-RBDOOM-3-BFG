@@ -1443,7 +1443,8 @@ void idImage::AllocImage()
 						if (!glConfig.textureCompressionAvailable) {
 							w = (w + 3) & ~3;
 							h = (h + 3) & ~3;
-							compressedSize = w * h;
+							const int blocks = (w / 4) * (h / 4);
+							compressedSize = blocks * 16;
 							byte *data = (byte *) Mem_Alloc(compressedSize, TAG_TEMP);
                             glCompressedTexImage2D(uploadTarget + side, level, GL_COMPRESSED_RGBA8_ETC2_EAC, w, h, 0, compressedSize, data);
 							if (data != nullptr) {

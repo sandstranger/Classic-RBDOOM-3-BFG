@@ -461,11 +461,11 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
                     vst4q_u8(&dpic[i * 4], pixels);
                 }
                 for (; i < pixelCount; i++) {
-                    std::swap(dpic[i * 4 + 0], dpic[i * 4 + 2]);
+                    std::swap(dpic[i * 4], dpic[i * 4 + 2]);
                 }
 #else
                 for (int i = 0; i < pixelCount; i++) {
-                    std::swap(dpic[i * 4 + 0], dpic[i * 4 + 2]);
+                    std::swap(dpic[i * 4 ], dpic[i * 4 + 2]);
                 }
 #endif
                 const uint32_t blocks = (dxtWidth / 4) * (dxtHeight / 4);

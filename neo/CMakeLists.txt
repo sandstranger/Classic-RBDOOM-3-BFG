@@ -398,11 +398,11 @@ endif ()
 
 if (ANDROID)
     include_directories("${CMAKE_CURRENT_SOURCE_DIR}/libs/glad/include"
-			"${CMAKE_CURRENT_SOURCE_DIR}/libs/etcpack")
+			"${CMAKE_CURRENT_SOURCE_DIR}/libs/etcpak")
 	set (GLAD_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/glad/src/glad.c")
-	set (ETCPACK_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/etcpack/ProcessRGB.cpp"
-			"${CMAKE_CURRENT_SOURCE_DIR}/libs/etcpack/Dither.cpp"
-			"${CMAKE_CURRENT_SOURCE_DIR}/libs/etcpack/Tables.cpp")
+	set (ETCPACK_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/etcpak/ProcessRGB.cpp"
+			"${CMAKE_CURRENT_SOURCE_DIR}/libs/etcpak/Dither.cpp"
+			"${CMAKE_CURRENT_SOURCE_DIR}/libs/etcpak/Tables.cpp")
 endif()
 
 

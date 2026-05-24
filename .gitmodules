@@ -1,3 +1,6 @@
 [submodule "vcpkg"]
 	path = vcpkg
 	url = https://github.com/microsoft/vcpkg.git
+[submodule "neo/libs/etcpak"]
+	path = neo/libs/etcpak
+	url = https://github.com/wolfpld/etcpak.git

@@ -549,6 +549,29 @@ R_GetSkyColumn
 	return ::g->s_texturecomposite[tex] + ofs;
 }
 
+/*
+		FindCustomSkyIndex
+==================================
+
+Checks the texture picnum if it belongs to the SKYDEFS sky name
+and return the index of the array.
+If it fails it return -1
+*/
+
+int R_FindCustomSkyIndex(int picnum) {
+	int result = -1;
+	if (!::g->skies.empty()) {
+		for (size_t i = 0; i < ::g->skies.size(); i++) {
+			if (picnum == ::g->skies[i]->picnum) {
+				result = i;
+				break;
+			}
+		}
+	}
+
+	return result;
+}
+
 //GK: PSX Fire
 
 // R_StartTheFire
@@ -567,33 +590,36 @@ void R_StartTheFire(int src) {
 	}
 }
 
+// R_SetupFireSky
+//
+// Initialize the PSX/D64 fire sky
+// when setting up sky metadata on level load 
+void R_SetupFireSky(int tex) {
+	//Like the example code
+	for (int i = 0; i < FIRE_WIDTH * FIRE_HEIGHT; i++) {
+		::g->fireBuffer[i] = 0;
+	}
+	for(int i = 0; i < FIRE_WIDTH; i++) {
+		::g->fireBuffer[(FIRE_HEIGHT-1)*FIRE_WIDTH + i] = 35;
+	}
+	int lump = ::g->s_texturecolumnlump[tex][0];
+	if (::g->skybuffer) {
+		free(::g->skybuffer);
+		::g->skybuffer = NULL;
+	}
+	R_GenerateSkyHead(lump, true); //Regenerate the fake sky teture to just black
+}
+
 // R_GenerateFireSky
 //
-// Initialize, generate and PSX/D64 fire sky
+// Generate a frame for the PSX/D64 fire sky
 // using the ID24's SKYDEF fire field
 void R_GenerateFireSky(int tex, fireSky_t fire) {
-	if (::g->initFire == false) { //GK: Setup Fire Sky
-		//Like the example code
-		for (int i = 0; i < FIRE_WIDTH * FIRE_HEIGHT; i++) {
-			::g->fireBuffer[i] = 0;
-		}
-		for(int i = 0; i < FIRE_WIDTH; i++) {
-			::g->fireBuffer[(FIRE_HEIGHT-1)*FIRE_WIDTH + i] = 35;
-		}
-		int lump = ::g->s_texturecolumnlump[tex][0];
-		if (::g->skybuffer) {
-			free(::g->skybuffer);
-			::g->skybuffer = NULL;
-		}
-		R_GenerateSkyHead(lump, true); //Regenerate the fake sky teture to just black
-		::g->initFire = true;
-	}
 
-	//Calculate the update time in millis insted of seconds in order to avoid dealing with float point numbers
-	int updateTimeMillis = fire.updatetime * 1000;
-	int currentTime = Sys_Milliseconds();
-	int deltaFireTime = currentTime - ::g->lastFireTime;
-	if (deltaFireTime >= updateTimeMillis) {
+	//Calculate the update time in seconds in order to keep it as accurate as possible
+	float currentTime = Sys_Milliseconds() / 1000.0f;
+	float deltaFireTime = currentTime - ::g->lastFireTime;
+	if (deltaFireTime >= fire.updatetime) {
 	for (int x = 0; x < FIRE_WIDTH; x++) {
 		for (int y = 1; y < FIRE_HEIGHT; y++) {
 			R_StartTheFire(y * FIRE_WIDTH + x);
@@ -804,6 +830,13 @@ void R_InitTextures (void)
 
 	for (i=0 ; i < ::g->s_numtextures ; i++)
 		::g->texturetranslation[i] = i;	
+
+	//GK: Cache picnums associated with sky textures
+	if (!::g->skies.empty()) {
+		for(size_t sk = 0; sk < ::g->skies.size(); sk++) {
+			::g->skies[sk]->picnum = R_TextureNumForName(::g->skies[sk]->name);
+		}
+	}
 }
 
 //
@@ -826,7 +859,6 @@ void R_ClearTextures(void) {
 	Z_Free(::g->s_texturecomposite);
 	Z_Free(::g->s_texturecompositesize);
 	Z_Free(::g->texturetranslation);
-	::g->initFire = false;
 	
 	if (::g->skybuffer) {
 		free(::g->skybuffer);

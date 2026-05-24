@@ -28,6 +28,13 @@ If you have questions concerning this license or the applicable additional terms
 */
 
 #include "precompiled.h"
+#if ANDROID
+#include "ProcessRGB.hpp"
+#endif
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#include "arm_neon.h"
+#endif
+
 #pragma hdrstop
 /*
 ================================================================================================
@@ -341,7 +348,6 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight )
 	tr.backend.pc.c_copyFrameBuffer++;
 }
 
-
 /*
 ========================
 idImage::SubImageUpload
@@ -425,30 +431,59 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 		{
 #ifdef ANDROID //karin: decompress texture to RGBA instead of glCompressedXXX on OpenGLES
 			if (!glConfig.textureCompressionAvailable) {
-				idDxtDecoder decoder;
-				// Alloc more memory???
-				const int dxtWidth = Max((width + 4) & ~4, (width + 3) & ~3);
-				const int dxtHeight = Max((height + 4) & ~4, (height + 3) & ~3);
-				byte *dpic = (byte *) Mem_Alloc(dxtWidth * dxtHeight * 4, TAG_TEMP);
-				if (dpic) {
-					if (opts.format == FMT_DXT1)
-						decoder.DecompressImageDXT1((const byte *) pic, dpic, width, height);
-					else {
-						if (opts.colorFormat == CFM_YCOCG_DXT5)
-							decoder.DecompressYCoCgDXT5((const byte *) pic, dpic, width, height);
-						else if (opts.colorFormat == CFM_NORMAL_DXT5)
-							decoder.DecompressNormalMapDXT5Renormalize((const byte *) pic, dpic,
-																	   width,
-																	   height);
-						else
-							decoder.DecompressImageDXT5((const byte *) pic, dpic, width, height);
-					}
+                idDxtDecoder decoder;
+                const int dxtWidth = (width + 3) & ~3;
+                const int dxtHeight = (height + 3) & ~3;
+                byte *dpic = (byte *) Mem_Alloc(dxtWidth * dxtHeight * 4, TAG_TEMP);
+                if (!dpic) {
+                    common->Error("ETC2: failed to allocate decode buffer");
+                    return;
+                }
+                memset(dpic, 0, dxtWidth * dxtHeight * 4);
+                if (opts.format == FMT_DXT1)
+                    decoder.DecompressImageDXT1((const byte *)pic, dpic, width, height);
+                else {
+                    if (opts.colorFormat == CFM_YCOCG_DXT5)
+                        decoder.DecompressYCoCgDXT5((const byte *)pic, dpic, width, height);
+                    else if (opts.colorFormat == CFM_NORMAL_DXT5)
+                        decoder.DecompressNormalMapDXT5Renormalize((const byte *)pic, dpic, width, height);
+                    else
+                        decoder.DecompressImageDXT5((const byte *)pic, dpic, width, height);
+                }
+                const int pixelCount = dxtWidth * dxtHeight;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+                int i = 0;
+                for (; i <= pixelCount - 16; i += 16) {
+                    uint8x16x4_t pixels = vld4q_u8(&dpic[i * 4]);
+                    uint8x16_t temp = pixels.val[0];
+                    pixels.val[0] = pixels.val[2];
+                    pixels.val[2] = temp;
+                    vst4q_u8(&dpic[i * 4], pixels);
+                }
+                for (; i < pixelCount; i++) {
+                    std::swap(dpic[i * 4 + 0], dpic[i * 4 + 2]);
+                }
+#else
+                for (int i = 0; i < pixelCount; i++) {
+                    std::swap(dpic[i * 4 + 0], dpic[i * 4 + 2]);
+                }
+#endif
+                const uint32_t blocks = (dxtWidth / 4) * (dxtHeight / 4);
+                const size_t compressedSize = blocks * 16;
+				const auto etc2Data = (uint8_t*)Mem_Alloc(compressedSize, TAG_TEMP);
+                CompressEtc2Rgba(
+                        reinterpret_cast<const uint32_t*>(dpic),
+                        reinterpret_cast<uint64_t*>(etc2Data),
+                        blocks,
+                        dxtWidth,
+                        true
+                );
 
-					glTexSubImage2D(uploadTarget, mipLevel, x, y, width, height,
-									GL_RGBA /*dataFormat*/,
-									GL_UNSIGNED_BYTE /*dataType*/, dpic);
-					Mem_Free(dpic);
-				}
+                glCompressedTexSubImage2D(uploadTarget, mipLevel, x, y, width, height,
+                                              GL_COMPRESSED_RGBA8_ETC2_EAC, static_cast<GLsizei>(compressedSize),
+                                              etc2Data);
+               Mem_Free(dpic);
+			   Mem_Free(etc2Data);
 		}
         else {
                 glCompressedTexSubImage2D(uploadTarget, mipLevel, x, y, width, height,
@@ -1189,7 +1224,7 @@ void idImage::AllocImage()
 #ifndef ANDROID
 			internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) ) ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 #else
-			internalFormat = !glConfig.textureCompressionAvailable ? GL_RGBA8 : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
+			internalFormat = !glConfig.textureCompressionAvailable ? GL_COMPRESSED_RGBA8_ETC2_EAC : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 #endif
 			dataFormat = GL_RGBA;
 			dataType = GL_UNSIGNED_BYTE;
@@ -1198,7 +1233,7 @@ void idImage::AllocImage()
 #ifndef ANDROID
 			internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) && opts.colorFormat != CFM_YCOCG_DXT5 && opts.colorFormat != CFM_NORMAL_DXT5 ) ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 #else
-			internalFormat = !glConfig.textureCompressionAvailable ? GL_RGBA8 : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+			internalFormat = !glConfig.textureCompressionAvailable ? GL_COMPRESSED_RGBA8_ETC2_EAC : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 #endif
 			//internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 			dataFormat = GL_RGBA;
@@ -1406,11 +1441,11 @@ void idImage::AllocImage()
 #elif ANDROID //karin: decompress texture instead of glCompressedXXX or ETC1 ETC2 RGBA4444 on OpenGLES
 						// alloc texture memory(compression)
 						if (!glConfig.textureCompressionAvailable) {
-							compressedSize = w * h * 4;
+							w = (w + 3) & ~3;
+							h = (h + 3) & ~3;
+							compressedSize = w * h;
 							byte *data = (byte *) Mem_Alloc(compressedSize, TAG_TEMP);
-							glTexImage2D(uploadTarget + side, level, GL_RGBA8 /*internalFormat*/, w,
-										 h, 0, GL_RGBA /*dataFormat*/,
-										 GL_UNSIGNED_BYTE /*dataType*/, data);
+                            glCompressedTexImage2D(uploadTarget + side, level, GL_COMPRESSED_RGBA8_ETC2_EAC, w, h, 0, compressedSize, data);
 							if (data != nullptr) {
 								Mem_Free(data);
 							}

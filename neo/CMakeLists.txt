@@ -397,10 +397,14 @@ if (NOT ANDROID)
 endif ()
 
 if (ANDROID)
-    include_directories("${CMAKE_CURRENT_SOURCE_DIR}/libs/glad/include")
+    include_directories("${CMAKE_CURRENT_SOURCE_DIR}/libs/glad/include"
+			"${CMAKE_CURRENT_SOURCE_DIR}/libs/etcpack")
+	set (GLAD_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/glad/src/glad.c")
+	set (ETCPACK_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/etcpack/ProcessRGB.cpp"
+			"${CMAKE_CURRENT_SOURCE_DIR}/libs/etcpack/Dither.cpp"
+			"${CMAKE_CURRENT_SOURCE_DIR}/libs/etcpack/Tables.cpp")
 endif()
 
-    set (GLAD_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/glad/src/glad.c")
 
 find_package(Stb)
 
@@ -1927,7 +1931,7 @@ endif()
 if (NOT ANDROID)
 	add_executable(DoomBFA WIN32 ${RBDOOM3_SOURCES} ${RBDOOM3_INCLUDES})
 else()
-	add_library(DoomBFA SHARED ${RBDOOM3_SOURCES} ${RBDOOM3_INCLUDES} ${GLAD_SOURCES})
+	add_library(DoomBFA SHARED ${RBDOOM3_SOURCES} ${RBDOOM3_INCLUDES} ${GLAD_SOURCES} ${ETCPACK_SOURCES})
 endif()
 	if (USE_PRECOMPILED_HEADERS)
 		# make sure precompiled header is created before executable is compiled

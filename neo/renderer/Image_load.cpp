@@ -536,15 +536,6 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 				commonLocal.LoadPacifierBinarizeProgressTotal( opts.width * opts.width * 6 );
 			}
 
-#if ANDROID
-            if (!glConfig.textureCompressionAvailable && (opts.format == FMT_DXT1 || opts.format == FMT_DXT5))
-            {
-                opts.format = FMT_RGBA8;
-                if (opts.colorFormat == CFM_YCOCG_DXT5 || opts.colorFormat == CFM_NORMAL_DXT5) {
-                    opts.colorFormat = CFM_DEFAULT;
-                }
-            }
-#endif
 			im.Load2DFromMemory( opts.width, opts.height, pic, opts.numLevels, opts.format, opts.colorFormat, opts.gammaMips );
 			commonLocal.LoadPacifierBinarizeEnd();
 			

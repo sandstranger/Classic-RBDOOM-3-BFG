@@ -53,6 +53,26 @@ Contains the Image implementation for OpenGL.
 #define GL_INTENSITY16				0x804D
 #define GL_TEXTURE_MAX_ANISOTROPY_EXT     0x84FE
 #define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
+#if ANDROID
+#define MIPMAPS_SKIP_LEVEL				1
+static bool g_enableTexturesShrinking = false;
+
+extern "C" {
+__attribute__((used)) __attribute__((visibility("default")))
+void enableTexturesShrinking(const bool enableTexturesShrinking) {
+    g_enableTexturesShrinking = enableTexturesShrinking;
+}
+}
+#endif
+
+int getMipmapSkipLevel(const int numLevels) {
+#if ANDROID
+	return g_enableTexturesShrinking && MIPMAPS_SKIP_LEVEL < numLevels ? MIPMAPS_SKIP_LEVEL : 0;
+#else
+	return 0;
+#endif
+}
+
 /*
 ====================
 idImage::idImage
@@ -353,26 +373,33 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight )
 idImage::SubImageUpload
 ========================
 */
-void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int height, const void* pic, int pixelPitch )
+void idImage::SubImageUpload( int mipLevel, int mipLevelToSkip, int x, int y, int z, int width, int height,
+							  const void* pic, int pixelPitch )
 {
+    if (mipLevel < mipLevelToSkip)
+	{
+        return;
+    }
+
 	assert( x >= 0 && y >= 0 && mipLevel >= 0 && width >= 0 && height >= 0 && mipLevel < opts.numLevels );
-	
+
 	int compressedSize = 0;
-	
+    const int gpuMipLevel = mipLevel - mipLevelToSkip;
+
 	if( IsCompressed() )
 	{
 		assert( !( x & 3 ) && !( y & 3 ) );
-		
+
 		// compressed size may be larger than the dimensions due to padding to quads
 		int quadW = ( width + 3 ) & ~3;
 		int quadH = ( height + 3 ) & ~3;
 		compressedSize = quadW * quadH * BitsForFormat( opts.format ) / 8;
-		
+
 #ifdef _DEBUG
 		int padW = ( opts.width + 3 ) & ~3;
 		int padH = ( opts.height + 3 ) & ~3;
 #endif
-		
+
 		assert( x + width <= padW && y + height <= padH );
 		// upload the non-aligned value, OpenGL understands that there
 		// will be padding
@@ -389,7 +416,7 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 	{
 		assert( x + width <= opts.width && y + height <= opts.height );
 	}
-	
+
 	int target;
 	int uploadTarget;
 #ifndef ANDROID
@@ -479,14 +506,14 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
                         true
                 );
 
-                glCompressedTexSubImage2D(uploadTarget, mipLevel, x, y, width, height,
+                glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y, width, height,
                                               GL_COMPRESSED_RGBA8_ETC2_EAC, static_cast<GLsizei>(compressedSize),
                                               etc2Data);
                Mem_Free(dpic);
 			   Mem_Free(etc2Data);
 		}
         else {
-                glCompressedTexSubImage2D(uploadTarget, mipLevel, x, y, width, height,
+                glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y, width, height,
                                           internalFormat, compressedSize, pic);
         }
 #else
@@ -509,7 +536,7 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 				glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 			}
 
-			glTexSubImage2D(uploadTarget, mipLevel, x, y, width, height, dataFormat, dataType, pic);
+			glTexSubImage2D(uploadTarget, gpuMipLevel, x, y, width, height, dataFormat, dataType, pic);
 		}
 	}
 #ifndef ANDROID
@@ -518,14 +545,14 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 		{
 			glPixelStorei(GL_UNPACK_ROW_LENGTH, pixelPitch);
 		}
-	
+
 		if( opts.format == FMT_RGB565 )
 		{
 	#if !defined(USE_GLES3) && !ANDROID
 			glPixelStorei(GL_UNPACK_SWAP_BYTES, GL_TRUE);
 	#endif
 		}
-	
+
 	#if defined(DEBUG) || defined(__ANDROID__)
 		//GL_CheckErrors();
 	#endif
@@ -540,7 +567,7 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 		}
 		else
 		{
-	
+
 			// make sure the pixel store alignment is correct so that lower mips get created
 			// properly for odd shaped textures - this fixes the mip mapping issues with
 			// fonts
@@ -553,14 +580,14 @@ void idImage::SubImageUpload( int mipLevel, int x, int y, int z, int width, int 
 			{
 				glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 			}
-		
+
 			if (opts.textureType == TT_CUBIC) {
 				glTextureSubImage3D(texnum, mipLevel, x, y, z, width, height, 1, dataFormat, dataType, pic);
 			}
 			else {
 				glTextureSubImage2D(texnum, mipLevel, x, y, width, height, dataFormat, dataType, pic);
 			}
-			
+
 		}
 	}
 #endif
@@ -606,7 +633,7 @@ idImage::SetPixel
 */
 void idImage::SetPixel( int mipLevel, int x, int y, const void* data, int dataSize )
 {
-	SubImageUpload( mipLevel, x, y, 0, 1, 1, data );
+	SubImageUpload( mipLevel,0, x, y, 0, 1, 1, data, 0  );
 }
 
 /*
@@ -1153,9 +1180,9 @@ void idImage::AllocImage()
 {
 	//GL_CheckErrors();
 	PurgeImage();
-	
+
 	int sRGB = r_useSRGB.GetInteger();
-	
+
 	switch( opts.format )
 	{
 		case FMT_RGBA8:
@@ -1260,7 +1287,7 @@ void idImage::AllocImage()
 			dataType = GL_UNSIGNED_INT_24_8;
 			break;
 		//SP End
-			
+
 		case FMT_SHADOW_ARRAY:
 #ifndef ANDROID
 			internalFormat = glConfig.directStateAccess? GL_DEPTH_COMPONENT24 : GL_DEPTH_COMPONENT;
@@ -1274,7 +1301,7 @@ void idImage::AllocImage()
             dataType = GL_UNSIGNED_INT;
 #endif
 			break;
-			
+
 		case FMT_RGBA16F:
 			internalFormat = GL_RGBA16F;
 			dataFormat = GL_RGBA;
@@ -1284,7 +1311,7 @@ void idImage::AllocImage()
 			dataType = GL_HALF_FLOAT;
 #endif
 			break;
-			
+
 		case FMT_RGBA32F:
 			internalFormat = GL_RGBA32F;
 			dataFormat = GL_RGBA;
@@ -1294,7 +1321,7 @@ void idImage::AllocImage()
 			dataType = GL_FLOAT;
 #endif
 			break;
-			
+
 		case FMT_R32F:
 			internalFormat = GL_R32F;
 			dataFormat = GL_RED;
@@ -1318,7 +1345,7 @@ void idImage::AllocImage()
 		default:
 			idLib::Error( "Unhandled image format %d in %s\n", opts.format, GetName() );
 	}
-	
+
 	// if we don't have a rendering context, just return after we
 	// have filled in the parms.  We must have the values set, or
 	// an image match from a shader before OpenGL starts would miss
@@ -1331,7 +1358,7 @@ void idImage::AllocImage()
 	//----------------------------------------------------
 	// allocate all the mip levels with NULL data
 	//----------------------------------------------------
-	
+
 	int numSides;
 	int target;
 	int uploadTarget;
@@ -1402,83 +1429,67 @@ void idImage::AllocImage()
 			{
 				h = w;
 			}
-			for (int side = 0; side < numSides; side++)
-			{
+            int mipSkip = getMipmapSkipLevel(opts.numLevels);
+            int effectiveNumLevels = opts.numLevels - mipSkip;
+            if (effectiveNumLevels < 1) effectiveNumLevels = 1;
+
+            for (int side = 0; side < numSides; side++)
+            {
 #ifndef _WIN32
-				w = opts.width > 0 ? opts.width : 1280;
-				h = opts.height > 0 ? opts.height : 720;
+                int baseW = opts.width > 0 ? opts.width : 1280;
+                int baseH = opts.height > 0 ? opts.height : 720;
 #else
-				w = opts.width;
-				h = opts.height;
+                int baseW = opts.width;
+			    int baseH = opts.height;
 #endif
-				for (int level = 0; level < opts.numLevels; level++)
-				{
 
-					// clear out any previous error
-					//GL_CheckErrors();
+                int w = baseW >> mipSkip;
+                int h = baseH >> mipSkip;
+                if (w < 1) w = 1;
+                if (h < 1) h = 1;
 
-					if (IsCompressed())
-					{
-						int compressedSize = (((w + 3) / 4) * ((h + 3) / 4) * int64(16) * BitsForFormat(opts.format)) / 8;
+                for (int level = 0; level < effectiveNumLevels; level++)
+                {
+                    if (IsCompressed())
+                    {
+                        int compressedSize = (((w + 3) / 4) * ((h + 3) / 4) * int64(16) * BitsForFormat(opts.format)) / 8;
 
-						// Even though the OpenGL specification allows the 'data' pointer to be NULL, for some
-						// drivers we actually need to upload data to get it to allocate the texture.
-						// However, on 32-bit systems we may fail to allocate a large block of memory for large
-						// textures. We handle this case by using HeapAlloc directly and allowing the allocation
-						// to fail in which case we simply pass down NULL to glCompressedTexImage2D and hope for the best.
-						// As of 2011-10-6 using NVIDIA hardware and drivers we have to allocate the memory with HeapAlloc
-						// with the exact size otherwise large image allocation (for instance for physical page textures)
-						// may fail on Vista 32-bit.
-
-						// RB begin
 #if defined(_WIN32)
-						void* data = HeapAlloc(GetProcessHeap(), 0, compressedSize);
-						glCompressedTexImage2D(uploadTarget + side, level, internalFormat, w, h, 0, compressedSize, data);
-						if (data != NULL)
-						{
-							HeapFree(GetProcessHeap(), 0, data);
-						}
-#elif ANDROID //karin: decompress texture instead of glCompressedXXX or ETC1 ETC2 RGBA4444 on OpenGLES
-						// alloc texture memory(compression)
-						if (!glConfig.textureCompressionAvailable) {
-							w = (w + 3) & ~3;
-							h = (h + 3) & ~3;
-							const int blocks = (w / 4) * (h / 4);
-							compressedSize = blocks * 16;
-							byte *data = (byte *) Mem_Alloc(compressedSize, TAG_TEMP);
-                            glCompressedTexImage2D(uploadTarget + side, level, GL_COMPRESSED_RGBA8_ETC2_EAC, w, h, 0, compressedSize, data);
-							if (data != nullptr) {
-								Mem_Free(data);
-							}
-						} else{
-							byte* data = (byte*)Mem_Alloc(compressedSize, TAG_TEMP);
-							glCompressedTexImage2D(uploadTarget + side, level, internalFormat, w, h, 0, compressedSize, data);
-							if (data != nullptr)
-							{
-								Mem_Free(data);
-							}
-						}
+                        void* data = HeapAlloc(GetProcessHeap(), 0, compressedSize);
+			            glCompressedTexImage2D(uploadTarget + side, level, internalFormat, w, h, 0, compressedSize, data);
+            			if (data != NULL) HeapFree(GetProcessHeap(), 0, data);
+
+#elif ANDROID
+                        if (!glConfig.textureCompressionAvailable) {
+                            w = (w + 3) & ~3;
+                            h = (h + 3) & ~3;
+                            const int etc2CompressedSize = ((w / 4) * (h / 4)) * 16;
+                            byte *data = (byte *) Mem_Alloc(etc2CompressedSize, TAG_TEMP);
+
+                            glCompressedTexImage2D(uploadTarget + side, level, GL_COMPRESSED_RGBA8_ETC2_EAC, w, h, 0, etc2CompressedSize, data);
+                            if (data != nullptr) Mem_Free(data);
+                        } else {
+                            byte* data = (byte*)Mem_Alloc(compressedSize, TAG_TEMP);
+                            glCompressedTexImage2D(uploadTarget + side, level, internalFormat, w, h, 0, compressedSize, data);
+                            if (data != nullptr) Mem_Free(data);
+                        }
 #else
-
-						byte* data = (byte*)Mem_Alloc(compressedSize, TAG_TEMP);
-						glCompressedTexImage2D(uploadTarget + side, level, internalFormat, w, h, 0, compressedSize, data);
-						if (data != NULL)
-						{
-							Mem_Free(data);
-						}
+                        byte* data = (byte*)Mem_Alloc(compressedSize, TAG_TEMP);
+			            glCompressedTexImage2D(uploadTarget + side, level, internalFormat, w, h, 0, compressedSize, data);
+            			if (data != NULL) Mem_Free(data);
 #endif
-						// RB end
-					}
-					else
-					{
-						glTexImage2D(uploadTarget + side, level, internalFormat, w, h, 0, dataFormat, dataType, NULL);
-					}
+                    }
+                    else
+                    {
+                        glTexImage2D(uploadTarget + side, level, internalFormat, w, h, 0, dataFormat, dataType, NULL);
+                    }
 
-					w = Max(1, w >> 1);
-					h = Max(1, h >> 1);
-				}
-			}
-			glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, opts.numLevels - 1);
+                    w = Max(1, w >> 1);
+                    h = Max(1, h >> 1);
+                }
+            }
+
+            glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, effectiveNumLevels - 1);
 		}
 	}
 #ifndef ANDROID

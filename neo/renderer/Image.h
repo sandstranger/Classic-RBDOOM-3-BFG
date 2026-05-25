@@ -356,9 +356,9 @@ public:
 	// be in OpenGL RGBA format, the consoles may have to reorganize. pixelPitch is only needed
 	// when updating from a source subrect. Width, height, and dest* are always in pixels, so
 	// they must be a multiple of four for dxt data.
-	void		SubImageUpload( int mipLevel, int destX, int destY, int destZ,
+	void		SubImageUpload( int mipLevel, int mipLevelToSkip, int destX, int destY, int destZ,
 								int width, int height, const void* data,
-								int pixelPitch = 0 );
+								int pixelPitch = 0);
 								
 	// SetPixel is assumed to be a fast memory write on consoles, degenerating to a
 	// SubImageUpload on PCs.  Used to update the page mapping images.

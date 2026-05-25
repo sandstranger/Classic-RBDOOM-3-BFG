@@ -35,6 +35,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "framework/Common_local.h"
 #include "RenderCommon.h"
 
+extern int getMipmapSkipLevel(int numLevels);
+
 /*
 ================
 BitsForFormat
@@ -512,9 +514,10 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 				// clear the data so it's not left uninitialized
 				idTempArray<byte> clear( opts.width * opts.height * 4 );
 				memset( clear.Ptr(), 0, clear.Size() );
+                int mipmapsToSkip = getMipmapSkipLevel(opts.numLevels);
 				for( int level = 0; level < opts.numLevels; level++ )
 				{
-					SubImageUpload( level, 0, 0, 0, opts.width >> level, opts.height >> level, clear.Ptr() );
+					SubImageUpload( level,mipmapsToSkip, 0, 0, 0, opts.width >> level, opts.height >> level, clear.Ptr() );
 				}
 				
 				return;
@@ -545,12 +548,16 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 	}
 	
 	AllocImage();
-	
-	for( int i = 0; i < im.NumImages(); i++ )
+    int mipmapsToSkip = getMipmapSkipLevel(im.NumImages());
+    for( int i = 0; i < im.NumImages(); i++ )
 	{
+        if (i < mipmapsToSkip){
+            continue;
+        }
+
 		const bimageImage_t& img = im.GetImageHeader( i );
 		const byte* data = im.GetImageData( i );
-		SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, data );
+		SubImageUpload( img.level, mipmapsToSkip, 0, 0, img.destZ, img.width, img.height, data );
 	}
 }
 
@@ -789,12 +796,16 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 		commonLocal.LoadPacifierBinarizeEnd();
 		
 		AllocImage();
-		
+		int mipmapsToSkip = getMipmapSkipLevel(im.NumImages());
 		for( int i = 0; i < im.NumImages(); i++ )
 		{
+			if (i < mipmapsToSkip)
+			{
+				continue;
+			}
 			const bimageImage_t& img = im.GetImageHeader( i );
 			const byte* data = im.GetImageData( i );
-			SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, data );
+			SubImageUpload( img.level,mipmapsToSkip, 0, 0, img.destZ, img.width, img.height, data );
 		}
 	}
 	// RB end
@@ -849,12 +860,16 @@ void idImage::GenerateCubeImage( const byte* pic[6], int size, textureFilter_t f
 	commonLocal.LoadPacifierBinarizeEnd();
 	
 	AllocImage();
-	
+	int mipmapsToSkip = getMipmapSkipLevel(im.NumImages());
 	for( int i = 0; i < im.NumImages(); i++ )
 	{
+		if (i < mipmapsToSkip)
+		{
+			continue;
+		}
 		const bimageImage_t& img = im.GetImageHeader( i );
 		const byte* data = im.GetImageData( i );
-		SubImageUpload( img.level, 0, 0, img.destZ, img.width, img.height, data );
+		SubImageUpload( img.level,mipmapsToSkip, 0, 0, img.destZ, img.width, img.height, data );
 	}
 }
 
@@ -933,7 +948,7 @@ void idImage::UploadScratch( const byte* data, int cols, int rows )
 		SetSamplerState( TF_LINEAR, TR_CLAMP );
 		for( int i = 0; i < 6; i++ )
 		{
-			SubImageUpload( 0, 0, 0, i, opts.width, opts.height, pic[i] );
+			SubImageUpload( 0, 0, 0, 0, i, opts.width, opts.height, pic[i], 0 );
 		}
 	}
 	else
@@ -951,6 +966,6 @@ void idImage::UploadScratch( const byte* data, int cols, int rows )
 			AllocImage();
 		}
 		SetSamplerState( TF_LINEAR, TR_REPEAT );
-		SubImageUpload( 0, 0, 0, 0, opts.width, opts.height, data );
+		SubImageUpload( 0, 0, 0, 0, 0, opts.width, opts.height, data, 0 );
 	}
 }

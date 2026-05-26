@@ -9,6 +9,7 @@
 
 static const char CACHE_MAGIC[4] = {'T', 'C', '0', '1'};
 static const uint32_t CACHE_VERSION = 1;
+extern bool g_enableTextureCache;
 
 #pragma pack(push, 1)
 struct CacheHeader {
@@ -330,4 +331,119 @@ void idTextureCache::EvictIfNeeded() {
 
     common->Printf("TextureCache: evicted %zu entries, now %zu MB used\n",
                    toRemove, m_currentSizeBytes / (1024 * 1024));
+}
+
+bool idTextureCache::TryGetFromRamCache(uint64_t hash,std::byte** outBuffer, size_t* outSize) {
+    std::lock_guard<std::mutex> lock(m_ramCacheMutex);
+    auto it = m_ramCacheIndex.find(hash);
+    if (it == m_ramCacheIndex.end()) {
+        return false;
+    }
+    auto& entry = *it->second;
+    m_ramCacheList.splice(m_ramCacheList.begin(), m_ramCacheList, it->second);
+    entry.lastAccessTime = time(nullptr);
+
+    std::byte* buffer = (std::byte*)Mem_Alloc(entry.etc2Data.size(), TAG_TEMP);
+    if (!buffer) return false;
+
+    memcpy(buffer, entry.etc2Data.data(), entry.etc2Data.size());
+    *outBuffer = buffer;
+    *outSize = entry.etc2Data.size();
+
+    return true;
+}
+
+void idTextureCache::SaveToRamCache(uint64_t hash,const void* etc2Data, size_t etc2Size,
+                                    uint32_t width, uint32_t height, uint32_t format) {
+    std::lock_guard<std::mutex> lock(m_ramCacheMutex);
+
+    if (m_ramCacheIndex.find(hash) != m_ramCacheIndex.end()) {
+        return;
+    }
+
+    RamCacheEntry entry;
+    entry.hash = hash;
+    entry.etc2Data.resize(etc2Size);
+    memcpy(entry.etc2Data.data(), etc2Data, etc2Size);
+    entry.width = width;
+    entry.height = height;
+    entry.format = format;
+    entry.lastAccessTime = time(nullptr);
+    entry.size = etc2Size;
+    m_ramCacheList.push_front(entry);
+    m_ramCacheIndex[hash] = m_ramCacheList.begin();
+    m_ramCacheCurrentSize += etc2Size;
+    EvictRamCacheIfNeeded();
+}
+
+void idTextureCache::EvictRamCacheIfNeeded() {
+    if (m_ramCacheCurrentSize <= m_ramCacheMaxSize) {
+        return;
+    }
+
+    size_t toRemove = m_ramCacheList.size() / 5;
+    if (toRemove < 1) toRemove = 1;
+
+    for (size_t i = 0; i < toRemove && !m_ramCacheList.empty(); ++i) {
+        auto& oldest = m_ramCacheList.back();
+        m_ramCacheCurrentSize -= oldest.size;
+        m_ramCacheIndex.erase(oldest.hash);
+        m_ramCacheList.pop_back();
+    }
+
+    common->Printf("RAM Cache: evicted %zu entries, now %zu MB used\n",toRemove, m_ramCacheCurrentSize / (1024 * 1024));
+}
+
+void idTextureCache::ClearRamCache() {
+    std::lock_guard<std::mutex> lock(m_ramCacheMutex);
+    m_ramCacheList.clear();
+    m_ramCacheIndex.clear();
+    m_ramCacheCurrentSize = 0;
+    common->Printf("RAM Cache: cleared (level transition)\n");
+}
+
+void idTextureCache::ForceEvictRamCache(float fraction) {
+    std::lock_guard<std::mutex> lock(m_ramCacheMutex);
+
+    size_t toRemove = static_cast<size_t>(m_ramCacheList.size() * fraction);
+    if (toRemove < 1 && !m_ramCacheList.empty()) toRemove = 1;
+
+    for (size_t i = 0; i < toRemove && !m_ramCacheList.empty(); ++i) {
+        auto& oldest = m_ramCacheList.back();
+        m_ramCacheCurrentSize -= oldest.size;
+        m_ramCacheIndex.erase(oldest.hash);
+        m_ramCacheList.pop_back();
+    }
+
+    common->Printf("RAM Cache: force evicted %.0f%%, now %zu MB\n",
+                   fraction * 100.0f, m_ramCacheCurrentSize / (1024 * 1024));
+}
+
+void ClearRamCache()
+{
+    if (g_enableTextureCache)
+    {
+        idTextureCache::Instance().Flush();
+        idTextureCache::Instance().ClearRamCache();
+    }
+}
+
+extern "C"
+{
+__attribute__((used)) __attribute__((visibility("default")))
+void nativeTrimMemory(const bool aggressive)
+{
+    if (!g_enableTextureCache)
+    {
+        return;
+    }
+
+    if (aggressive)
+    {
+        idTextureCache::Instance().ClearRamCache();
+    } else
+    {
+        idTextureCache::Instance().ForceEvictRamCache(0.5f);
+    }
+}
 }

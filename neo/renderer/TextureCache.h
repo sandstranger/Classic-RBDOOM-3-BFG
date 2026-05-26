@@ -6,6 +6,10 @@
 #include <thread>
 #include <condition_variable>
 #include <atomic>
+#include <list>
+#include <iostream>
+
+void ClearRamCache();
 
 inline uint64_t FNV1a_Hash(const void* data, size_t size) {
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
@@ -25,6 +29,16 @@ inline uint64_t ComputeTextureHash(const void* dxtData, size_t dxtSize,
     h ^= FNV1a_Hash(&format, sizeof(format));
     return h;
 }
+
+struct RamCacheEntry {
+    uint64_t hash;
+    std::vector<uint8_t> etc2Data;  // ETC2 данные в RAM
+    uint32_t width;
+    uint32_t height;
+    uint32_t format;
+    uint64_t lastAccessTime;
+    size_t size;
+};
 
 struct CacheEntry {
     uint64_t hash;
@@ -65,6 +79,16 @@ public:
     size_t GetPendingJobsCount() const { return m_pendingJobs.load(); }
     void Flush();
 
+    bool TryGetFromRamCache(uint64_t hash,
+                            std::byte** outBuffer, size_t* outSize);
+
+    void SaveToRamCache(uint64_t hash,const void* etc2Data, size_t etc2Size,
+                        uint32_t width, uint32_t height, uint32_t format);
+    void EvictRamCacheIfNeeded();
+    size_t GetRamCacheSize() const { return m_ramCacheCurrentSize; }
+    void ClearRamCache();
+    void ForceEvictRamCache(float fraction);
+
 private:
     idTextureCache() = default;
     ~idTextureCache() = default;
@@ -90,4 +114,9 @@ private:
     std::atomic<bool> m_shutdownRequested{false};
     std::atomic<size_t> m_pendingJobs{0};
     std::atomic<size_t> m_maxQueueSize{64};
+    std::unordered_map<uint64_t, std::list<RamCacheEntry>::iterator> m_ramCacheIndex;
+    std::list<RamCacheEntry> m_ramCacheList;
+    std::mutex m_ramCacheMutex;
+    size_t m_ramCacheMaxSize = 300 * 1024 * 1024;
+    size_t m_ramCacheCurrentSize = 0;
 };

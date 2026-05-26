@@ -58,7 +58,7 @@ Contains the Image implementation for OpenGL.
 #if ANDROID
 #define MIPMAPS_SKIP_LEVEL				1
 static bool g_enableTexturesShrinking = false;
-static bool g_enableTextureCache = true;
+bool g_enableTextureCache = false;
 static std::string g_pathToTextureCacheDir;
 
 extern "C" {
@@ -475,24 +475,35 @@ void idImage::SubImageUpload( int mipLevel, int mipLevelToSkip, int x, int y, in
 		if (IsCompressed())
 		{
 #ifdef ANDROID //karin: decompress texture to RGBA instead of glCompressedXXX on OpenGLES
-
             if (!glConfig.textureCompressionAvailable) {
-                idDxtDecoder decoder;
-                const int dxtWidth = (width + 3) & ~3;
+				idDxtDecoder decoder;
+				uint64_t hash = 0;
+				const int dxtWidth = (width + 3) & ~3;
                 const int dxtHeight = (height + 3) & ~3;
                 bool cacheHit = false;
 
                 if (g_enableTextureCache) {
+					hash = ComputeTextureHash(pic, compressedSize, dxtWidth,
+											  dxtHeight, GL_COMPRESSED_RGBA8_ETC2_EAC);
                     std::byte *cachedEtc2 = nullptr;
                     size_t cachedSize = 0;
-                    cacheHit = idTextureCache::Instance().TryGetCachedETC2(
-                            imgName.c_str(),
-                            pic, compressedSize,
-                            dxtWidth, dxtHeight,
-                            GL_COMPRESSED_RGBA8_ETC2_EAC,
-                            1,
-                            &cachedEtc2, &cachedSize
-                    );
+
+					cacheHit = idTextureCache::Instance().TryGetFromRamCache(hash, &cachedEtc2, &cachedSize);
+					if (!cacheHit) {
+						cacheHit = idTextureCache::Instance().TryGetCachedETC2(
+								imgName.c_str(),
+								pic, compressedSize,
+								dxtWidth, dxtHeight,
+								GL_COMPRESSED_RGBA8_ETC2_EAC,
+								1,
+								&cachedEtc2, &cachedSize
+						);
+
+						if (cacheHit){
+							idTextureCache::Instance().SaveToRamCache(hash, cachedEtc2, cachedSize,
+																	  dxtWidth, dxtHeight,GL_COMPRESSED_RGBA8_ETC2_EAC);
+						}
+					}
 
                     if (cacheHit) {
                         glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
@@ -501,6 +512,7 @@ void idImage::SubImageUpload( int mipLevel, int mipLevelToSkip, int x, int y, in
                                                   static_cast<GLsizei>(cachedSize),
                                                   cachedEtc2);
                         Mem_Free(cachedEtc2);
+						cachedEtc2 = nullptr;
                     }
                 }
 
@@ -552,6 +564,9 @@ void idImage::SubImageUpload( int mipLevel, int mipLevelToSkip, int x, int y, in
                     );
 
                     if (g_enableTextureCache) {
+						idTextureCache::Instance().SaveToRamCache(hash, etc2Data, etc2CompressedSize,
+																  dxtWidth, dxtHeight,
+																  GL_COMPRESSED_RGBA8_ETC2_EAC);
                         idTextureCache::Instance().SaveToCacheAsync(
                                 imgName.c_str(),
                                 pic, compressedSize,

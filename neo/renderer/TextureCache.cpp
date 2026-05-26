@@ -426,26 +426,37 @@ bool idTextureCache::TryGetFromRamCache(uint64_t hash,std::byte** outBuffer,size
     return true;
 }
 
-void idTextureCache::SaveToRamCache(uint64_t hash,const void* etc2Data, size_t etc2Size,
-                                    uint32_t width, uint32_t height, uint32_t format) {
+void idTextureCache::SaveToRamCache(uint64_t hash,const void* etc2Data,size_t etc2Size,
+                                    uint32_t width,
+                                    uint32_t height,
+                                    uint32_t format)
+{
+    if (etc2Data == nullptr || etc2Size == 0) {
+        return;
+    }
+
     std::lock_guard<std::mutex> lock(m_ramCacheMutex);
 
     if (m_ramCacheIndex.find(hash) != m_ramCacheIndex.end()) {
         return;
     }
 
-    RamCacheEntry entry;
+    m_ramCacheList.emplace_front();
+    auto& entry = m_ramCacheList.front();
+
     entry.hash = hash;
     entry.etc2Data.resize(etc2Size);
-    memcpy(entry.etc2Data.data(), etc2Data, etc2Size);
+    std::memcpy(entry.etc2Data.data(), etc2Data, etc2Size);
     entry.width = width;
     entry.height = height;
     entry.format = format;
-    entry.lastAccessTime = time(nullptr);
+    entry.lastAccessTime =
+            static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
     entry.size = etc2Size;
-    m_ramCacheList.push_front(entry);
-    m_ramCacheIndex[hash] = m_ramCacheList.begin();
+
+    m_ramCacheIndex.emplace(hash, m_ramCacheList.begin());
     m_ramCacheCurrentSize += etc2Size;
+
     EvictRamCacheIfNeeded();
 }
 

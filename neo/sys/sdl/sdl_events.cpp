@@ -46,10 +46,6 @@ If you have questions concerning this license or the applicable additional terms
 #include "../common/localuser.h"
 #include "../../framework/Common.h"
 
-#if ANDROID
-#include "../../renderer/TextureCache.h"
-#endif
-
 static bool gameStarted = false;
 
 static const int MAX_JOYSTICKS = 4; //GK: This thing still works only on PC right? Apparently no
@@ -1432,7 +1428,6 @@ void onNativeResume() {
 
 __attribute__((used)) __attribute__((visibility("default")))
 void onNativePause() {
-	ClearRamCache();
 	PauseGame();
 }
 

@@ -11,6 +11,79 @@ static const char CACHE_MAGIC[4] = {'T', 'C', '0', '1'};
 static const uint32_t CACHE_VERSION = 1;
 extern bool g_enableTextureCache;
 
+class BufferPool {
+public:
+    static BufferPool& Instance() {
+        static BufferPool instance;
+        return instance;
+    }
+
+    uint8_t* Acquire(size_t requestedSize) {
+        size_t bucketSize = RoundUpToPowerOfTwo(requestedSize);
+        if (bucketSize < 4096) bucketSize = 4096;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto& bucket = m_buckets[bucketSize];
+        if (bucket.freeBuffers.empty()) {
+            uint8_t* newBuf = new (std::nothrow) uint8_t[bucketSize];
+            if (!newBuf) return nullptr;
+            bucket.allBuffers.push_back(newBuf);
+            m_totalAllocated += bucketSize;
+            return newBuf;
+        }
+        uint8_t* buf = bucket.freeBuffers.front();
+        bucket.freeBuffers.pop();
+        return buf;
+    }
+
+    void Release(uint8_t* buf, size_t originalRequestedSize) {
+        size_t bucketSize = RoundUpToPowerOfTwo(originalRequestedSize);
+        if (bucketSize < 4096) bucketSize = 4096;
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_buckets[bucketSize].freeBuffers.push(buf);
+    }
+
+    size_t GetTotalAllocated() const { return m_totalAllocated; }
+
+    void Shutdown() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (auto& kv : m_buckets) {
+            for (uint8_t* buf : kv.second.allBuffers) {
+                delete[] buf;
+            }
+        }
+        m_buckets.clear();
+        m_totalAllocated = 0;
+    }
+
+private:
+    BufferPool() = default;
+    ~BufferPool() { Shutdown(); }
+
+    static size_t RoundUpToPowerOfTwo(size_t v) {
+        v--;
+        v |= v >> 1;
+        v |= v >> 2;
+        v |= v >> 4;
+        v |= v >> 8;
+        v |= v >> 16;
+#if SIZE_MAX > 0xFFFFFFFF
+        v |= v >> 32;
+#endif
+        v++;
+        return v;
+    }
+
+    struct Bucket {
+        std::vector<uint8_t*> allBuffers;
+        std::queue<uint8_t*> freeBuffers;
+    };
+
+    std::unordered_map<size_t, Bucket> m_buckets;
+    std::mutex m_mutex;
+    size_t m_totalAllocated = 0;
+};
+
 #pragma pack(push, 1)
 struct CacheHeader {
     char magic[4];
@@ -332,8 +405,7 @@ void idTextureCache::EvictIfNeeded() {
     common->Printf("TextureCache: evicted %zu entries, now %zu MB used\n",
                    toRemove, m_currentSizeBytes / (1024 * 1024));
 }
-
-bool idTextureCache::TryGetFromRamCache(uint64_t hash,std::byte** outBuffer, size_t* outSize) {
+bool idTextureCache::TryGetFromRamCache(uint64_t hash,std::byte** outBuffer,size_t* outSize) {
     std::lock_guard<std::mutex> lock(m_ramCacheMutex);
     auto it = m_ramCacheIndex.find(hash);
     if (it == m_ramCacheIndex.end()) {
@@ -341,15 +413,16 @@ bool idTextureCache::TryGetFromRamCache(uint64_t hash,std::byte** outBuffer, siz
     }
     auto& entry = *it->second;
     m_ramCacheList.splice(m_ramCacheList.begin(), m_ramCacheList, it->second);
-    entry.lastAccessTime = time(nullptr);
-
-    std::byte* buffer = (std::byte*)Mem_Alloc(entry.etc2Data.size(), TAG_TEMP);
+    static thread_local uint64_t accessCounter = 0;
+    if (++accessCounter % 100 == 0) {
+        entry.lastAccessTime = std::chrono::steady_clock::now().time_since_epoch().count();
+    }
+    size_t dataSize = entry.etc2Data.size();
+    uint8_t* buffer = BufferPool::Instance().Acquire(dataSize);
     if (!buffer) return false;
-
-    memcpy(buffer, entry.etc2Data.data(), entry.etc2Data.size());
-    *outBuffer = buffer;
-    *outSize = entry.etc2Data.size();
-
+    memcpy(buffer, entry.etc2Data.data(), dataSize);
+    *outBuffer = reinterpret_cast<std::byte*>(buffer);
+    *outSize = dataSize;
     return true;
 }
 

@@ -522,7 +522,6 @@ void idImage::SubImageUpload( int mipLevel, int mipLevelToSkip, int x, int y, in
                         common->Error("ETC2: failed to allocate decode buffer");
                         return;
                     }
-                    memset(dpic, 0, dxtWidth * dxtHeight * 4);
                     if (opts.format == FMT_DXT1)
                         decoder.DecompressImageDXT1((const byte *) pic, dpic, width, height);
                     else {

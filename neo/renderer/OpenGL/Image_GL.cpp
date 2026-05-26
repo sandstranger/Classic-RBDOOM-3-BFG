@@ -30,6 +30,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "precompiled.h"
 #if ANDROID
 #include "ProcessRGB.hpp"
+#include <string>
+#include "../TextureCache.h"
 #endif
 #if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
 #include "arm_neon.h"
@@ -56,11 +58,26 @@ Contains the Image implementation for OpenGL.
 #if ANDROID
 #define MIPMAPS_SKIP_LEVEL				1
 static bool g_enableTexturesShrinking = false;
+static bool g_enableTextureCache = true;
+static std::string g_pathToTextureCacheDir;
 
 extern "C" {
 __attribute__((used)) __attribute__((visibility("default")))
-void enableTexturesShrinking(const bool enableTexturesShrinking) {
+void enableTexturesShrinking(const bool enableTexturesShrinking)
+{
     g_enableTexturesShrinking = enableTexturesShrinking;
+}
+
+__attribute__((used)) __attribute__((visibility("default")))
+void setTextureCacheData(const bool enableTextureCache, const char* pathToTextureCacheDir)
+{
+    g_enableTextureCache = enableTextureCache;
+    g_pathToTextureCacheDir = pathToTextureCacheDir;
+    if (enableTextureCache)
+    {
+        idTextureCache::Instance().Init(g_pathToTextureCacheDir.c_str(),
+                                        512 * 1024 * 1024 * 2);
+    }
 }
 }
 #endif
@@ -373,6 +390,7 @@ void idImage::CopyDepthbuffer( int x, int y, int imageWidth, int imageHeight )
 idImage::SubImageUpload
 ========================
 */
+
 void idImage::SubImageUpload( int mipLevel, int mipLevelToSkip, int x, int y, int z, int width, int height,
 							  const void* pic, int pixelPitch )
 {
@@ -457,60 +475,101 @@ void idImage::SubImageUpload( int mipLevel, int mipLevelToSkip, int x, int y, in
 		if (IsCompressed())
 		{
 #ifdef ANDROID //karin: decompress texture to RGBA instead of glCompressedXXX on OpenGLES
-			if (!glConfig.textureCompressionAvailable) {
+
+            if (!glConfig.textureCompressionAvailable) {
                 idDxtDecoder decoder;
                 const int dxtWidth = (width + 3) & ~3;
                 const int dxtHeight = (height + 3) & ~3;
-                byte *dpic = (byte *) Mem_Alloc(dxtWidth * dxtHeight * 4, TAG_TEMP);
-                if (!dpic) {
-                    common->Error("ETC2: failed to allocate decode buffer");
-                    return;
-                }
-                memset(dpic, 0, dxtWidth * dxtHeight * 4);
-                if (opts.format == FMT_DXT1)
-                    decoder.DecompressImageDXT1((const byte *)pic, dpic, width, height);
-                else {
-                    if (opts.colorFormat == CFM_YCOCG_DXT5)
-                        decoder.DecompressYCoCgDXT5((const byte *)pic, dpic, width, height);
-                    else if (opts.colorFormat == CFM_NORMAL_DXT5)
-                        decoder.DecompressNormalMapDXT5Renormalize((const byte *)pic, dpic, width, height);
-                    else
-                        decoder.DecompressImageDXT5((const byte *)pic, dpic, width, height);
-                }
-                const int pixelCount = dxtWidth * dxtHeight;
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
-                int i = 0;
-                for (; i <= pixelCount - 16; i += 16) {
-                    uint8x16x4_t pixels = vld4q_u8(&dpic[i * 4]);
-                    uint8x16_t temp = pixels.val[0];
-                    pixels.val[0] = pixels.val[2];
-                    pixels.val[2] = temp;
-                    vst4q_u8(&dpic[i * 4], pixels);
-                }
-                for (; i < pixelCount; i++) {
-                    std::swap(dpic[i * 4], dpic[i * 4 + 2]);
-                }
-#else
-                for (int i = 0; i < pixelCount; i++) {
-                    std::swap(dpic[i * 4 ], dpic[i * 4 + 2]);
-                }
-#endif
-                const uint32_t blocks = (dxtWidth / 4) * (dxtHeight / 4);
-                const size_t compressedSize = blocks * 16;
-				const auto etc2Data = (uint8_t*)Mem_Alloc(compressedSize, TAG_TEMP);
-                CompressEtc2Rgba(
-                        reinterpret_cast<const uint32_t*>(dpic),
-                        reinterpret_cast<uint64_t*>(etc2Data),
-                        blocks,
-                        dxtWidth,
-                        true
-                );
+                bool cacheHit = false;
 
-                glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y, width, height,
-                                              GL_COMPRESSED_RGBA8_ETC2_EAC, static_cast<GLsizei>(compressedSize),
+                if (g_enableTextureCache) {
+                    std::byte *cachedEtc2 = nullptr;
+                    size_t cachedSize = 0;
+                    cacheHit = idTextureCache::Instance().TryGetCachedETC2(
+                            imgName.c_str(),
+                            pic, compressedSize,
+                            dxtWidth, dxtHeight,
+                            GL_COMPRESSED_RGBA8_ETC2_EAC,
+                            1,
+                            &cachedEtc2, &cachedSize
+                    );
+
+                    if (cacheHit) {
+                        glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
+                                                  dxtWidth, dxtHeight,
+                                                  GL_COMPRESSED_RGBA8_ETC2_EAC,
+                                                  static_cast<GLsizei>(cachedSize),
+                                                  cachedEtc2);
+                        Mem_Free(cachedEtc2);
+                    }
+                }
+
+                if (!cacheHit) {
+                    byte *dpic = (byte *) Mem_Alloc(dxtWidth * dxtHeight * 4, TAG_TEMP);
+                    if (!dpic) {
+                        common->Error("ETC2: failed to allocate decode buffer");
+                        return;
+                    }
+                    memset(dpic, 0, dxtWidth * dxtHeight * 4);
+                    if (opts.format == FMT_DXT1)
+                        decoder.DecompressImageDXT1((const byte *) pic, dpic, width, height);
+                    else {
+                        if (opts.colorFormat == CFM_YCOCG_DXT5)
+                            decoder.DecompressYCoCgDXT5((const byte *) pic, dpic, width, height);
+                        else if (opts.colorFormat == CFM_NORMAL_DXT5)
+                            decoder.DecompressNormalMapDXT5Renormalize((const byte *) pic, dpic,
+                                                                       width, height);
+                        else
+                            decoder.DecompressImageDXT5((const byte *) pic, dpic, width, height);
+                    }
+                    const int pixelCount = dxtWidth * dxtHeight;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+                    int i = 0;
+                    for (; i <= pixelCount - 16; i += 16) {
+                        uint8x16x4_t pixels = vld4q_u8(&dpic[i * 4]);
+                        uint8x16_t temp = pixels.val[0];
+                        pixels.val[0] = pixels.val[2];
+                        pixels.val[2] = temp;
+                        vst4q_u8(&dpic[i * 4], pixels);
+                    }
+                    for (; i < pixelCount; i++) {
+                        std::swap(dpic[i * 4], dpic[i * 4 + 2]);
+                    }
+#else
+                    for (int i = 0; i < pixelCount; i++) {
+                        std::swap(dpic[i * 4 ], dpic[i * 4 + 2]);
+                    }
+#endif
+                    const uint32_t blocks = (dxtWidth / 4) * (dxtHeight / 4);
+                    const size_t etc2CompressedSize = blocks * 16;
+                    const auto etc2Data = (uint8_t *) Mem_Alloc(etc2CompressedSize, TAG_TEMP);
+                    CompressEtc2Rgba(
+                            reinterpret_cast<const uint32_t *>(dpic),
+                            reinterpret_cast<uint64_t *>(etc2Data),
+                            blocks,
+                            dxtWidth,
+                            true
+                    );
+
+                    if (g_enableTextureCache) {
+                        idTextureCache::Instance().SaveToCacheAsync(
+                                imgName.c_str(),
+                                pic, compressedSize,
+                                dxtWidth, dxtHeight,
+                                GL_COMPRESSED_RGBA8_ETC2_EAC,
+                                1,
+                                etc2Data, etc2CompressedSize
+                        );
+                    }
+
+                    glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y, width, height,
+                                              GL_COMPRESSED_RGBA8_ETC2_EAC,
+                                              static_cast<GLsizei>(etc2CompressedSize),
                                               etc2Data);
-               Mem_Free(dpic);
-			   Mem_Free(etc2Data);
+
+                    Mem_Free(etc2Data);
+                    Mem_Free(dpic);
+                }
 		}
         else {
                 glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y, width, height,

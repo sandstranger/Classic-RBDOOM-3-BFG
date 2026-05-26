@@ -731,6 +731,11 @@ idFileSystemLocal::UnloadMapResources
 */
 void idFileSystemLocal::UnloadMapResources( const char* name )
 {
+#if ANDROID
+	extern void ClearRamCache();
+	ClearRamCache();
+#endif
+
 	if( name == NULL || *name == '\0' || idStr::Icmp( "_startup", name ) == 0 )
 	{
 		return;

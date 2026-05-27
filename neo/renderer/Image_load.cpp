@@ -517,9 +517,10 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 					// clear the data so it's not left uninitialized
 					idTempArray<byte> clear(opts.width * opts.height * 4);
 					memset(clear.Ptr(), 0, clear.Size());
+					int mipmapsToSkip = getMipmapSkipLevel(opts.numLevels);
 					for (int level = 0; level < opts.numLevels; level++)
 					{
-						SubImageUpload(level, 0, 0, 0, opts.width >> level, opts.height >> level, clear.Ptr());
+						SubImageUpload(level,mipmapsToSkip, 0, 0, 0, opts.width >> level, opts.height >> level, clear.Ptr());
 					}					
 				}
 				return;
@@ -553,7 +554,8 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 	if (idStr::Icmp(GetName(), "_doomClassic")) {
 		AllocImage();
 	}
-	
+
+	int mipmapsToSkip = getMipmapSkipLevel(im.NumImages());
 	for( int i = 0; i < im.NumImages(); i++ )
 	{
         if (i < mipmapsToSkip){

@@ -117,6 +117,6 @@ private:
     std::unordered_map<uint64_t, std::list<RamCacheEntry>::iterator> m_ramCacheIndex;
     std::list<RamCacheEntry> m_ramCacheList;
     std::mutex m_ramCacheMutex;
-    size_t m_ramCacheMaxSize = 150 * 1024 * 1024;
+    size_t m_ramCacheMaxSize = 200 * 1024 * 1024;
     size_t m_ramCacheCurrentSize = 0;
 };

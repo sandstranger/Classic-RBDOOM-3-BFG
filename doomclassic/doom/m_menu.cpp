@@ -114,6 +114,8 @@ extern idCVar in_toggleRun;
 
 extern idCVar cl_ScreenSize;
 extern idCVar cl_musicType;
+extern idCVar cl_inGUI;
+extern idCVar cl_closeGame;
 //
 // defaulted values
 //
@@ -302,6 +304,7 @@ bool M_CheckExpansions(int index);
 bool M_CheckEpisodes(int index);
 bool M_CheckTrakInfo(int index);
 bool M_CheckItemGfx(int index);
+bool M_CheckSettings(int index);
 
 void R_ExecuteSetViewSize (void);
 //GK: Support for additional HELP lumps
@@ -1200,7 +1203,7 @@ char	syncNames[3][9] =
 void M_DrawVideo(void)
 {
 	V_DrawPatchDirect(60, 38, 0,/*(patch_t*)*/img2lmp(W_CacheLumpName("M_VID", PU_CACHE_SHARED), W_GetNumForName("M_VID")), false);
-
+	if (!cl_inGUI.GetBool()) {
 	int aspect = r_aspect.GetInteger() >= 1 ? 1 : 0;
 	int correct = r_aspectcorrect.GetInteger();
 	int asoffset = 165 - (6 * correct); //GK: The word "correct" is larger than the others and therefor it requires different x offset
@@ -1234,6 +1237,7 @@ void M_DrawVideo(void)
 	M_WriteText(::g->VideoDef.x + 133, ::g->VideoDef.y + LINEHEIGHT * (framerate - offset) + 6, fps.c_str(), false);
 	if (cl_engineHz_interp.GetBool() && stereoRender_enable.GetInteger() != STEREO3D_VR) {
 		M_WriteText(::g->VideoDef.x + 160, ::g->VideoDef.y + LINEHEIGHT * (refresh)+6, refreshString.c_str(), false);
+	}
 	}
 }
 
@@ -2318,12 +2322,17 @@ void M_QuitDOOM(int choice)
 
 void M_ExitGame(int choice)
 {
-	//CleanUncompFiles(true);
-	//GK:logout properly from the netgame
-	if (::g->netgame) {
-		DoomLib::Interface.QuitCurrentGame();
+	if (!cl_inGUI.GetBool()) {
+		//CleanUncompFiles(true);
+		//GK:logout properly from the netgame
+		if (::g->netgame) {
+			DoomLib::Interface.QuitCurrentGame();
+		}
+		common->Quit();
 	}
-	common->Quit();
+	else {
+		cl_closeGame.SetBool(true);
+	}
 }
 
 void M_CancelExit(int choice) {
@@ -3163,7 +3172,8 @@ qboolean M_Responder (event_t* ev)
 
 	case KEY_ENTER:
 		if (::g->currentMenu->menuitems[::g->itemOn].routine &&
-			::g->currentMenu->menuitems[::g->itemOn].status)
+			::g->currentMenu->menuitems[::g->itemOn].status && 
+			::g->currentMenu->checkRoutine(::g->itemOn))
 		{
 			::g->currentMenu->lastOn = ::g->itemOn;
 			if (::g->currentMenu->menuitems[::g->itemOn].status == 2)
@@ -3206,14 +3216,14 @@ qboolean M_Responder (event_t* ev)
 
 	default:
 		for (i = ::g->itemOn+1;i < ::g->currentMenu->numitems;i++)
-			if (::g->currentMenu->menuitems[i].alphaKey == ch)
+			if (::g->currentMenu->menuitems[i].alphaKey == ch && ::g->currentMenu->checkRoutine(i))
 			{
 				::g->itemOn = i;
 				S_StartSound(NULL,sfx_pstop);
 				return true;
 			}
 			for (i = 0;i <= ::g->itemOn;i++)
-				if (::g->currentMenu->menuitems[i].alphaKey == ch)
+				if (::g->currentMenu->menuitems[i].alphaKey == ch && ::g->currentMenu->checkRoutine(i))
 				{
 					::g->itemOn = i;
 					S_StartSound(NULL,sfx_pstop);
@@ -3336,18 +3346,19 @@ void M_Drawer (void)
 	if (!::g->inhelpscreens) {
 		// DRAW SKULL
 		int lineoffs = ::g->itemOn*LINEHEIGHT;
-		if (::g->currentMenu == &::g->OptionsDef && ::g->itemOn > messages) {
-			lineoffs += (optoffs*LINEHEIGHT);
-		} else {
-			for (int j = 0; j < inactiveIndexes.Num(); j++) {
-				if (::g->itemOn > inactiveIndexes[j]) {
-					lineoffs = (::g->itemOn - (j + 1)) * LINEHEIGHT;
-				}
-			}
-			if (::g->itemOn > renderedItems) {
-				lineoffs = (renderedItems - 1) * LINEHEIGHT;
+		 
+		for (int j = 0; j < inactiveIndexes.Num(); j++) {
+			if (::g->itemOn > inactiveIndexes[j]) {
+				lineoffs = (::g->itemOn - (j + 1)) * LINEHEIGHT;
 			}
 		}
+		if (::g->itemOn > renderedItems) {
+			lineoffs = (renderedItems - 1) * LINEHEIGHT;
+		}
+		if (::g->currentMenu == &::g->OptionsDef && ::g->itemOn > messages) {
+			lineoffs += (optoffs * LINEHEIGHT);
+		}
+		
 		if (::g->currentMenu->menuitems == pageDef.menuitems && ::g->itemOn >= 10) {
 			lineoffs = LINEHEIGHT * (::g->itemOn - 10);
 			if (pageIndex == numPages && !aspect ) {
@@ -3400,6 +3411,15 @@ void M_SetupNextMenu(menu_t *menudef)
 {
 	::g->currentMenu = menudef;
 	::g->itemOn = ::g->currentMenu->lastOn;
+	//GK: First item not visible handling
+	if (!::g->currentMenu->checkRoutine(::g->itemOn)) {
+		for (int i = 0; i < ::g->currentMenu->numitems; i++) {
+			if (::g->currentMenu->checkRoutine(i)) {
+				::g->itemOn = i;
+				break;
+			}
+		}
+	}
 }
 
 
@@ -3569,6 +3589,11 @@ void M_ChangeMenuExp(int exp) {
 					DoomLib::SetCurrentExpansion(exp);
 				}
 				break;
+			case 6:
+				if (DoomLib::hexp[5]) {
+					DoomLib::SetCurrentExpansion(exp);
+				}
+				break;
 			}
 		}
 		else {
@@ -3670,13 +3695,13 @@ bool M_True(int index) {
 }
 
 bool M_CheckVideoSettings(int index) {
-	return index == refresh ? !((!cl_engineHz_interp.GetBool() || stereoRender_enable.GetInteger() == STEREO3D_VR)) : true;
+	return cl_inGUI.GetBool() ? index == advg : (index == refresh ? !((!cl_engineHz_interp.GetBool() || stereoRender_enable.GetInteger() == STEREO3D_VR)) : true);
 }
 bool M_CheckGameSettings(int index) {
 	return index == aim ? cl_freelook.GetBool() : true;
 }
 bool M_CheckAvailableGames(int index) {
-	return index == 2 ? DoomLib::hasGame == 2 : true;
+	return index == 2 ? (DoomLib::hasGame == 2 && !cl_inGUI.GetBool()) : true;
 }
 bool M_CheckExpansions(int index) {
 	idList<int> expMap = {-1, 3, 0, 1, 2, 5}; 
@@ -3692,4 +3717,8 @@ bool M_CheckTrakInfo(int index) {
 
 bool M_CheckItemGfx(int index) {
 	return W_CheckNumForName(::g->currentMenu->menuitems[index].name) > 0;
+}
+
+bool M_CheckSettings(int index) {
+	return index == ctl_option ? !cl_inGUI.GetBool() : true;
 }

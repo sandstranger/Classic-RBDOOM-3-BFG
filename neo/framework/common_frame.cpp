@@ -86,6 +86,7 @@ extern idCVar r_aspectcorrect; //GK: also here
 extern idCVar r_clblurry;
 extern idCVar in_photomode;
 extern idCVar stereoRender_enable;
+extern idCVar cl_inGUI;
 /*
 ===============
 idGameThread::Run
@@ -152,7 +153,7 @@ int idGameThread::Run()
 	{
 		// RB begin
 #if defined(USE_DOOMCLASSIC)
-		if( userCmdMgr->HasUserCmdForPlayer( game->GetLocalClientNum() ) && common->GetCurrentGame() == DOOM3_BFG )
+		if( userCmdMgr->HasUserCmdForPlayer( game->GetLocalClientNum() ) && common->GetCurrentGame() == DOOM3_BFG && !cl_inGUI.GetBool() )
 #else
 		if( userCmdMgr->HasUserCmdForPlayer( game->GetLocalClientNum() ) )
 #endif
@@ -499,7 +500,7 @@ void idCommonLocal::Frame()
 		eventLoop->RunEventLoop();
 
 		//GK: Pause game if the controller unexpectedly disconnects
-		if (game && idLib::joystick && !Sys_hasConnectedController()) {
+		if (game && idLib::joystick && !Sys_hasConnectedController() && !cl_inGUI.GetBool()) {
 			game->Shell_Show(true);
 		}
 		
@@ -802,19 +803,27 @@ void idCommonLocal::Frame()
 		// RB begin
 #if defined(USE_DOOMCLASSIC)
 		// If we're in Doom or Doom 2, run tics and upload the new texture.
-		if( ( GetCurrentGame() == DOOM_CLASSIC || GetCurrentGame() == DOOM2_CLASSIC ) && !( Dialog().IsDialogPausing() || session->IsSystemUIShowing() ) )
+		if( ( GetCurrentGame() == DOOM_CLASSIC || GetCurrentGame() == DOOM2_CLASSIC || cl_inGUI.GetBool()) && !( Dialog().IsDialogPausing() || session->IsSystemUIShowing() ) )
 		{
 			RunDoomClassicFrame();
 		}
 #endif
 		// RB end
-		
-		// start the game / draw command generation thread going in the background
-		gameReturn_t ret = gameThread.RunGameAndDraw( numGameFrames, userCmdMgr, IsClient(), gameFrame - numGameFrames );
+
+		gameReturn_t ret;
+		if (cl_inGUI.GetBool()) {
+			dummyUserCmdMgr.SetDefaults();
+			// start the game / draw command generation thread going in the background
+			ret = gameThread.RunGameAndDraw(numGameFrames, dummyUserCmdMgr, IsClient(), gameFrame - numGameFrames);
+		}
+		else {
+			// start the game / draw command generation thread going in the background
+			ret = gameThread.RunGameAndDraw(numGameFrames, userCmdMgr, IsClient(), gameFrame - numGameFrames);
+		}
 
 #if defined(USE_DOOMCLASSIC)
 		// If we're in Doom or Doom 2, run tics and upload the new texture.
-		if ((GetCurrentGame() == DOOM_CLASSIC || GetCurrentGame() == DOOM2_CLASSIC) && !(Dialog().IsDialogPausing() || session->IsSystemUIShowing()))
+		if ((GetCurrentGame() == DOOM_CLASSIC || GetCurrentGame() == DOOM2_CLASSIC || cl_inGUI.GetBool()) && !(Dialog().IsDialogPausing() || session->IsSystemUIShowing()))
 		{
 			DoomLib::ApplyRumble();
 		}

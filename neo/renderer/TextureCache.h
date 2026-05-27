@@ -32,7 +32,7 @@ inline uint64_t ComputeTextureHash(const void* dxtData, size_t dxtSize,
 
 struct RamCacheEntry {
     uint64_t hash;
-    std::vector<uint8_t> etc2Data;  // ETC2 данные в RAM
+    std::vector<uint8_t> etc2Data;
     uint32_t width;
     uint32_t height;
     uint32_t format;

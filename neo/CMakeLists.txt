@@ -1980,6 +1980,7 @@ else()
             ${JPEG_LIBRARY}
 			${OpenSSL_LIBRARY}
     	    ${CMAKE_DL_LIBS}
+			AngleShaderCache
     	    log)
 endif()
 		if (USE_OPENXR) 

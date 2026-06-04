@@ -46,6 +46,7 @@ If you have questions concerning this license or the applicable additional terms
 
 #if ANDROID
 #include <vector>
+#include "AngleShaderCache.h"
 #endif
 
 idCVar in_nograb( "in_nograb", "0", CVAR_SYSTEM | CVAR_NOCHEAT, "prevents input grabbing" );
@@ -485,6 +486,7 @@ bool GLimp_Init( glimpParms_t parms )
 	}
 #else
 	SDL_GL_MakeCurrent(window, context);
+	angle_blobcache_install("doom3_bfg_edition");
 
 	if (!gladLoadGLES2Loader((GLADloadproc)SDL_GL_GetProcAddress)) {
         common->FatalError("Failed to initialize GLAD\n");

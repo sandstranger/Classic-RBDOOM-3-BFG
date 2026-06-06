@@ -54,7 +54,10 @@ static std::string ConvertShaderToGLES(const char* shaderSource, rpStage_t shade
     const unsigned int sourceGLVersion = 410;
     const auto stage = shaderStage == SHADER_STAGE_VERTEX ? GL_VERTEX_SHADER : GL_FRAGMENT_SHADER;
     int returnCode = 0;
-    return GLSLtoGLSLES_c(shaderSource, stage,glesVersion,sourceGLVersion,&returnCode);
+    auto glesShader  = GLSLtoGLSLES_c(shaderSource, stage,glesVersion,sourceGLVersion,&returnCode);
+    std::string result = glesShader;
+    free(glesShader);
+    return result;
 }
 #endif
 

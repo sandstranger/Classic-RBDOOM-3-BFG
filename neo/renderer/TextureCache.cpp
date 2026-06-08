@@ -501,22 +501,12 @@ void idTextureCache::ForceEvictRamCache(float fraction) {
     }
 }
 
+extern "C" {
+__attribute__((used)) __attribute__((visibility("default")))
 void ClearRamCache() {
     if (g_enableTextureCache) {
         idTextureCache::Instance().Flush();
         idTextureCache::Instance().ClearRamCache();
-    }
-}
-
-extern "C" {
-__attribute__((used)) __attribute__((visibility("default")))
-void nativeTrimMemory(const bool aggressive) {
-    if (!g_enableTextureCache) return;
-
-    if (aggressive) {
-        idTextureCache::Instance().ClearRamCache();
-    } else {
-        idTextureCache::Instance().ForceEvictRamCache(0.5f);
     }
 }
 }

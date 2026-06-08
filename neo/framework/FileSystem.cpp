@@ -126,6 +126,10 @@ struct searchpath_t
 #define FSFLAG_SEARCH_DIRS		( 1 << 0 )
 #define FSFLAG_RETURN_FILE_MEM	( 1 << 1 )
 
+#if ANDROID
+extern "C" void ClearRamCache();
+#endif
+
 class idFileSystemLocal : public idFileSystem
 {
 public:
@@ -732,7 +736,6 @@ idFileSystemLocal::UnloadMapResources
 void idFileSystemLocal::UnloadMapResources( const char* name )
 {
 #if ANDROID
-	extern void ClearRamCache();
 	ClearRamCache();
 #endif
 

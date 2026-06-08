@@ -9,8 +9,6 @@
 #include <list>
 #include <iostream>
 
-void ClearRamCache();
-
 inline uint64_t FNV1a_Hash(const void* data, size_t size) {
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
     uint64_t hash = 14695981039346656037ULL;

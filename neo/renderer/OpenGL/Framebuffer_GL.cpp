@@ -487,7 +487,7 @@ void Framebuffer::Init()
     globalFramebuffers.geometryBufferFBO->Bind();
 #endif
 
-    globalFramebuffers.geometryBufferFBO->AddColorBuffer(GL_RGBA16F, 0);
+    globalFramebuffers.geometryBufferFBO->AddColorBuffer(GL_RGB10_A2, 0);
     globalFramebuffers.geometryBufferFBO->AddStencilBuffer(GL_DEPTH24_STENCIL8);
     globalFramebuffers.geometryBufferFBO->AttachImage2D(GL_TEXTURE_2D, globalImages->currentNormalsImage, 0);
     globalFramebuffers.geometryBufferFBO->AttachImageDepth(GL_TEXTURE_2D, globalImages->currentDepthImage);

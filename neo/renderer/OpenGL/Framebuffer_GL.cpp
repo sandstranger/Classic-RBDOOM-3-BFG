@@ -705,7 +705,6 @@ void Framebuffer::AddColorBuffer(int format, int index, int multiSamples)
 
     if (notCreatedYet)
     {
-        glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + index, GL_RENDERBUFFER, colorBuffers[index]);
     }
 }
@@ -735,7 +734,6 @@ void Framebuffer::AddDepthBuffer(int format, int multiSamples)
 
     if (notCreatedYet)
     {
-        glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, depthBuffer);
     }
 }
@@ -765,7 +763,6 @@ void Framebuffer::AddStencilBuffer(int format, int multiSamples)
 
     if (notCreatedYet)
     {
-        glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, stencilBuffer);
     }
 }

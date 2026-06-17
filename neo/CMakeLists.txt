@@ -1981,7 +1981,8 @@ else()
 			${OpenSSL_LIBRARY}
     	    ${CMAKE_DL_LIBS}
 			AngleShaderCache
-    	    log)
+    	    log
+			EGL)
 endif()
 		if (USE_OPENXR) 
 	        target_compile_options(openxr_loader PRIVATE "-Wno-error")

@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderCommon.h"
 #include "Framebuffer.h"
 
+#if 0
 idList<Framebuffer*>	Framebuffer::framebuffers;
 
 globalFramebuffers_t globalFramebuffers;
@@ -51,5 +52,5 @@ Framebuffer* Framebuffer::Find(const char* name)
 	return nullptr;
 }
 //SP End
-
+#endif
 

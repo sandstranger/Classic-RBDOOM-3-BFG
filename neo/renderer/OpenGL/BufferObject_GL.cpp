@@ -255,21 +255,12 @@ void* idVertexBuffer::MapBuffer( bufferMapType_t mapType )
 #ifndef ANDROID
 			buffer = glMapBufferRange(GL_ARRAY_BUFFER_ARB, 0, GetAllocedSize(), GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
 #else
-            buffer = glMapBufferRange(GL_ARRAY_BUFFER, 0, GetAllocedSize(), GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+            buffer = glMapBufferRange(GL_ARRAY_BUFFER, GetOffset(), GetAllocedSize(), GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
 #endif
-			if (buffer != NULL)
-			{
-				buffer = (byte*)buffer + GetOffset();
-			}
 		}
 		else if (mapType == BM_WRITE)
 		{
-			// RB: removed GL_MAP_INVALIDATE_RANGE_BIT as it breaks with an optimization in the Nvidia WHQL drivers >= 344.11
-			buffer = glMapBufferRange(GL_ARRAY_BUFFER, 0, GetAllocedSize(), GL_MAP_WRITE_BIT /*| GL_MAP_INVALIDATE_RANGE_BIT*/ | GL_MAP_UNSYNCHRONIZED_BIT);
-			if (buffer != NULL)
-			{
-				buffer = (byte*)buffer + GetOffset();
-			}
+			buffer = glMapBufferRange(GL_ARRAY_BUFFER, GetOffset(), GetAllocedSize(), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_FLUSH_EXPLICIT_BIT);
 			// assert( IsWriteCombined( buffer ) ); // commented out because it spams the console
 		}
 		else
@@ -546,8 +537,7 @@ void* idIndexBuffer::MapBuffer( bufferMapType_t mapType )
 		{
 			//buffer = glMapBufferARB( GL_ELEMENT_ARRAY_BUFFER_ARB, GL_WRITE_ONLY_ARB );
 
-			// RB: removed GL_MAP_INVALIDATE_RANGE_BIT as it breaks with an optimization in the Nvidia WHQL drivers >= 344.11
-			buffer = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, 0, GetAllocedSize(), GL_MAP_WRITE_BIT /*| GL_MAP_INVALIDATE_RANGE_BIT*/ | GL_MAP_UNSYNCHRONIZED_BIT);
+			buffer = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, 0, GetAllocedSize(), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_FLUSH_EXPLICIT_BIT);
 			if (buffer != NULL)
 			{
 				buffer = (byte*)buffer + GetOffset();
@@ -738,9 +728,6 @@ void idUniformBuffer::FreeBufferObject()
 		idLib::Printf( "joint buffer free %p, api %p (%i size)\n", this, ( GLuint* )&apiObject, GetSize() );
 	}
 	
-	if (!glConfig.directStateAccess) {
-		glBindBuffer(GL_UNIFORM_BUFFER, 0);
-	}
 	glDeleteBuffers( 1, ( GLuint* )&apiObject );
 	
 	ClearWithoutFreeing();
@@ -807,8 +794,7 @@ void* idUniformBuffer::MapBuffer( bufferMapType_t mapType )
 		numBytes = numBytes;
 		assert(GetOffset() == 0);
 
-		// RB: removed GL_MAP_INVALIDATE_RANGE_BIT as it breaks with an optimization in the Nvidia WHQL drivers >= 344.11
-		buffer = glMapBufferRange(GL_UNIFORM_BUFFER, 0, GetAllocedSize(), GL_MAP_WRITE_BIT /*| GL_MAP_INVALIDATE_RANGE_BIT*/ | GL_MAP_UNSYNCHRONIZED_BIT);
+		buffer = glMapBufferRange(GL_UNIFORM_BUFFER, 0, GetAllocedSize(), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_FLUSH_EXPLICIT_BIT);
 	}
 #ifndef ANDROID
 	else {

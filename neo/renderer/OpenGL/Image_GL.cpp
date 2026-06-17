@@ -60,6 +60,8 @@ Contains the Image implementation for OpenGL.
 static bool g_enableTexturesShrinking = false;
 bool g_enableTextureCache = false;
 static std::string g_pathToTextureCacheDir;
+static thread_local std::vector<uint8_t> s_decodeBuffer;
+static thread_local std::vector<uint8_t> s_etc2Buffer;
 
 extern "C" {
 __attribute__((used)) __attribute__((visibility("default")))
@@ -391,282 +393,243 @@ idImage::SubImageUpload
 ========================
 */
 
-void idImage::SubImageUpload( int mipLevel, int mipLevelToSkip, int x, int y, int z, int width, int height,
-							  const void* pic, int pixelPitch )
+void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int z,
+                             int width, int height, const void* pic, int pixelPitch)
 {
-    if (mipLevel < mipLevelToSkip)
+	if (mipLevel < mipLevelToSkip)
 	{
-        return;
-    }
+		return;
+	}
 
-	assert( x >= 0 && y >= 0 && mipLevel >= 0 && width >= 0 && height >= 0 && mipLevel < opts.numLevels );
+	assert(x >= 0 && y >= 0 && mipLevel >= 0 && width >= 0 && height >= 0 && mipLevel < opts.numLevels);
 
 	int compressedSize = 0;
-    const int gpuMipLevel = mipLevel - mipLevelToSkip;
+	const int gpuMipLevel = mipLevel - mipLevelToSkip;
 
-	if( IsCompressed() )
+	if (IsCompressed())
 	{
-		assert( !( x & 3 ) && !( y & 3 ) );
+		assert(!(x & 3) && !(y & 3));
 
-		// compressed size may be larger than the dimensions due to padding to quads
-		int quadW = ( width + 3 ) & ~3;
-		int quadH = ( height + 3 ) & ~3;
-		compressedSize = quadW * quadH * BitsForFormat( opts.format ) / 8;
+		int quadW = (width + 3) & ~3;
+		int quadH = (height + 3) & ~3;
+		compressedSize = quadW * quadH * BitsForFormat(opts.format) / 8;
 
 #ifdef _DEBUG
-		int padW = ( opts.width + 3 ) & ~3;
-		int padH = ( opts.height + 3 ) & ~3;
+		int padW = (opts.width + 3) & ~3;
+		int padH = (opts.height + 3) & ~3;
 #endif
 
-		assert( x + width <= padW && y + height <= padH );
-		// upload the non-aligned value, OpenGL understands that there
-		// will be padding
-		if( x + width > opts.width )
+		assert(x + width <= padW && y + height <= padH);
+
+		if (x + width > opts.width)
 		{
 			width = opts.width - x;
 		}
-		if( y + height > opts.height )
+		if (y + height > opts.height)
 		{
-			height = opts.height - x;
+			height = opts.height - y;
 		}
 	}
 	else
 	{
-		assert( x + width <= opts.width && y + height <= opts.height );
+		assert(x + width <= opts.width && y + height <= opts.height);
 	}
 
 	int target;
 	int uploadTarget;
-#ifndef ANDROID
-	if (!glConfig.directStateAccess)
-#endif
+
+	if (opts.textureType == TT_2D)
 	{
-		if (opts.textureType == TT_2D)
-		{
-			target = uploadTarget = GL_TEXTURE_2D;
-		}
-		else if (opts.textureType == TT_CUBIC)
-		{
-			target = GL_TEXTURE_CUBE_MAP;
-			uploadTarget = GL_TEXTURE_CUBE_MAP_POSITIVE_X + z;
-		}
-		else
-		{
-			assert(!"invalid opts.textureType");
-			target = uploadTarget = GL_TEXTURE_2D;
-		}
-		glBindTexture(target, texnum);
+		target = uploadTarget = GL_TEXTURE_2D;
+	}
+	else if (opts.textureType == TT_CUBIC)
+	{
+		target = GL_TEXTURE_CUBE_MAP;
+		uploadTarget = GL_TEXTURE_CUBE_MAP_POSITIVE_X + z;
+	}
+	else
+	{
+		assert(!"invalid opts.textureType");
+		target = uploadTarget = GL_TEXTURE_2D;
+	}
 
-		if (pixelPitch != 0)
-		{
-			glPixelStorei(GL_UNPACK_ROW_LENGTH, pixelPitch);
-		}
+	glBindTexture(target, texnum);
 
-		if (opts.format == FMT_RGB565)
-		{
+	if (pixelPitch != 0)
+	{
+		glPixelStorei(GL_UNPACK_ROW_LENGTH, pixelPitch);
+	}
+
+	if (opts.format == FMT_RGB565)
+	{
 #if !defined(USE_GLES3) && !ANDROID
-			glPixelStorei(GL_UNPACK_SWAP_BYTES, GL_TRUE);
+		glPixelStorei(GL_UNPACK_SWAP_BYTES, GL_TRUE);
 #endif
-		}
+	}
 
-#if defined(DEBUG) || defined(__ANDROID__)
-		//GL_CheckErrors();
-#endif
-		if (IsCompressed())
+	if (IsCompressed())
+	{
+#ifdef ANDROID
+		if (!glConfig.textureCompressionAvailable)
 		{
-#ifdef ANDROID //karin: decompress texture to RGBA instead of glCompressedXXX on OpenGLES
-            if (!glConfig.textureCompressionAvailable) {
-				idDxtDecoder decoder;
-				uint64_t hash = 0;
-				const int dxtWidth = (width + 3) & ~3;
-                const int dxtHeight = (height + 3) & ~3;
-                bool cacheHit = false;
+			const int dxtWidth = (width + 3) & ~3;
+			const int dxtHeight = (height + 3) & ~3;
+			bool cacheHit = false;
+			uint64_t hash = 0;
 
-                if (g_enableTextureCache) {
-					hash = ComputeTextureHash(pic, compressedSize, dxtWidth,
-											  dxtHeight, GL_COMPRESSED_RGBA8_ETC2_EAC);
-                    std::byte *cachedEtc2 = nullptr;
-                    size_t cachedSize = 0;
+			if (g_enableTextureCache)
+			{
+				hash = ComputeTextureHash(pic, compressedSize, dxtWidth, dxtHeight, GL_COMPRESSED_RGBA8_ETC2_EAC);
+				std::byte* cachedEtc2 = nullptr;
+				size_t cachedSize = 0;
 
-					cacheHit = idTextureCache::Instance().TryGetFromRamCache(hash, &cachedEtc2, &cachedSize);
-					if (!cacheHit) {
-						cacheHit = idTextureCache::Instance().TryGetCachedETC2(
-								imgName.c_str(),
-								pic, compressedSize,
-								dxtWidth, dxtHeight,
-								GL_COMPRESSED_RGBA8_ETC2_EAC,
-								1,
-								&cachedEtc2, &cachedSize
-						);
+				// Шаг 1: Ищем в RAM-кэше (быстрый путь)
+				cacheHit = idTextureCache::Instance().TryGetFromRamCache(hash, &cachedEtc2, &cachedSize);
 
-						if (cacheHit){
-							idTextureCache::Instance().SaveToRamCache(hash, cachedEtc2, cachedSize,
-																	  dxtWidth, dxtHeight,GL_COMPRESSED_RGBA8_ETC2_EAC);
-						}
+				if (!cacheHit)
+				{
+					cacheHit = idTextureCache::Instance().TryGetCachedETC2(
+							imgName.c_str(),
+							pic, compressedSize,
+							dxtWidth, dxtHeight,
+							GL_COMPRESSED_RGBA8_ETC2_EAC,
+							1,
+							&cachedEtc2, &cachedSize
+					);
+
+					if (cacheHit)
+					{
+						idTextureCache::Instance().SaveToRamCache(hash, cachedEtc2, cachedSize,
+						                                          dxtWidth, dxtHeight, GL_COMPRESSED_RGBA8_ETC2_EAC);
 					}
+				}
 
-                    if (cacheHit) {
-                        glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
-                                                  dxtWidth, dxtHeight,
-                                                  GL_COMPRESSED_RGBA8_ETC2_EAC,
-                                                  static_cast<GLsizei>(cachedSize),
-                                                  cachedEtc2);
-                        Mem_Free(cachedEtc2);
-						cachedEtc2 = nullptr;
-                    }
-                }
+				if (cacheHit)
+				{
+					glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
+					                          dxtWidth, dxtHeight,
+					                          GL_COMPRESSED_RGBA8_ETC2_EAC,
+					                          static_cast<GLsizei>(cachedSize),
+					                          cachedEtc2);
+					Mem_Free(cachedEtc2);
+					cachedEtc2 = nullptr;
+				}
+			}
 
-                if (!cacheHit) {
-                    byte *dpic = (byte *) Mem_Alloc(dxtWidth * dxtHeight * 4, TAG_TEMP);
-                    if (!dpic) {
-                        common->Error("ETC2: failed to allocate decode buffer");
-                        return;
-                    }
-                    if (opts.format == FMT_DXT1)
-                        decoder.DecompressImageDXT1((const byte *) pic, dpic, width, height);
-                    else {
-                        if (opts.colorFormat == CFM_YCOCG_DXT5)
-                            decoder.DecompressYCoCgDXT5((const byte *) pic, dpic, width, height);
-                        else if (opts.colorFormat == CFM_NORMAL_DXT5)
-                            decoder.DecompressNormalMapDXT5Renormalize((const byte *) pic, dpic,
-                                                                       width, height);
-                        else
-                            decoder.DecompressImageDXT5((const byte *) pic, dpic, width, height);
-                    }
-                    const int pixelCount = dxtWidth * dxtHeight;
+			if (!cacheHit)
+			{
+				const size_t decodeSize = dxtWidth * dxtHeight * 4;
+				if (s_decodeBuffer.size() < decodeSize)
+				{
+					s_decodeBuffer.resize(decodeSize);
+				}
+				uint8_t* dpic = s_decodeBuffer.data();
+
+				idDxtDecoder decoder;
+				if (opts.format == FMT_DXT1)
+				{
+					decoder.DecompressImageDXT1((const byte*)pic, dpic, width, height);
+				}
+				else
+				{
+					if (opts.colorFormat == CFM_YCOCG_DXT5)
+					{
+						decoder.DecompressYCoCgDXT5((const byte*)pic, dpic, width, height);
+					}
+					else if (opts.colorFormat == CFM_NORMAL_DXT5)
+					{
+						decoder.DecompressNormalMapDXT5Renormalize((const byte*)pic, dpic, width, height);
+					}
+					else
+					{
+						decoder.DecompressImageDXT5((const byte*)pic, dpic, width, height);
+					}
+				}
+
+				const int pixelCount = dxtWidth * dxtHeight;
 #if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
-                    int i = 0;
-                    for (; i <= pixelCount - 16; i += 16) {
-                        uint8x16x4_t pixels = vld4q_u8(&dpic[i * 4]);
-                        uint8x16_t temp = pixels.val[0];
-                        pixels.val[0] = pixels.val[2];
-                        pixels.val[2] = temp;
-                        vst4q_u8(&dpic[i * 4], pixels);
-                    }
-                    for (; i < pixelCount; i++) {
-                        std::swap(dpic[i * 4], dpic[i * 4 + 2]);
-                    }
-#else
-                    for (int i = 0; i < pixelCount; i++) {
-                        std::swap(dpic[i * 4 ], dpic[i * 4 + 2]);
-                    }
-#endif
-                    const uint32_t blocks = (dxtWidth / 4) * (dxtHeight / 4);
-                    const size_t etc2CompressedSize = blocks * 16;
-                    const auto etc2Data = (uint8_t *) Mem_Alloc(etc2CompressedSize, TAG_TEMP);
-                    CompressEtc2Rgba(
-                            reinterpret_cast<const uint32_t *>(dpic),
-                            reinterpret_cast<uint64_t *>(etc2Data),
-                            blocks,
-                            dxtWidth,
-                            true
-                    );
-
-                    if (g_enableTextureCache) {
-						idTextureCache::Instance().SaveToRamCache(hash, etc2Data, etc2CompressedSize,
-																  dxtWidth, dxtHeight,
-																  GL_COMPRESSED_RGBA8_ETC2_EAC);
-                        idTextureCache::Instance().SaveToCacheAsync(
-                                imgName.c_str(),
-                                pic, compressedSize,
-                                dxtWidth, dxtHeight,
-                                GL_COMPRESSED_RGBA8_ETC2_EAC,
-                                1,
-                                etc2Data, etc2CompressedSize
-                        );
-                    }
-
-                    glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y, width, height,
-                                              GL_COMPRESSED_RGBA8_ETC2_EAC,
-                                              static_cast<GLsizei>(etc2CompressedSize),
-                                              etc2Data);
-
-                    Mem_Free(etc2Data);
-                    Mem_Free(dpic);
+				int i = 0;
+                for (; i <= pixelCount - 16; i += 16)
+                {
+                    uint8x16x4_t pixels = vld4q_u8(&dpic[i * 4]);
+                    uint8x16_t temp = pixels.val[0];
+                    pixels.val[0] = pixels.val[2];
+                    pixels.val[2] = temp;
+                    vst4q_u8(&dpic[i * 4], pixels);
                 }
-		}
-        else {
-                glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y, width, height,
-                                          internalFormat, compressedSize, pic);
-        }
+                for (; i < pixelCount; i++)
+                {
+                    std::swap(dpic[i * 4], dpic[i * 4 + 2]);
+                }
 #else
-			glCompressedTexSubImage2D(uploadTarget, mipLevel, x, y, width, height, internalFormat, compressedSize, pic);
+				for (int i = 0; i < pixelCount; i++)
+				{
+					std::swap(dpic[i * 4], dpic[i * 4 + 2]);
+				}
 #endif
-		}
-		else
-		{
 
-			// make sure the pixel store alignment is correct so that lower mips get created
-			// properly for odd shaped textures - this fixes the mip mapping issues with
-			// fonts
-			int unpackAlignment = width * BitsForFormat((textureFormat_t)opts.format) / 8;
-			if ((unpackAlignment & 3) == 0)
-			{
-				glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-			}
-			else
-			{
-				glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-			}
+				const uint32_t blocks = (dxtWidth / 4) * (dxtHeight / 4);
+				const size_t etc2CompressedSize = blocks * 16;
+				if (s_etc2Buffer.size() < etc2CompressedSize)
+				{
+					s_etc2Buffer.resize(etc2CompressedSize);
+				}
+				uint8_t* etc2Data = s_etc2Buffer.data();
 
-			glTexSubImage2D(uploadTarget, gpuMipLevel, x, y, width, height, dataFormat, dataType, pic);
-		}
-	}
-#ifndef ANDROID
-	else {
-		if( pixelPitch != 0 )
-		{
-			glPixelStorei(GL_UNPACK_ROW_LENGTH, pixelPitch);
-		}
+				CompressEtc2Rgba(
+						reinterpret_cast<const uint32_t*>(dpic),
+						reinterpret_cast<uint64_t*>(etc2Data),
+						blocks,
+						dxtWidth,
+						true
+				);
 
-		if( opts.format == FMT_RGB565 )
-		{
-	#if !defined(USE_GLES3) && !ANDROID
-			glPixelStorei(GL_UNPACK_SWAP_BYTES, GL_TRUE);
-	#endif
-		}
+				if (g_enableTextureCache)
+				{
+					idTextureCache::Instance().SaveToRamCache(hash, etc2Data, etc2CompressedSize,
+					                                          dxtWidth, dxtHeight, GL_COMPRESSED_RGBA8_ETC2_EAC);
+					idTextureCache::Instance().SaveToCacheAsync(
+							imgName.c_str(),
+							pic, compressedSize,
+							dxtWidth, dxtHeight,
+							GL_COMPRESSED_RGBA8_ETC2_EAC,
+							1,
+							etc2Data, etc2CompressedSize
+					);
+				}
 
-	#if defined(DEBUG) || defined(__ANDROID__)
-		//GL_CheckErrors();
-	#endif
-		if( IsCompressed() )
-		{
-			if (opts.textureType == TT_CUBIC) {
-				glCompressedTextureSubImage3D(texnum, mipLevel, x, y, z, width, height, 1, internalFormat, compressedSize, pic);
-			}
-			else {
-				glCompressedTextureSubImage2D(texnum, mipLevel, x, y, width, height, internalFormat, compressedSize, pic);
+				glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
+				                          dxtWidth, dxtHeight,
+				                          GL_COMPRESSED_RGBA8_ETC2_EAC,
+				                          static_cast<GLsizei>(etc2CompressedSize),
+				                          etc2Data);
 			}
 		}
 		else
 		{
-
-			// make sure the pixel store alignment is correct so that lower mips get created
-			// properly for odd shaped textures - this fixes the mip mapping issues with
-			// fonts
-			int unpackAlignment = width * BitsForFormat( ( textureFormat_t )opts.format ) / 8;
-			if( ( unpackAlignment & 3 ) == 0 )
-			{
-				glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-			}
-			else
-			{
-				glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-			}
-
-			if (opts.textureType == TT_CUBIC) {
-				glTextureSubImage3D(texnum, mipLevel, x, y, z, width, height, 1, dataFormat, dataType, pic);
-			}
-			else {
-				glTextureSubImage2D(texnum, mipLevel, x, y, width, height, dataFormat, dataType, pic);
-			}
-
+			glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
+			                          width, height, internalFormat, compressedSize, pic);
 		}
+#else
+		glCompressedTexSubImage2D(uploadTarget, mipLevel, x, y,
+            width, height, internalFormat, compressedSize, pic);
+#endif
 	}
-#endif
-#if defined(DEBUG) || defined(__ANDROID__)
-	//GL_CheckErrors();
-#endif
+	else
+	{
+		int unpackAlignment = width * BitsForFormat((textureFormat_t)opts.format) / 8;
+		if ((unpackAlignment & 3) == 0)
+		{
+			glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+		}
+		else
+		{
+			glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+		}
+
+		glTexSubImage2D(uploadTarget, gpuMipLevel, x, y, width, height, dataFormat, dataType, pic);
+	}
+
 	if (opts.format == FMT_RGB565)
 	{
 #ifndef ANDROID
@@ -1310,11 +1273,8 @@ void idImage::AllocImage()
 			dataFormat = GL_RG;
 			dataType = GL_UNSIGNED_BYTE;
 			break;
-		case FMT_LUM8:
-			internalFormat = GL_R8;
-			dataFormat = GL_RED;
-			dataType = GL_UNSIGNED_BYTE;
-			break;
+        case FMT_LUM8:
+        case FMT_R32F:
 		case FMT_INT8:
 			internalFormat = GL_R8;
 			dataFormat = GL_RED;
@@ -1343,13 +1303,13 @@ void idImage::AllocImage()
 #ifndef ANDROID
 			internalFormat = glConfig.directStateAccess? GL_DEPTH_COMPONENT24 : GL_DEPTH_COMPONENT;
 #else
-			internalFormat = GL_DEPTH_COMPONENT24;
+			internalFormat = GL_DEPTH_COMPONENT16;
 #endif
 			dataFormat = GL_DEPTH_COMPONENT;
 #ifndef ANDROID
 			dataType = GL_UNSIGNED_BYTE;
 #else
-            dataType = GL_UNSIGNED_INT;
+            dataType = GL_UNSIGNED_SHORT;
 #endif
 			break;
 
@@ -1375,6 +1335,7 @@ void idImage::AllocImage()
 #endif
 			break;
 
+        case FMT_RGBA32F:
 		case FMT_RGBA16F:
 			internalFormat = GL_RGBA16F;
 			dataFormat = GL_RGBA;
@@ -1384,27 +1345,6 @@ void idImage::AllocImage()
 			dataType = GL_HALF_FLOAT;
 #endif
 			break;
-
-		case FMT_RGBA32F:
-			internalFormat = GL_RGBA32F;
-			dataFormat = GL_RGBA;
-#ifndef ANDROID
-			dataType = GL_UNSIGNED_BYTE;
-#else
-			dataType = GL_FLOAT;
-#endif
-			break;
-
-		case FMT_R32F:
-			internalFormat = GL_R32F;
-			dataFormat = GL_RED;
-#ifndef ANDROID
-			dataType = GL_UNSIGNED_BYTE;
-#else
-			dataType = GL_FLOAT;
-#endif
-			break;
-
 		case FMT_X16:
 			internalFormat = GL_INTENSITY16;
 			dataFormat = GL_LUMINANCE;
@@ -1566,7 +1506,7 @@ void idImage::AllocImage()
 		}
 	}
 #ifndef ANDROID
-	else 
+	else
 	{
 		glCreateTextures(target, 1, (GLuint*)&texnum);
 		if (texnum != TEXTURE_NOT_LOADED) {
@@ -1587,7 +1527,7 @@ void idImage::AllocImage()
 #endif
 	// see if we messed anything up
 	//GL_CheckErrors();
-	
+
 	SetTexParameters();
 }
 

@@ -26,123 +26,233 @@ If you have questions concerning this license or the applicable additional terms
 ===========================================================================
 */
 
-#ifndef __FRAMEBUFFER_H__
-#define __FRAMEBUFFER_H__
+#ifndef __FRAMEBUFFER_GL_H__
+#define __FRAMEBUFFER_GL_H__
 
-static const int MAX_SHADOWMAP_RESOLUTIONS = 5;
-static const int MAX_BLOOM_BUFFERS = 2;
-static const int MAX_SSAO_BUFFERS = 2;
-static const int MAX_HIERARCHICAL_ZBUFFERS = 6; // native resolution + 5 MIP LEVELS
+#include <unordered_map>
+#include <vector>
+#include <string>
 
-#if 1
-static	int shadowMapResolutions[MAX_SHADOWMAP_RESOLUTIONS] = { 2048, 1024, 512, 512, 256 };
-#else
-static	int shadowMapResolutions[MAX_SHADOWMAP_RESOLUTIONS] = { 1024, 1024, 1024, 1024, 1024 };
-#endif
+
+constexpr int MAX_SHADOWMAP_RESOLUTIONS = 5;
+constexpr int MAX_BLOOM_BUFFERS = 2;
+constexpr int MAX_SSAO_BUFFERS = 2;
+constexpr int MAX_HIERARCHICAL_ZBUFFERS = 6;
+constexpr int MAX_COLOR_ATTACHMENTS = 16;
+
+
+extern const int shadowMapResolutions[MAX_SHADOWMAP_RESOLUTIONS];
+
+
+class idImage;
+class idCmdArgs;
+
+
+
+
+
+struct RenderTargetDesc
+{
+    int width;
+    int height;
+    GLenum internalFormat;
+    GLenum format;
+    GLenum type;
+    int samples;
+    bool isDepth;
+
+    bool operator==(const RenderTargetDesc& other) const
+    {
+        return width == other.width &&
+               height == other.height &&
+               internalFormat == other.internalFormat &&
+               format == other.format &&
+               type == other.type &&
+               samples == other.samples &&
+               isDepth == other.isDepth;
+    }
+};
+
+struct RenderTarget
+{
+    GLuint textureID;
+    GLuint fboID;
+    RenderTargetDesc desc;
+    bool inUse;
+    std::string debugName;
+    int lastUsedFrame;
+
+    RenderTarget() : textureID(0), fboID(0), inUse(false), lastUsedFrame(0) {}
+};
+
+class RenderTargetPool
+{
+public:
+
+    struct PoolConfig
+    {
+        size_t maxPoolSize;
+        size_t preallocateCount;
+        bool enableLRUEviction;
+        int maxFrameAge;
+
+        PoolConfig()
+                : maxPoolSize(64)
+                , preallocateCount(16)
+                , enableLRUEviction(true)
+                , maxFrameAge(10)
+        {
+        }
+    };
+
+private:
+    std::vector<RenderTarget> _pool;
+    std::unordered_map<std::string, size_t> _nameToIndex;
+    int _currentFrame;
+    PoolConfig _config;
+
+public:
+    RenderTargetPool();
+    ~RenderTargetPool();
+
+    void Initialize(const PoolConfig& config);
+
+    RenderTargetPool(const RenderTargetPool&) = delete;
+    RenderTargetPool& operator=(const RenderTargetPool&) = delete;
+
+
+    GLuint Acquire(const std::string& name, const RenderTargetDesc& desc);
+
+
+    void Release(const std::string& name);
+
+
+    GLuint GetFBO(const std::string& name) const;
+
+
+    GLuint GetTexture(const std::string& name) const;
+
+
+    void BeginFrame();
+
+
+    void EndFrame();
+
+
+    void Shutdown();
+
+
+    size_t GetPoolSize() const { return _pool.size(); }
+    size_t GetActiveCount() const;
+
+private:
+    RenderTarget CreateRenderTarget(const RenderTargetDesc& desc, const std::string& name);
+    bool CanReuse(const RenderTarget& rt, const RenderTargetDesc& desc) const;
+    void DestroyRenderTarget(RenderTarget& rt);
+};
+
+
+
 
 
 class Framebuffer
 {
 public:
+    Framebuffer(const char* name, int width, int height);
+    ~Framebuffer();
 
-	Framebuffer( const char* name, int width, int height );
-	virtual ~Framebuffer();
-	
-	static void				Init();
-	static void				Shutdown();
-	
-	static void				CheckFramebuffers();
-	
-	// deletes OpenGL object but leaves structure intact for reloading
-	void					PurgeFramebuffer();
-	//SP Begin
-	static Framebuffer*		Find(const char* name);
-	static void				ResizeFramebuffers();
-	//SP End
-	
-	void					Bind();
-	bool					IsBound();
-	static void				Unbind();
-	static bool				IsDefaultFramebufferActive();
-	
-	void					AddColorBuffer( int format, int index, int multiSamples = 0 );
-	void					AddDepthBuffer( int format, int multiSamples = 0 );
-	//SP Begin
-	void					AddStencilBuffer(int format, int multiSamples = 0);
-	//SP End
-	
-	void					AttachImage2D( int target, const idImage* image, int index, int mipmapLod = 0 );
-	void					AttachImage3D( const idImage* image );
-	void					AttachImageDepth( int target, const idImage* image );
-	void					AttachImageDepthLayer( const idImage* image, int layer );
-	
-	// check for OpenGL errors
-	void					Check();
-	uint32_t				GetFramebuffer() const
-	{
-		return frameBuffer;
-	}
-	
-	int						GetWidth() const
-	{
-		return width;
-	}
-	
-	int						GetHeight() const
-	{
-		return height;
-	}
-	
-	bool					IsMultiSampled() const
-	{
-		return msaaSamples;
-	}
-	
-	void					Resize( int width_, int height_ )
-	{
-		width = width_;
-		height = height_;
-	}
-	
+    static void Init();
+    static void Shutdown();
+
+    static void CheckFramebuffers();
+    static void ResizeFramebuffers();
+
+    static Framebuffer* Find(const char* name);
+
+
+    static void InitializePool();
+    static void BeginFrame();
+    static void EndFrame();
+
+
+    void Bind();
+    bool IsBound() const;
+    static void Unbind();
+    static bool IsDefaultFramebufferActive();
+
+
+    void AddColorBuffer(int format, int index, int multiSamples = 0);
+    void AddDepthBuffer(int format, int multiSamples = 0);
+    void AddStencilBuffer(int format, int multiSamples = 0);
+
+
+    void AttachImage2D(int target, const idImage* image, int index, int mipmapLod = 0);
+    void AttachImage3D(const idImage* image);
+    void AttachImageDepth(int target, const idImage* image);
+    void AttachImageDepthLayer(const idImage* image, int layer);
+
+
+    void Check();
+
+
+    void PurgeFramebuffer();
+
+
+    uint32_t GetFramebuffer() const { return frameBuffer; }
+    int GetWidth() const { return width; }
+    int GetHeight() const { return height; }
+    bool IsMultiSampled() const { return msaaSamples; }
+
+    void Resize(int width_, int height_)
+    {
+        width = width_;
+        height = height_;
+    }
+    static idList<Framebuffer*> framebuffers;
+    static RenderTargetPool renderTargetPool;
+    static Framebuffer* currentBoundFramebuffer;
+
 private:
-	idStr					fboName;
-	
-	// FBO object
-	uint32_t				frameBuffer;
-	
-	uint32_t				colorBuffers[16];
-	int						colorFormat;
-	
-	uint32_t				depthBuffer;
-	int						depthFormat;
-	
-	uint32_t				stencilBuffer;
-	int						stencilFormat;
-	
-	int						width;
-	int						height;
-	
-	bool					msaaSamples;
-	
-	static idList<Framebuffer*>	framebuffers;
+    idStr fboName;
+
+
+    uint32_t frameBuffer;
+
+    uint32_t colorBuffers[MAX_COLOR_ATTACHMENTS];
+    int colorFormat;
+
+    uint32_t depthBuffer;
+    int depthFormat;
+
+    uint32_t stencilBuffer;
+    int stencilFormat;
+
+    int width;
+    int height;
+
+    bool msaaSamples;
 };
+
+
+
+
 
 struct globalFramebuffers_t
 {
-	Framebuffer*				shadowFBO[MAX_SHADOWMAP_RESOLUTIONS];
-	Framebuffer*				hdrFBO;
+    Framebuffer* shadowFBO[MAX_SHADOWMAP_RESOLUTIONS];
+    Framebuffer* hdrFBO;
 #if defined(USE_HDR_MSAA)
-	Framebuffer*				hdrNonMSAAFBO;
+    Framebuffer* hdrNonMSAAFBO;
 #endif
-//	Framebuffer*				hdrQuarterFBO;
-	Framebuffer*				hdr64FBO;
-	Framebuffer*				bloomRenderFBO[MAX_BLOOM_BUFFERS];
-	Framebuffer*				ambientOcclusionFBO[MAX_SSAO_BUFFERS];
-	Framebuffer*				csDepthFBO[MAX_HIERARCHICAL_ZBUFFERS];
-	Framebuffer*				geometryBufferFBO;
-	Framebuffer*				smaaEdgesFBO;
-	Framebuffer*				smaaBlendFBO;
+    Framebuffer* hdr64FBO;
+    Framebuffer* bloomRenderFBO[MAX_BLOOM_BUFFERS];
+    Framebuffer* ambientOcclusionFBO[MAX_SSAO_BUFFERS];
+    Framebuffer* csDepthFBO[MAX_HIERARCHICAL_ZBUFFERS];
+    Framebuffer* geometryBufferFBO;
+    Framebuffer* smaaEdgesFBO;
+    Framebuffer* smaaBlendFBO;
 };
+
 extern globalFramebuffers_t globalFramebuffers;
 
-#endif // __FRAMEBUFFER_H__
+#endif

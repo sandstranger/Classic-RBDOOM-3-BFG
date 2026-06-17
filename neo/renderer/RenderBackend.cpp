@@ -41,7 +41,7 @@ If you have questions concerning this license or the applicable additional terms
 idCVar r_drawEyeColor( "r_drawEyeColor", "0", CVAR_RENDERER | CVAR_BOOL, "Draw a colored box, red = left eye, blue = right eye, grey = non-stereo" );
 idCVar r_motionBlur( "r_motionBlur", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "1 - 5, log2 of the number of motion blur samples" );
 idCVar r_forceZPassStencilShadows( "r_forceZPassStencilShadows", "0", CVAR_RENDERER | CVAR_BOOL, "force Z-pass rendering for performance testing" );
-idCVar r_useStencilShadowPreload( "r_useStencilShadowPreload", "1", CVAR_RENDERER | CVAR_BOOL, "use stencil shadow preload algorithm instead of Z-fail" );
+idCVar r_useStencilShadowPreload( "r_useStencilShadowPreload", "0", CVAR_RENDERER | CVAR_BOOL, "use stencil shadow preload algorithm instead of Z-fail" );
 idCVar r_skipShaderPasses( "r_skipShaderPasses", "0", CVAR_RENDERER | CVAR_BOOL, "" );
 idCVar r_skipInteractionFastPath( "r_skipInteractionFastPath", "0", CVAR_RENDERER | CVAR_BOOL, "" );
 idCVar r_useLightStencilSelect( "r_useLightStencilSelect", "0", CVAR_RENDERER | CVAR_BOOL, "use stencil select pass" );
@@ -3077,7 +3077,7 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 	// FIXME
 #if !defined(USE_VULKAN)
 	globalFramebuffers.shadowFBO[vLight->shadowLOD]->Bind();
-	
+
 	if( side < 0 )
 	{
 		globalFramebuffers.shadowFBO[vLight->shadowLOD]->AttachImageDepthLayer( globalImages->shadowImage[vLight->shadowLOD], 0 );
@@ -3086,38 +3086,38 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 	{
 		globalFramebuffers.shadowFBO[vLight->shadowLOD]->AttachImageDepthLayer( globalImages->shadowImage[vLight->shadowLOD], side );
 	}
-	
+
 	globalFramebuffers.shadowFBO[vLight->shadowLOD]->Check();
-	
+
 	GL_ViewportAndScissor( 0, 0, shadowMapResolutions[vLight->shadowLOD], shadowMapResolutions[vLight->shadowLOD] );
-	
-	
+
+
 	glClear( GL_DEPTH_BUFFER_BIT );
 #endif
-	
+
 	// process the chain of shadows with the current rendering state
 	currentSpace = NULL;
-	
+
 	for( const drawSurf_t* drawSurf = drawSurfs; drawSurf != NULL; drawSurf = drawSurf->nextOnLight )
 	{
-	
+
 #if 1
 		// make sure the shadow occluder geometry is done
 		if( drawSurf->shadowVolumeState != SHADOWVOLUME_DONE )
 		{
 			assert( drawSurf->shadowVolumeState == SHADOWVOLUME_UNFINISHED || drawSurf->shadowVolumeState == SHADOWVOLUME_DONE );
-			
+
 			uint64 start = Sys_Microseconds();
 			while( drawSurf->shadowVolumeState == SHADOWVOLUME_UNFINISHED )
 			{
 				Sys_Yield();
 			}
 			uint64 end = Sys_Microseconds();
-			
+
 			pc.shadowMicroSec += end - start;
 		}
 #endif
-		
+
 		if( drawSurf->numIndexes == 0 )
 		{
 			continue;	// a job may have created an empty shadow geometry
@@ -3384,8 +3384,21 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 			{
 				ShadowMapPass( vLight->globalShadows, vLight, side );
 			}
-			
-			// go back from light view to default camera view
+
+#if ANDROID
+            glFlush();
+            GLsync shadowSync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+            if (shadowSync != 0)
+            {
+                GLenum waitResult;
+                do {
+                    waitResult = glClientWaitSync(shadowSync, GL_SYNC_FLUSH_COMMANDS_BIT, 1000);
+                } while (waitResult == GL_TIMEOUT_EXPIRED);
+                glDeleteSync(shadowSync);
+            }
+#endif
+
+            // go back from light view to default camera view
 			ResetViewportAndScissorToDefaultCamera( _viewDef );
 			
 			if( vLight->localInteractions != NULL )

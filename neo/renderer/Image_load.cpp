@@ -71,21 +71,20 @@ int BitsForFormat( textureFormat_t format )
 			return 4;
 		case FMT_SHADOW_ARRAY:
 			return ( 32 * 6 );
+		case FMT_RGBA32F:
 		case FMT_RGBA16F:
 			return 64;
-		case FMT_RGBA32F:
-			return 128;
 		case FMT_R32F:
-			return 32;
+			return 8;
 		// RB end
 		case FMT_DEPTH:
-			return 32;
+			return 16;
 		case FMT_X16:
 			return 16;
 		case FMT_Y16_X16:
 			return 32;
 		//SP Begin
-		case FMT_DEPTH_STENCIL: 
+		case FMT_DEPTH_STENCIL:
 			return 32;
 		case FMT_R8:
 			return 4;
@@ -110,14 +109,14 @@ ID_INLINE void idImage::DeriveOpts()
 	if( opts.format == FMT_NONE )
 	{
 		opts.colorFormat = CFM_DEFAULT;
-		
+
 		switch( usage )
 		{
 			case TD_COVERAGE:
 				opts.format = FMT_DXT1;
 				opts.colorFormat = CFM_GREEN_ALPHA;
 				break;
-				
+
 			case TD_DEPTH:
 				opts.format = FMT_DEPTH;
 				break;
@@ -127,19 +126,19 @@ ID_INLINE void idImage::DeriveOpts()
 				opts.format = FMT_DEPTH_STENCIL;
 				break;
 				// sp end
-				
+
 			case TD_SHADOW_ARRAY:
 				opts.format = FMT_SHADOW_ARRAY;
 				break;
-				
+
 			case TD_RGBA16F:
 				opts.format = FMT_RGBA16F;
 				break;
-				
+
 			case TD_RGBA32F:
 				opts.format = FMT_RGBA32F;
 				break;
-				
+
 			case TD_R32F:
 				opts.format = FMT_R32F;
 				break;
@@ -149,7 +148,7 @@ ID_INLINE void idImage::DeriveOpts()
 				opts.format = FMT_R8;
 				break;
 			//SP End
-				
+
 			case TD_DIFFUSE:
 				// TD_DIFFUSE gets only set to when its a diffuse texture for an interaction
 				opts.gammaMips = true;
@@ -203,11 +202,11 @@ ID_INLINE void idImage::DeriveOpts()
 				opts.format = FMT_RGBA8;
 		}
 	}
-	
+
 	if( opts.numLevels == 0 )
 	{
 		opts.numLevels = 1;
-		
+
 		if( filter == TF_LINEAR || filter == TF_NEAREST )
 		{
 			// don't create mip maps if we aren't going to be using them
@@ -255,10 +254,10 @@ name contains GetName() upon entry
 void idImage::GetGeneratedName( idStr& _name, const textureUsage_t& _usage, const cubeFiles_t& _cube )
 {
 	idStrStatic< 64 > extension;
-	
+
 	_name.ExtractFileExtension( extension );
 	_name.StripFileExtension();
-	
+
 	_name += va( "#__%02d%02d", ( int )_usage, ( int )_cube );
 	if( extension.Length() > 0 )
 	{
@@ -335,7 +334,7 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 		im.SetName(generatedName);
 		binaryFileTime = im.LoadFromGeneratedFile(sourceFileTime);
 	}
-	
+
 	// BFHACK, do not want to tweak on buildgame so catch these images here
 	if( binaryFileTime == FILE_NOT_FOUND_TIMESTAMP && fileSystem->UsingResourceFiles() )
 	{
@@ -445,12 +444,12 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 		}
 		//else if( toolUsage )
 		//	binarizeReason = va( "binarize: tool usage '%s'", generatedName.c_str() );
-		
+
 		if (cubeFiles == CF_NATIVE || cubeFiles == CF_CAMERA || cubeFiles == CF_SINGLE)
 		{
 			int size;
 			byte* pics[6];
-			
+
 			if( !R_LoadCubeImages( GetName(), cubeFiles, pics, &size, &sourceFileTime, cubeMapSize ) || size == 0 )
 			{
 				idLib::Warning( "Couldn't load cube image: %s", GetName() );
@@ -459,14 +458,14 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 			}
 			actuallyloaded = true;
 			repeat = TR_CLAMP;
-			
+
 			opts.textureType = TT_CUBIC;
 			opts.width = size;
 			opts.height = size;
 			opts.numLevels = 0;
-			
+
 			DeriveOpts();
-			
+
 			// foresthale 2014-05-30: give a nice progress display when binarizing
 			commonLocal.LoadPacifierBinarizeFilename( generatedName.c_str(), binarizeReason.c_str() );
 			if( opts.numLevels > 1 )
@@ -477,13 +476,13 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 			{
 				commonLocal.LoadPacifierBinarizeProgressTotal( opts.width * opts.width * 6 );
 			}
-			
+
 			im.LoadCubeFromMemory( size, ( const byte** )pics, opts.numLevels, opts.format, opts.gammaMips );
-			
+
 			commonLocal.LoadPacifierBinarizeEnd();
-			
+
 			repeat = TR_CLAMP;
-			
+
 			for( int i = 0; i < 6; i++ )
 			{
 				if( pics[i] )
@@ -496,15 +495,15 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 		{
 			int width, height;
 			byte* pic;
-			
+
 			// load the full specification, and perform any image program calculations
 			R_LoadImageProgram( GetName(), &pic, &width, &height, &sourceFileTime, &usage );
-			
+
 			if( pic == NULL )
 			{
 				idLib::Warning( "Couldn't load image: %s : %s", GetName(), generatedName.c_str() );
 				actuallyloaded = false;
-				
+
 				// create a default so it doesn't get continuously reloaded
 				if (opts.width <= 0) {
 					opts.width = 8;
@@ -521,17 +520,17 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 					for (int level = 0; level < opts.numLevels; level++)
 					{
 						SubImageUpload(level,mipmapsToSkip, 0, 0, 0, opts.width >> level, opts.height >> level, clear.Ptr());
-					}					
+					}
 				}
 				return;
-				
+
 			}
 			actuallyloaded = true;
 			opts.width = width;
 			opts.height = height;
 			opts.numLevels = 0;
 			DeriveOpts();
-			
+
 			// foresthale 2014-05-30: give a nice progress display when binarizing
 			commonLocal.LoadPacifierBinarizeFilename( generatedName.c_str(), binarizeReason.c_str() );
 			if( opts.numLevels > 1 )
@@ -545,12 +544,12 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 
 			im.Load2DFromMemory( opts.width, opts.height, pic, opts.numLevels, opts.format, opts.colorFormat, opts.gammaMips );
 			commonLocal.LoadPacifierBinarizeEnd();
-			
+
 			Mem_Free( pic );
 		}
 		binaryFileTime = im.WriteGeneratedFile( sourceFileTime );
 	}
-	
+
 	if (idStr::Icmp(GetName(), "_doomClassic")) {
 		AllocImage();
 	}
@@ -606,7 +605,7 @@ void idImage::Print() const
 	{
 		common->Printf( " " );
 	}
-	
+
 	switch( opts.textureType )
 	{
 		case TT_2D:
@@ -615,22 +614,22 @@ void idImage::Print() const
 		case TT_CUBIC:
 			common->Printf( "C     " );
 			break;
-			
+
 		case TT_2D_ARRAY:
 			common->Printf( "2D-A  " );
 			break;
-			
+
 		case TT_2D_MULTISAMPLE:
 			common->Printf( "2D-MS " );
 			break;
-			
+
 		default:
 			common->Printf( "<BAD TYPE:%i>", opts.textureType );
 			break;
 	}
-	
+
 	common->Printf( "%4i %4i ",	opts.width, opts.height );
-	
+
 	switch( opts.format )
 	{
 #define NAME_FORMAT( x ) case FMT_##x: common->Printf( "%-16s ", #x ); break;
@@ -658,7 +657,7 @@ void idImage::Print() const
 			common->Printf( "<%3i>", opts.format );
 			break;
 	}
-	
+
 	switch( filter )
 	{
 		case TF_DEFAULT:
@@ -677,7 +676,7 @@ void idImage::Print() const
 			common->Printf( "<BAD FILTER:%i>", filter );
 			break;
 	}
-	
+
 	switch( repeat )
 	{
 		case TR_REPEAT:
@@ -696,9 +695,9 @@ void idImage::Print() const
 			common->Printf( "<BAD REPEAT:%i>", repeat );
 			break;
 	}
-	
+
 	common->Printf( "%4ik ", StorageSize() / 1024 );
-	
+
 	common->Printf( " %s\n", GetName() );
 }
 
@@ -716,7 +715,7 @@ void idImage::Reload( bool force )
 		generatorFunction( this );
 		return;
 	}
-	
+
 	// check file times
 	if( !force )
 	{
@@ -735,11 +734,11 @@ void idImage::Reload( bool force )
 			return;
 		}
 	}
-	
+
 	common->DPrintf( "reloading %s.\n", GetName() );
-	
+
 	PurgeImage();
-	
+
 	// Load is from the front end, so the back end must be synced
 	ActuallyLoadImage( false );
 }
@@ -777,7 +776,7 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 #endif
 	opts.isRenderTarget = isRenderTarget;
 	DeriveOpts();
-	
+
 	// RB: allow pic == NULL for internal framebuffer images
 	if( pic == NULL || opts.textureType == TT_2D_MULTISAMPLE )
 	{
@@ -786,7 +785,7 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 	else
 	{
 		idBinaryImage im( GetName() );
-		
+
 		// foresthale 2014-05-30: give a nice progress display when binarizing
 		commonLocal.LoadPacifierBinarizeFilename( GetName() , "generated image" );
 		if( opts.numLevels > 1 )
@@ -797,11 +796,11 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 		{
 			commonLocal.LoadPacifierBinarizeProgressTotal( opts.width * opts.height );
 		}
-		
+
 		im.Load2DFromMemory( width, height, pic, opts.numLevels, opts.format, opts.colorFormat, opts.gammaMips );
-		
+
 		commonLocal.LoadPacifierBinarizeEnd();
-		
+
 		AllocImage();
 		int mipmapsToSkip = getMipmapSkipLevel(im.NumImages());
 		for( int i = 0; i < im.NumImages(); i++ )
@@ -828,18 +827,18 @@ Non-square cube sides are not allowed
 void idImage::GenerateCubeImage( const byte* pic[6], int size, textureFilter_t filterParm, textureUsage_t usageParm )
 {
 	PurgeImage();
-	
+
 	filter = filterParm;
 	repeat = TR_CLAMP;
 	usage = usageParm;
 	cubeFiles = CF_NATIVE;
-	
+
 	opts.textureType = TT_CUBIC;
 	opts.width = size;
 	opts.height = size;
 	opts.numLevels = 0;
 	DeriveOpts();
-	
+
 	// if we don't have a rendering context, just return after we
 	// have filled in the parms.  We must have the values set, or
 	// an image match from a shader before the render starts would miss
@@ -848,9 +847,9 @@ void idImage::GenerateCubeImage( const byte* pic[6], int size, textureFilter_t f
 	{
 		return;
 	}
-	
+
 	idBinaryImage im( GetName() );
-	
+
 	// foresthale 2014-05-30: give a nice progress display when binarizing
 	commonLocal.LoadPacifierBinarizeFilename( GetName(), "generated cube image" );
 	if( opts.numLevels > 1 )
@@ -861,11 +860,11 @@ void idImage::GenerateCubeImage( const byte* pic[6], int size, textureFilter_t f
 	{
 		commonLocal.LoadPacifierBinarizeProgressTotal( opts.width * opts.width * 6 );
 	}
-	
+
 	im.LoadCubeFromMemory( size, pic, opts.numLevels, opts.format, opts.gammaMips );
-	
+
 	commonLocal.LoadPacifierBinarizeEnd();
-	
+
 	AllocImage();
 	int mipmapsToSkip = getMipmapSkipLevel(im.NumImages());
 	for( int i = 0; i < im.NumImages(); i++ )
@@ -884,8 +883,8 @@ void idImage::GenerateCubeImage( const byte* pic[6], int size, textureFilter_t f
 void idImage::GenerateShadowArray( int width, int height, textureFilter_t filterParm, textureRepeat_t repeatParm, textureUsage_t usageParm )
 {
 	PurgeImage();
-	
-	filter = filterParm;
+
+	filter = TF_NEAREST;
 	repeat = repeatParm;
 	usage = usageParm;
 	cubeFiles = CF_2D_ARRAY;
@@ -893,7 +892,7 @@ void idImage::GenerateShadowArray( int width, int height, textureFilter_t filter
 	opts.textureType = TT_2D_ARRAY;
 	opts.width = width;
 	opts.height = height;
-	opts.numLevels = 0;
+	opts.numLevels = 1;
 	opts.isRenderTarget = true;
 	DeriveOpts();
 	

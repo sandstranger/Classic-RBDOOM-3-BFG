@@ -1805,6 +1805,7 @@ void idRenderBackend::CheckCVars()
 #if ANDROID
 		case GLDRV_OPENGL_MESA_CORE_PROFILE:
 			r_fullscreen.SetInteger( 1 );
+			r_useSSAO.SetInteger(0);
             break;
 #endif
 		case GLDRV_OPENGL_ES2:

@@ -509,7 +509,9 @@ void idMenuScreen_Shell_AdvancedGraphics::idMenuDataSource_AdvancedGraphics::Adj
 		}
 		case ADV_FIELD_SSAO:
 		{
+#ifndef ANDROID
 			r_useSSAO.SetBool(AdjustOption(r_useSSAO.GetBool(), genericValues, genericNumValues, adjustAmount));
+#endif
 			break;
 		}
 		case ADV_FIELD_FPPE:

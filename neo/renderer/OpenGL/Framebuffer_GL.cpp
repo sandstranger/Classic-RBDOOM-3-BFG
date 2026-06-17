@@ -471,7 +471,7 @@ void Framebuffer::Init()
         globalFramebuffers.csDepthFBO[i]->Bind();
 #endif
 
-        globalFramebuffers.csDepthFBO[i]->AddColorBuffer(GL_R8, 0);
+        globalFramebuffers.csDepthFBO[i]->AddColorBuffer(GL_R16F, 0);
         globalFramebuffers.csDepthFBO[i]->AttachImage2D(GL_TEXTURE_2D, globalImages->hierarchicalZbufferImage, 0, i);
         globalFramebuffers.csDepthFBO[i]->Check();
     }

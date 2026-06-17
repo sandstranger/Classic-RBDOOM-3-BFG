@@ -3386,9 +3386,8 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 			}
 
 #if ANDROID
-            glFlush();
             GLsync shadowSync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-            if (shadowSync != 0)
+            if (shadowSync != nullptr)
             {
                 GLenum waitResult;
                 do {

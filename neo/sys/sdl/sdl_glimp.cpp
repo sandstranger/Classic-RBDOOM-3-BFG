@@ -192,7 +192,7 @@ bool GLimp_Init( glimpParms_t parms )
 #endif
 
 	int colorbits = 24;
-	int depthbits = 24;
+	int depthbits = 16;
 	int stencilbits = 8;
 	
 	for( int i = 0; i < 16; i++ )

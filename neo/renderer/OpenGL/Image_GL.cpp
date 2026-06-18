@@ -485,7 +485,8 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 				std::byte* cachedEtc2 = nullptr;
 				size_t cachedSize = 0;
 
-				cacheHit = idTextureCache::Instance().TryGetFromRamCache(hash, &cachedEtc2, &cachedSize);
+				cacheHit = idTextureCache::Instance().TryGetFromRamCache(hash, s_etc2CacheBuffer, &cachedSize);
+                cachedEtc2 = reinterpret_cast<std::byte *>(s_etc2CacheBuffer.data());
 
 				if (!cacheHit)
 				{
@@ -495,12 +496,11 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 							dxtWidth, dxtHeight,
 							GL_COMPRESSED_RGBA8_ETC2_EAC,
 							1,
-							s_etc2Buffer, &cachedSize
+                            s_etc2CacheBuffer, &cachedSize
 					);
 
 					if (cacheHit)
 					{
-                        cachedEtc2 = reinterpret_cast<std::byte *>(s_etc2Buffer.data());
 						idTextureCache::Instance().SaveToRamCache(hash, cachedEtc2, cachedSize,
 						                                          dxtWidth, dxtHeight, GL_COMPRESSED_RGBA8_ETC2_EAC);
 					}
@@ -513,7 +513,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 					                          GL_COMPRESSED_RGBA8_ETC2_EAC,
 					                          static_cast<GLsizei>(cachedSize),
 					                          cachedEtc2);
-                    s_etc2Buffer.clear();
+                    s_etc2CacheBuffer.clear();
 					cachedEtc2 = nullptr;
 				}
 			}

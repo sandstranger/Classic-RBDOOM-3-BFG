@@ -78,7 +78,7 @@ public:
     void Flush();
 
     bool TryGetFromRamCache(uint64_t hash,
-                            std::byte** outBuffer, size_t* outSize);
+                            std::vector<uint8_t>& outBuffer, size_t* outSize);
 
     void SaveToRamCache(uint64_t hash,const void* etc2Data, size_t etc2Size,
                         uint32_t width, uint32_t height, uint32_t format);

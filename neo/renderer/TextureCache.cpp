@@ -398,7 +398,7 @@ void idTextureCache::EvictIfNeeded() {
     }
 }
 
-bool idTextureCache::TryGetFromRamCache(uint64_t hash, std::byte** outBuffer, size_t* outSize) {
+bool idTextureCache::TryGetFromRamCache(uint64_t hash, std::vector<uint8_t>& outBuffer, size_t* outSize) {
     size_t dataSize = 0;
 
     {
@@ -408,14 +408,19 @@ bool idTextureCache::TryGetFromRamCache(uint64_t hash, std::byte** outBuffer, si
         dataSize = it->second->etc2Data.size();
     }
 
-    uint8_t* buffer = BufferPool::Instance().Acquire(dataSize);
+    if (outBuffer.size() < dataSize)
+    {
+        outBuffer.resize(dataSize);
+    }
+
+    uint8_t* buffer = outBuffer.data();
     if (!buffer) return false;
 
     {
         std::lock_guard<std::mutex> lock(m_ramCacheMutex);
         auto it = m_ramCacheIndex.find(hash);
         if (it == m_ramCacheIndex.end()) {
-            BufferPool::Instance().Release(buffer, dataSize);
+            outBuffer.clear();
             return false;
         }
 
@@ -430,7 +435,6 @@ bool idTextureCache::TryGetFromRamCache(uint64_t hash, std::byte** outBuffer, si
         memcpy(buffer, entry.etc2Data.data(), dataSize);
     }
 
-    *outBuffer = reinterpret_cast<std::byte*>(buffer);
     *outSize = dataSize;
     return true;
 }

@@ -602,6 +602,8 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 				                          GL_COMPRESSED_RGBA8_ETC2_EAC,
 				                          static_cast<GLsizei>(etc2CompressedSize),
 				                          etc2Data);
+                s_decodeBuffer.clear();
+                s_etc2Buffer.clear();
 			}
 		}
 		else

@@ -62,6 +62,8 @@ bool g_enableTextureCache = false;
 static std::string g_pathToTextureCacheDir;
 static thread_local std::vector<uint8_t> s_decodeBuffer;
 static thread_local std::vector<uint8_t> s_etc2Buffer;
+static thread_local std::vector<uint8_t> s_textureBuffer;
+static thread_local std::vector<uint8_t> s_etc2CacheBuffer;
 
 extern "C" {
 __attribute__((used)) __attribute__((visibility("default")))
@@ -493,11 +495,12 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 							dxtWidth, dxtHeight,
 							GL_COMPRESSED_RGBA8_ETC2_EAC,
 							1,
-							&cachedEtc2, &cachedSize
+							s_etc2Buffer, &cachedSize
 					);
 
 					if (cacheHit)
 					{
+                        cachedEtc2 = reinterpret_cast<std::byte *>(s_etc2Buffer.data());
 						idTextureCache::Instance().SaveToRamCache(hash, cachedEtc2, cachedSize,
 						                                          dxtWidth, dxtHeight, GL_COMPRESSED_RGBA8_ETC2_EAC);
 					}
@@ -510,7 +513,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 					                          GL_COMPRESSED_RGBA8_ETC2_EAC,
 					                          static_cast<GLsizei>(cachedSize),
 					                          cachedEtc2);
-					Mem_Free(cachedEtc2);
+                    s_etc2Buffer.clear();
 					cachedEtc2 = nullptr;
 				}
 			}
@@ -1478,14 +1481,21 @@ void idImage::AllocImage()
                             w = (w + 3) & ~3;
                             h = (h + 3) & ~3;
                             const int etc2CompressedSize = ((w / 4) * (h / 4)) * 16;
-                            byte *data = (byte *) Mem_Alloc(etc2CompressedSize, TAG_TEMP);
-
+							if (s_textureBuffer.size() < etc2CompressedSize)
+							{
+								s_textureBuffer.resize(etc2CompressedSize);
+							}
+							byte* data = s_textureBuffer.data();
                             glCompressedTexImage2D(uploadTarget + side, level, GL_COMPRESSED_RGBA8_ETC2_EAC, w, h, 0, etc2CompressedSize, data);
-                            if (data != nullptr) Mem_Free(data);
+							s_textureBuffer.clear();
                         } else {
-                            byte* data = (byte*)Mem_Alloc(compressedSize, TAG_TEMP);
+							if (s_textureBuffer.size() < compressedSize)
+							{
+								s_textureBuffer.resize(compressedSize);
+							}
+							byte* data = s_textureBuffer.data();
                             glCompressedTexImage2D(uploadTarget + side, level, internalFormat, w, h, 0, compressedSize, data);
-                            if (data != nullptr) Mem_Free(data);
+							s_textureBuffer.clear();
                         }
 #else
                         byte* data = (byte*)Mem_Alloc(compressedSize, TAG_TEMP);

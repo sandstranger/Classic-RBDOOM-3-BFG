@@ -219,7 +219,7 @@ bool idTextureCache::ValidateCacheFile(const char* path, uint64_t expectedHash,
 bool idTextureCache::TryGetCachedETC2(const char* textureName,
                                       const void* dxtData, size_t dxtSize,
                                       int width, int height, int format, int mipCount,
-                                      std::byte** outBuffer, size_t* outSize) {
+                                      std::vector<uint8_t>& outBuffer, size_t* outSize) {
     uint64_t hash = ComputeTextureHash(dxtData, dxtSize, width, height, format);
     std::string cachePath = GetCachePath(hash);
     std::string fileName = cachePath.substr(cachePath.find_last_of('/') + 1);
@@ -253,23 +253,18 @@ bool idTextureCache::TryGetCachedETC2(const char* textureName,
 
     CacheHeader header;
     file->Read(&header, sizeof(header));
-
-    std::byte* buffer = (std::byte*)Mem_Alloc(header.dataSize, TAG_TEMP);
-    if (!buffer) {
-        delete file;
-        return false;
+    if (outBuffer.size() < header.dataSize)
+    {
+        outBuffer.resize(header.dataSize);
     }
-
+    auto* buffer = reinterpret_cast<std::byte *>(outBuffer.data());
     if (file->Read(buffer, header.dataSize) != (int)header.dataSize) {
-        Mem_Free(buffer);
+        outBuffer.clear();
         delete file;
         return false;
     }
     delete file;
-
     utimes(cachePath.c_str(), nullptr);
-
-    *outBuffer = buffer;
     *outSize = header.dataSize;
     return true;
 }

@@ -67,7 +67,7 @@ public:
     bool TryGetCachedETC2(const char* textureName,
                           const void* dxtData, size_t dxtSize,
                           int width, int height, int format, int mipCount,
-                          std::byte** outBuffer, size_t* outSize);
+                          std::vector<uint8_t>& outBuffer, size_t* outSize);
 
     void SaveToCacheAsync(const char* textureName,
                           const void* dxtData, size_t dxtSize,

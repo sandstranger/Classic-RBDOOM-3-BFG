@@ -513,10 +513,10 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 					                          GL_COMPRESSED_RGBA8_ETC2_EAC,
 					                          static_cast<GLsizei>(cachedSize),
 					                          cachedEtc2);
-                    s_etc2CacheBuffer.clear();
-					cachedEtc2 = nullptr;
 				}
-			}
+                s_etc2CacheBuffer.clear();
+                cachedEtc2 = nullptr;
+            }
 
 			if (!cacheHit)
 			{

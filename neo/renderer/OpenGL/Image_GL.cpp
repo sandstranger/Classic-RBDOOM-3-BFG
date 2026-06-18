@@ -483,7 +483,6 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 				std::byte* cachedEtc2 = nullptr;
 				size_t cachedSize = 0;
 
-				// Шаг 1: Ищем в RAM-кэше (быстрый путь)
 				cacheHit = idTextureCache::Instance().TryGetFromRamCache(hash, &cachedEtc2, &cachedSize);
 
 				if (!cacheHit)

@@ -33,9 +33,6 @@ If you have questions concerning this license or the applicable additional terms
 #if ANDROID
 #include <string>
 #include <vector>
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
-
 #endif
 #pragma hdrstop
 
@@ -62,7 +59,7 @@ idCVar stereoRender_warpCenterY( "stereoRender_warpCenterY", "0.5", CVAR_RENDERE
 idCVar stereoRender_warpParmZ( "stereoRender_warpParmZ", "0", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "development parm" );
 idCVar stereoRender_warpParmW( "stereoRender_warpParmW", "0", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "development parm" );
 idCVar stereoRender_warpTargetFraction( "stereoRender_warpTargetFraction", "1.0", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "fraction of half-width the through-lens view covers" );
-idCVar r_useOpenGLDSA("r_useOpenGLDSA", "-1", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "Enable/Disable OpenGL DSA. -1 = Enable based on system detection, 0 = Force to Disable, 1 = Force to Enable", -1, 1);
+idCVar r_useOpenGLDSA("r_useOpenGLDSA", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "Enable/Disable OpenGL DSA. -1 = Enable based on system detection, 0 = Force to Disable, 1 = Force to Enable", -1, 1);
 
 //#ifdef _DEBUG
 //idCVar r_showSwapBuffers("r_showSwapBuffers", "1", CVAR_BOOL, "Show timings from GL_BlockingSwapBuffers");
@@ -81,23 +78,7 @@ void RB_SetMVP( const idRenderMatrix& mvp );
 
 glContext_t glcontext;
 static uintptr_t currentVertOffset = ~0;
-static bool eglNativeFenceSyncAvailable = false;
-static bool eglFenceSyncAvailable = false;
-static EGLSyncKHR previousSwapSync = EGL_NO_SYNC_KHR;
-
-static PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR_ptr;
-static PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR_ptr;
-static PFNEGLCLIENTWAITSYNCKHRPROC eglClientWaitSyncKHR_ptr;
-
-#define eglCreateSyncKHR eglCreateSyncKHR_ptr
-#define eglDestroySyncKHR eglDestroySyncKHR_ptr
-#define eglClientWaitSyncKHR eglClientWaitSyncKHR_ptr
-
-static GLsync renderSync[2] = { 0, 0 };
-static int swapIndex = 0;
-
 #if ANDROID
-bool gEnableAngle = false;
 const int DEFAULT_GLES_VERSION = 320;
 int glesVersion = DEFAULT_GLES_VERSION;
 static bool g_enableDXTSupport = false;
@@ -111,11 +92,6 @@ void setHardwareDXTSupport(const bool enableDXTSupport) {
 __attribute__((used)) __attribute__((visibility("default")))
 void setGLESVersion(const int targetGLESVersion) {
 	glesVersion = targetGLESVersion;
-}
-
-__attribute__((used)) __attribute__((visibility("default")))
-void updateAngleState(const bool enableAngle ) {
-    gEnableAngle = enableAngle;
 }
 }
 
@@ -341,40 +317,6 @@ static void R_CheckPortableExtensions()
 		glConfig.vendor = VENDOR_INTEL;
 	}
 
-    const char* eglExtensions = eglQueryString(eglGetCurrentDisplay(), EGL_EXTENSIONS);
-    if (eglExtensions == nullptr)
-    {
-        common->Warning("eglQueryString(EGL_EXTENSIONS) returned NULL");
-    } else {
-        common->Printf("Available EGL extensions:\n%s\n", eglExtensions);
-        eglNativeFenceSyncAvailable = (strstr(eglExtensions, "EGL_ANDROID_native_fence_sync") !=
-                                       nullptr);
-        eglFenceSyncAvailable = (strstr(eglExtensions, "EGL_KHR_fence_sync") != nullptr);
-
-        if (eglNativeFenceSyncAvailable || eglFenceSyncAvailable) {
-            eglCreateSyncKHR_ptr = (PFNEGLCREATESYNCKHRPROC) eglGetProcAddress("eglCreateSyncKHR");
-            eglDestroySyncKHR_ptr = (PFNEGLDESTROYSYNCKHRPROC) eglGetProcAddress(
-                    "eglDestroySyncKHR");
-            eglClientWaitSyncKHR_ptr = (PFNEGLCLIENTWAITSYNCKHRPROC) eglGetProcAddress(
-                    "eglClientWaitSyncKHR");
-
-            if (eglCreateSyncKHR_ptr == nullptr ||
-                eglDestroySyncKHR_ptr == nullptr ||
-                eglClientWaitSyncKHR_ptr == nullptr) {
-                common->Warning("Failed to load EGL sync functions via eglGetProcAddress");
-                eglNativeFenceSyncAvailable = false;
-                eglFenceSyncAvailable = false;
-            }
-
-            if (eglNativeFenceSyncAvailable) {
-                common->Printf("EGL_ANDROID_native_fence_sync: SUPPORTED\n");
-            } else if (eglFenceSyncAvailable) {
-                common->Printf("EGL_KHR_fence_sync: SUPPORTED (fallback)\n");
-            }
-        } else {
-            common->Printf("WARNING: No EGL fence sync support available\n");
-        }
-    }
 #ifndef ANDROID
 	// RB: Mesa support
 	if( idStr::Icmpn( glConfig.renderer_string, "Mesa", 4 ) == 0 || idStr::Icmpn( glConfig.renderer_string, "X.org", 5 ) == 0 || idStr::Icmpn( glConfig.renderer_string, "Gallium", 7 ) == 0 ||
@@ -2197,122 +2139,20 @@ We want to exit this with the GPU idle, right at vsync
 
 void idRenderBackend::GL_BlockingSwapBuffers()
 {
-    if (!gEnableAngle) {
-        EGLDisplay eglDisplay = eglGetCurrentDisplay();
-        if (eglDisplay == EGL_NO_DISPLAY) {
-            common->Warning(
-                    "eglGetCurrentDisplay() returned EGL_NO_DISPLAY, falling back to basic swap");
-            GLimp_SwapBuffers();
-            return;
-        }
-
-        RENDERLOG_PRINTF("***************** GL_BlockingSwapBuffers *****************\n\n\n");
-
-        const int beforeSwap = Sys_Milliseconds();
-
-        if (eglNativeFenceSyncAvailable) {
-            EGLSyncKHR currentSync = eglCreateSyncKHR(eglDisplay, EGL_SYNC_NATIVE_FENCE_ANDROID,
-                                                      NULL);
-
-            if (currentSync == EGL_NO_SYNC_KHR) {
-                common->Warning("eglCreateSyncKHR(EGL_SYNC_NATIVE_FENCE_ANDROID) failed");
-                GLimp_SwapBuffers();
-                return;
-            }
-
-            GLimp_SwapBuffers();
-
-            if (previousSwapSync != EGL_NO_SYNC_KHR) {
-                EGLint result = eglClientWaitSyncKHR(eglDisplay, previousSwapSync, 0,
-                                                     EGL_FOREVER_KHR);
-
-                if (result == EGL_TIMEOUT_EXPIRED_KHR) {
-                    common->Warning("eglClientWaitSyncKHR timeout expired");
-                } else if (result == EGL_FALSE) {
-                    common->Warning("eglClientWaitSyncKHR failed");
-                }
-
-                eglDestroySyncKHR(eglDisplay, previousSwapSync);
-            }
-
-            previousSwapSync = currentSync;
-        } else if (eglFenceSyncAvailable) {
-            EGLSyncKHR currentSync = eglCreateSyncKHR(eglDisplay, EGL_SYNC_FENCE_KHR, NULL);
-
-            GLimp_SwapBuffers();
-
-            if (previousSwapSync != EGL_NO_SYNC_KHR) {
-                eglClientWaitSyncKHR(eglDisplay, previousSwapSync, 0, EGL_FOREVER_KHR);
-                eglDestroySyncKHR(eglDisplay, previousSwapSync);
-            }
-
-            previousSwapSync = currentSync;
-        } else {
-            GLimp_SwapBuffers();
-        }
-
-        const int afterSwap = Sys_Milliseconds();
-        if (r_showSwapBuffers.GetBool() && afterSwap - beforeSwap > 1) {
-            common->Printf("%i msec to swapBuffers\n", afterSwap - beforeSwap);
-        }
-
-        const int64 exitBlockTime = Sys_Microseconds();
-
-        static int64 prevBlockTime;
-        if (r_showSwapBuffers.GetBool() && prevBlockTime) {
-            const int delta = (int) (exitBlockTime - prevBlockTime);
-            common->Printf("blockToBlock: %i\n", delta);
-        }
-        prevBlockTime = exitBlockTime;
-    } else{
-        const int beforeSwap = Sys_Milliseconds();
-        if (glConfig.syncAvailable)
-        {
-            swapIndex ^= 1;
-
-            if (glIsSync(renderSync[swapIndex]))
-            {
-                glDeleteSync(renderSync[swapIndex]);
-            }
-
-            renderSync[swapIndex] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-            GLimp_SwapBuffers();
-            GLsync syncToWaitOn = renderSync[swapIndex];
-            if (glIsSync(syncToWaitOn))
-            {
-                GLenum result;
-                do {
-                    result = glClientWaitSync(syncToWaitOn, 0, 1000);
-                } while (result == GL_TIMEOUT_EXPIRED);
-
-                if (result == GL_WAIT_FAILED)
-                {
-                    common->Warning("glClientWaitSync failed");
-                }
-            }
-        }
-        else
-        {
-            glFlush();
-            GLimp_SwapBuffers();
-        }
-
-        const int afterSwap = Sys_Milliseconds();
-        if (r_showSwapBuffers.GetBool() && afterSwap - beforeSwap > 1)
-        {
-            common->Printf("%i msec to swapBuffers\n", afterSwap - beforeSwap);
-        }
-
-        const int64 exitBlockTime = Sys_Microseconds();
-
-        static int64 prevBlockTime;
-        if (r_showSwapBuffers.GetBool() && prevBlockTime)
-        {
-            const int delta = (int)(exitBlockTime - prevBlockTime);
-            common->Printf("blockToBlock: %i\n", delta);
-        }
-        prevBlockTime = exitBlockTime;
+    RENDERLOG_PRINTF("***************** GL_BlockingSwapBuffers *****************\n\n\n");
+    const int beforeSwap = Sys_Milliseconds();
+    GLimp_SwapBuffers();
+    const int afterSwap = Sys_Milliseconds();
+    if (r_showSwapBuffers.GetBool() && afterSwap - beforeSwap > 1) {
+        common->Printf("%i msec to swapBuffers\n", afterSwap - beforeSwap);
     }
+    const int64 exitBlockTime = Sys_Microseconds();
+    static int64 prevBlockTime;
+    if (r_showSwapBuffers.GetBool() && prevBlockTime) {
+        const int delta = (int) (exitBlockTime - prevBlockTime);
+        common->Printf("blockToBlock: %i\n", delta);
+    }
+    prevBlockTime = exitBlockTime;
 }
 /*
 =============

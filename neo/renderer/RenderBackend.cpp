@@ -48,10 +48,6 @@ idCVar r_useLightStencilSelect( "r_useLightStencilSelect", "0", CVAR_RENDERER | 
 
 //extern idCVar stereoRender_swapEyes;
 
-#ifdef ANDROID
-extern bool gEnableAngle;
-#endif
-
 /*
 ================
 SetVertexParm
@@ -3387,19 +3383,6 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 			{
 				ShadowMapPass( vLight->globalShadows, vLight, side );
 			}
-
-#if ANDROID
-			if (!gEnableAngle) {
-				GLsync shadowSync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-				if (shadowSync != nullptr) {
-					GLenum waitResult;
-					do {
-						waitResult = glClientWaitSync(shadowSync, GL_SYNC_FLUSH_COMMANDS_BIT, 1000);
-					} while (waitResult == GL_TIMEOUT_EXPIRED);
-					glDeleteSync(shadowSync);
-				}
-			}
-#endif
 
             // go back from light view to default camera view
 			ResetViewportAndScissorToDefaultCamera( _viewDef );

@@ -34,7 +34,6 @@ If you have questions concerning this license or the applicable additional terms
 extern idCVar r_showBuffers;
 
 
-//static const GLenum bufferUsage = GL_STATIC_DRAW;
 static const GLenum bufferUsage = GL_DYNAMIC_DRAW;
 #ifndef ANDROID
 static const GLenum bufferStorageFlags = GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT | GL_MAP_READ_BIT;
@@ -42,823 +41,736 @@ static const GLenum bufferStorageFlags = GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_B
 static const GLenum bufferStorageFlags = GL_MAP_WRITE_BIT | GL_MAP_READ_BIT;
 #endif
 
-
 /*
 ================================================================================================
-
-	Buffer Objects
-
+Buffer Objects
 ================================================================================================
 */
 
-/*
-========================
-UnbindBufferObjects
-========================
-*/
 void UnbindBufferObjects()
 {
-	if (!glConfig.directStateAccess) {
-		glBindBuffer(GL_ARRAY_BUFFER, 0);
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-	}
+    if (!glConfig.directStateAccess) {
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    }
 }
 
-
-
 /*
 ================================================================================================
-
 idVertexBuffer
-
 ================================================================================================
 */
 
-/*
-========================
-idVertexBuffer::idVertexBuffer
-========================
-*/
 idVertexBuffer::idVertexBuffer()
 {
-	size = 0;
-	offsetInOtherBuffer = OWNS_BUFFER_FLAG;
-	apiObject = 0xFFFF;
-	SetUnmapped();
+    size = 0;
+    offsetInOtherBuffer = OWNS_BUFFER_FLAG;
+    apiObject = 0xFFFF;
+    SetUnmapped();
 }
 
-/*
-========================
-idVertexBuffer::AllocBufferObject
-========================
-*/
 bool idVertexBuffer::AllocBufferObject( const void* data, int allocSize, bufferUsageType_t _usage )
 {
-	assert( apiObject == 0xFFFF );
-	assert_16_byte_aligned( data );
-	
-	if( allocSize <= 0 )
-	{
-		idLib::Error( "idVertexBuffer::AllocBufferObject: allocSize = %i", allocSize );
-	}
-	
-	size = allocSize;
-	usage = _usage;
-	
-	bool allocationFailed = false;
-	
-	int numBytes = GetAllocedSize();
-	
-	// clear out any previous error
-	//GL_CheckErrors();
-	
-#ifndef ANDROID
-	if (!glConfig.directStateAccess)
-#endif
-	{
-		glGenBuffers(1, (GLuint*)&apiObject);
-		if (apiObject == 0xFFFF)
-		{
-			idLib::FatalError("idVertexBuffer::AllocBufferObject: failed");
-		}
-		glBindBuffer(GL_ARRAY_BUFFER, apiObject);
+    assert( apiObject == 0xFFFF );
+    assert_16_byte_aligned( data );
 
+    if( allocSize <= 0 )
+    {
+        idLib::Error( "idVertexBuffer::AllocBufferObject: allocSize = %i", allocSize );
+    }
+
+    size = allocSize;
+    usage = _usage;
+
+    bool allocationFailed = false;
+
+    int numBytes = GetAllocedSize();
+
+    if (usage == BU_DYNAMIC)
+    {
 #ifndef ANDROID
-		// these are rewritten every frame
-		glBufferDataARB(GL_ARRAY_BUFFER, numBytes, NULL, bufferUsage);
-#else
-		glBufferData(GL_ARRAY_BUFFER, numBytes, NULL, bufferUsage);
+        if (!glConfig.directStateAccess)
 #endif
-	}
+        {
+            glGenBuffers(1, (GLuint*)&apiObject);
+            if (apiObject == 0xFFFF)
+                idLib::FatalError("idVertexBuffer::AllocBufferObject: failed");
+            glBindBuffer(GL_ARRAY_BUFFER, apiObject);
+            glBufferData(GL_ARRAY_BUFFER, numBytes, NULL, bufferUsage);
+        }
 #ifndef ANDROID
-	else {
-		glCreateBuffers(1, (GLuint*)&apiObject);
-		if (apiObject == 0xFFFF)
-		{
-			idLib::FatalError("idVertexBuffer::AllocBufferObject: failed");
+        else {
+			glCreateBuffers(1, (GLuint*)&apiObject);
+			if (apiObject == 0xFFFF)
+				idLib::FatalError("idVertexBuffer::AllocBufferObject: failed");
+			glNamedBufferStorage(apiObject, numBytes, NULL, bufferStorageFlags);
 		}
-		glNamedBufferStorage(apiObject, numBytes, NULL, bufferStorageFlags);
-	}
 #endif
-	GLenum err = glGetError();
-	if( err == GL_OUT_OF_MEMORY )
-	{
-		idLib::Warning( "idVertexBuffer::AllocBufferObject: allocation failed" );
-		allocationFailed = true;
-	}
-	
-	if( r_showBuffers.GetBool() )
-	{
-		idLib::Printf( "vertex buffer alloc %p, api %p (%i bytes)\n", this, ( GLuint* )&apiObject, GetSize() );
-	}
-	
-	// copy the data
-	if( data != NULL )
-	{
-		Update( data, allocSize );
-	}
-	
-	return !allocationFailed;
+    }
+    else
+    {
+#ifndef ANDROID
+        if (!glConfig.directStateAccess)
+#endif
+        {
+            glGenBuffers(1, (GLuint*)&apiObject);
+            if (apiObject == 0xFFFF)
+                idLib::FatalError("idVertexBuffer::AllocBufferObject: failed");
+            glBindBuffer(GL_ARRAY_BUFFER, apiObject);
+            glBufferData(GL_ARRAY_BUFFER, numBytes, data, bufferUsage);
+        }
+#ifndef ANDROID
+        else {
+			glCreateBuffers(1, (GLuint*)&apiObject);
+			if (apiObject == 0xFFFF)
+				idLib::FatalError("idVertexBuffer::AllocBufferObject: failed");
+			glNamedBufferStorage(apiObject, numBytes, data, bufferStorageFlags);
+		}
+#endif
+    }
+
+    GLenum err = glGetError();
+    if( err == GL_OUT_OF_MEMORY )
+    {
+        idLib::Warning( "idVertexBuffer::AllocBufferObject: allocation failed" );
+        allocationFailed = true;
+    }
+
+    if( r_showBuffers.GetBool() )
+    {
+        idLib::Printf( "vertex buffer alloc %p, api %p (%i bytes)\n", this, ( GLuint* )&apiObject, GetSize() );
+    }
+
+    if( data != NULL && usage == BU_DYNAMIC )
+    {
+        Update( data, allocSize );
+    }
+
+    return !allocationFailed;
 }
 
-/*
-========================
-idVertexBuffer::FreeBufferObject
-========================
-*/
 void idVertexBuffer::FreeBufferObject()
 {
-	if( IsMapped() )
-	{
-		UnmapBuffer();
-	}
-	
-	// if this is a sub-allocation inside a larger buffer, don't actually free anything.
-	if( OwnsBuffer() == false )
-	{
-		ClearWithoutFreeing();
-		return;
-	}
-	
-	if( apiObject == 0xFFFF )
-	{
-		return;
-	}
-	
-	if( r_showBuffers.GetBool() )
-	{
-		idLib::Printf( "vertex buffer free %p, api %p (%i bytes)\n", this, ( GLuint* )&apiObject, GetSize() );
-	}
-	
-	glDeleteBuffers( 1, ( GLuint* )&apiObject );
-	
-	ClearWithoutFreeing();
+    if( IsMapped() )
+    {
+        UnmapBuffer();
+    }
+
+    if( OwnsBuffer() == false )
+    {
+        ClearWithoutFreeing();
+        return;
+    }
+
+    if( apiObject == 0xFFFF )
+        return;
+
+    if( r_showBuffers.GetBool() )
+    {
+        idLib::Printf( "vertex buffer free %p, api %p (%i bytes)\n", this, ( GLuint* )&apiObject, GetSize() );
+    }
+
+    glDeleteBuffers( 1, ( GLuint* )&apiObject );
+    ClearWithoutFreeing();
 }
 
-/*
-========================
-idVertexBuffer::Update
-========================
-*/
 void idVertexBuffer::Update( const void* data, int updateSize, int offset ) const
 {
-	assert( apiObject != 0xFFFF );
-	assert_16_byte_aligned( data );
-	assert( ( GetOffset() & 15 ) == 0 );
-	
-	if( updateSize > GetSize() )
-	{
-		idLib::FatalError( "idVertexBuffer::Update: size overrun, %i > %i\n", updateSize, GetSize() );
-	}
-	
-	int numBytes = ( updateSize + 15 ) & ~15;
-	
-	if( usage == BU_DYNAMIC )
-	{
-		CopyBuffer( ( byte* )buffer + offset, ( const byte* )data, numBytes );
-	}
-	else
-	{
+    assert( apiObject != 0xFFFF );
+    assert_16_byte_aligned( data );
+    assert( ( GetOffset() & 15 ) == 0 );
+
+    if( updateSize > GetSize() )
+    {
+        idLib::FatalError( "idVertexBuffer::Update: size overrun, %i > %i\n", updateSize, GetSize() );
+    }
+
+    int numBytes = ( updateSize + 15 ) & ~15;
+
+    if( usage == BU_DYNAMIC )
+    {
+
+        CopyBuffer( ( byte* )buffer + offset, ( const byte* )data, numBytes );
+    }
+    else
+    {
 #ifndef ANDROID
-		if (!glConfig.directStateAccess)
+        if (!glConfig.directStateAccess)
 #endif
-		{
-			glBindBuffer(GL_ARRAY_BUFFER, apiObject);
-			glBufferSubData(GL_ARRAY_BUFFER, GetOffset() + offset, (GLsizeiptr)numBytes, data);
-		}
+        {
+            glBindBuffer(GL_ARRAY_BUFFER, apiObject);
+            glBufferSubData(GL_ARRAY_BUFFER, GetOffset() + offset, (GLsizeiptr)numBytes, data);
+        }
 #ifndef ANDROID
-		else {
+        else {
 			glNamedBufferSubData(apiObject, GetOffset() + offset, (GLsizeiptrARB)numBytes, data);
 		}
 #endif
-	}
+    }
 }
 
-/*
-========================
-idVertexBuffer::MapBuffer
-========================
-*/
 void* idVertexBuffer::MapBuffer( bufferMapType_t mapType )
 {
-	assert( apiObject != 0xFFFF );
-	assert( IsMapped() == false );
-	
-	buffer = NULL;
+    assert( apiObject != 0xFFFF );
+    assert( IsMapped() == false );
+
+    buffer = NULL;
 #ifndef ANDROID
-	if (!glConfig.directStateAccess)
+    if (!glConfig.directStateAccess)
 #endif
-	{
-		glBindBuffer(GL_ARRAY_BUFFER, apiObject);
+    {
+        glBindBuffer(GL_ARRAY_BUFFER, apiObject);
+
+        if (mapType == BM_READ)
+        {
+            buffer = glMapBufferRange(GL_ARRAY_BUFFER, GetOffset(), GetAllocedSize(),
+                                      GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+        }
+        else if (mapType == BM_WRITE)
+        {
+
+
+            GLbitfield flags = GL_MAP_WRITE_BIT;
+            if (usage == BU_DYNAMIC)
+            {
+                flags |= GL_MAP_INVALIDATE_BUFFER_BIT;
+            }
+            else
+            {
+                flags |= GL_MAP_UNSYNCHRONIZED_BIT;
+            }
+            buffer = glMapBufferRange(GL_ARRAY_BUFFER, GetOffset(), GetAllocedSize(), flags);
+        }
+        else
+        {
+            assert(false);
+        }
+    }
+#ifndef ANDROID
+    else {
 		if (mapType == BM_READ)
 		{
-#ifndef ANDROID
-			buffer = glMapBufferRange(GL_ARRAY_BUFFER_ARB, 0, GetAllocedSize(), GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
-#else
-            buffer = glMapBufferRange(GL_ARRAY_BUFFER, GetOffset(), GetAllocedSize(), GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
-#endif
+			buffer = glMapNamedBufferRange(apiObject, 0, GetAllocedSize(),
+				GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
 		}
 		else if (mapType == BM_WRITE)
 		{
-			buffer = glMapBufferRange(GL_ARRAY_BUFFER, GetOffset(), GetAllocedSize(), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_FLUSH_EXPLICIT_BIT);
-			// assert( IsWriteCombined( buffer ) ); // commented out because it spams the console
+			GLbitfield flags = GL_MAP_WRITE_BIT;
+			if (usage == BU_DYNAMIC)
+				flags |= GL_MAP_INVALIDATE_BUFFER_BIT;
+			else
+				flags |= GL_MAP_UNSYNCHRONIZED_BIT;
+			buffer = glMapNamedBufferRange(apiObject, 0, GetAllocedSize(), flags);
 		}
 		else
 		{
 			assert(false);
 		}
-	}
-#ifndef ANDROID
-	else {
-		switch (mapType) {
-		case BM_READ:
-			buffer = glMapNamedBufferRange(apiObject, 0, GetAllocedSize(), GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
-			break;
-		case BM_WRITE:
-			buffer = glMapNamedBufferRange(apiObject, 0, GetAllocedSize(), GL_MAP_WRITE_BIT /*| GL_MAP_INVALIDATE_RANGE_BIT*/ | GL_MAP_UNSYNCHRONIZED_BIT);
-			break;
-		default:
-			assert(false);
-		}
 		if (buffer != NULL)
-		{
 			buffer = (byte*)buffer + GetOffset();
-		}
 	}
 #endif
-	SetMapped();
-	
-	if( buffer == NULL )
-	{
-		idLib::FatalError( "idVertexBuffer::MapBuffer: failed" );
-	}
-	return buffer;
+    SetMapped();
+
+    if( buffer == NULL )
+    {
+        idLib::FatalError( "idVertexBuffer::MapBuffer: failed" );
+    }
+    return buffer;
 }
 
-/*
-========================
-idVertexBuffer::UnmapBuffer
-========================
-*/
 void idVertexBuffer::UnmapBuffer()
 {
-	assert( apiObject != 0xFFFF );
-	assert( IsMapped() );
+    assert( apiObject != 0xFFFF );
+    assert( IsMapped() );
 #ifndef ANDROID
-	if (!glConfig.directStateAccess)
+    if (!glConfig.directStateAccess)
 #endif
-	{
-		glBindBuffer(GL_ARRAY_BUFFER, apiObject);
-		if (!glUnmapBuffer(GL_ARRAY_BUFFER))
-		{
-			idLib::Printf("idVertexBuffer::UnmapBuffer failed\n");
-		}
-	}
+    {
+        glBindBuffer(GL_ARRAY_BUFFER, apiObject);
+        if (!glUnmapBuffer(GL_ARRAY_BUFFER))
+            idLib::Printf("idVertexBuffer::UnmapBuffer failed\n");
+    }
 #ifndef ANDROID
-	else {
-		if (!glUnmapNamedBuffer(apiObject)) {
+    else {
+		if (!glUnmapNamedBuffer(apiObject))
 			idLib::Printf("idVertexBuffer::UnmapBuffer failed\n");
-		}
 	}
 #endif
-	
-	SetUnmapped();
+    SetUnmapped();
 }
 
-/*
-========================
-idVertexBuffer::ClearWithoutFreeing
-========================
-*/
 void idVertexBuffer::ClearWithoutFreeing()
 {
-	size = 0;
-	offsetInOtherBuffer = OWNS_BUFFER_FLAG;
-	apiObject = 0xFFFF;
+    size = 0;
+    offsetInOtherBuffer = OWNS_BUFFER_FLAG;
+    apiObject = 0xFFFF;
 }
 
 /*
 ================================================================================================
-
 idIndexBuffer
-
 ================================================================================================
 */
 
-/*
-========================
-idIndexBuffer::idIndexBuffer
-========================
-*/
 idIndexBuffer::idIndexBuffer()
 {
-	size = 0;
-	offsetInOtherBuffer = OWNS_BUFFER_FLAG;
-	apiObject = 0xFFFF;
-	SetUnmapped();
+    size = 0;
+    offsetInOtherBuffer = OWNS_BUFFER_FLAG;
+    apiObject = 0xFFFF;
+    SetUnmapped();
 }
 
-/*
-========================
-idIndexBuffer::AllocBufferObject
-========================
-*/
 bool idIndexBuffer::AllocBufferObject( const void* data, int allocSize, bufferUsageType_t _usage )
 {
-	assert( apiObject == 0xFFFF );
-	assert_16_byte_aligned( data );
-	
-	if( allocSize <= 0 )
-	{
-		idLib::Error( "idIndexBuffer::AllocBufferObject: allocSize = %i", allocSize );
-	}
-	
-	size = allocSize;
-	usage = _usage;
-	
-	bool allocationFailed = false;
-	
-	int numBytes = GetAllocedSize();
-	
-	
-	// clear out any previous error
-	//GL_CheckErrors();
+    assert( apiObject == 0xFFFF );
+    assert_16_byte_aligned( data );
 
-#ifndef ANDROID
-	if (!glConfig.directStateAccess)
-#endif
-	{
-#ifndef ANDROID
-		glGenBuffersARB(1, (GLuint*)&apiObject);
-#else
-		glGenBuffers(1, (GLuint*)&apiObject);
-#endif
-		if (apiObject == 0xFFFF)
-		{
-			GLenum error = glGetError();
-			idLib::FatalError("idIndexBuffer::AllocBufferObject: failed - GL_Error %d", error);
-		}
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
+    if( allocSize <= 0 )
+    {
+        idLib::Error( "idIndexBuffer::AllocBufferObject: allocSize = %i", allocSize );
+    }
 
-		// these are rewritten every frame
-		glBufferData(GL_ELEMENT_ARRAY_BUFFER, numBytes, NULL, bufferUsage);
-	}
+    size = allocSize;
+    usage = _usage;
+
+    bool allocationFailed = false;
+
+    int numBytes = GetAllocedSize();
+
+
+    if (usage == BU_DYNAMIC)
+    {
 #ifndef ANDROID
-	else {
-		glCreateBuffers(1, (GLuint*)&apiObject);
-		if (apiObject == 0xFFFF)
-		{
-			//GLenum error = glGetError();
-			idLib::FatalError("idIndexBuffer::AllocBufferObject: failed");// - GL_Error %d", error);
-		}
-		glNamedBufferStorage(apiObject, numBytes, NULL, bufferStorageFlags);
-	}
+        if (!glConfig.directStateAccess)
 #endif
-	GLenum err = glGetError();
-	if( err == GL_OUT_OF_MEMORY )
-	{
-		idLib::Warning( "idIndexBuffer:AllocBufferObject: allocation failed" );
-		allocationFailed = true;
-	}
-	
-	if( r_showBuffers.GetBool() )
-	{
-		idLib::Printf( "index buffer alloc %p, api %p (%i bytes)\n", this, ( GLuint* )&apiObject, GetSize() );
-	}
-	
-	// copy the data
-	if( data != NULL )
-	{
-		Update( data, allocSize );
-	}
-	
-	return !allocationFailed;
+        {
+            glGenBuffers(1, (GLuint*)&apiObject);
+            if (apiObject == 0xFFFF)
+                idLib::FatalError("idIndexBuffer::AllocBufferObject: failed");
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, numBytes, NULL, bufferUsage);
+        }
+#ifndef ANDROID
+        else {
+			glCreateBuffers(1, (GLuint*)&apiObject);
+			if (apiObject == 0xFFFF)
+				idLib::FatalError("idIndexBuffer::AllocBufferObject: failed");
+			glNamedBufferStorage(apiObject, numBytes, NULL, bufferStorageFlags);
+		}
+#endif
+    }
+    else
+    {
+#ifndef ANDROID
+        if (!glConfig.directStateAccess)
+#endif
+        {
+            glGenBuffers(1, (GLuint*)&apiObject);
+            if (apiObject == 0xFFFF)
+                idLib::FatalError("idIndexBuffer::AllocBufferObject: failed");
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, numBytes, data, bufferUsage);
+        }
+#ifndef ANDROID
+        else {
+			glCreateBuffers(1, (GLuint*)&apiObject);
+			if (apiObject == 0xFFFF)
+				idLib::FatalError("idIndexBuffer::AllocBufferObject: failed");
+			glNamedBufferStorage(apiObject, numBytes, data, bufferStorageFlags);
+		}
+#endif
+    }
+
+    GLenum err = glGetError();
+    if( err == GL_OUT_OF_MEMORY )
+    {
+        idLib::Warning( "idIndexBuffer:AllocBufferObject: allocation failed" );
+        allocationFailed = true;
+    }
+
+    if( r_showBuffers.GetBool() )
+    {
+        idLib::Printf( "index buffer alloc %p, api %p (%i bytes)\n", this, ( GLuint* )&apiObject, GetSize() );
+    }
+
+    if( data != NULL && usage == BU_DYNAMIC )
+    {
+        Update( data, allocSize );
+    }
+
+    return !allocationFailed;
 }
 
-/*
-========================
-idIndexBuffer::FreeBufferObject
-========================
-*/
 void idIndexBuffer::FreeBufferObject()
 {
-	if( IsMapped() )
-	{
-		UnmapBuffer();
-	}
-	
-	// if this is a sub-allocation inside a larger buffer, don't actually free anything.
-	if( OwnsBuffer() == false )
-	{
-		ClearWithoutFreeing();
-		return;
-	}
-	
-	if( apiObject == 0xFFFF )
-	{
-		return;
-	}
-	
-	if( r_showBuffers.GetBool() )
-	{
-		idLib::Printf( "index buffer free %p, api %p (%i bytes)\n", this, ( GLuint* )&apiObject, GetSize() );
-	}
-	
-	glDeleteBuffers( 1, ( GLuint* )&apiObject );
-	
-	ClearWithoutFreeing();
+    if( IsMapped() )
+    {
+        UnmapBuffer();
+    }
+
+    if( OwnsBuffer() == false )
+    {
+        ClearWithoutFreeing();
+        return;
+    }
+
+    if( apiObject == 0xFFFF )
+        return;
+
+    if( r_showBuffers.GetBool() )
+    {
+        idLib::Printf( "index buffer free %p, api %p (%i bytes)\n", this, ( GLuint* )&apiObject, GetSize() );
+    }
+
+    glDeleteBuffers( 1, ( GLuint* )&apiObject );
+    ClearWithoutFreeing();
 }
 
-/*
-========================
-idIndexBuffer::Update
-========================
-*/
 void idIndexBuffer::Update( const void* data, int updateSize, int offset ) const
 {
-	assert( apiObject != 0xFFFF );
-	assert_16_byte_aligned( data );
-	assert( ( GetOffset() & 15 ) == 0 );
-	
-	if( updateSize > GetSize() )
-	{
-		idLib::FatalError( "idIndexBuffer::Update: size overrun, %i > %i\n", updateSize, GetSize() );
-	}
-	
-	int numBytes = ( updateSize + 15 ) & ~15;
-	
-	if( usage == BU_DYNAMIC )
-	{
-		CopyBuffer( ( byte* )buffer + offset, ( const byte* )data, numBytes );
-	}
-	else
-	{
+    assert( apiObject != 0xFFFF );
+    assert_16_byte_aligned( data );
+    assert( ( GetOffset() & 15 ) == 0 );
+
+    if( updateSize > GetSize() )
+    {
+        idLib::FatalError( "idIndexBuffer::Update: size overrun, %i > %i\n", updateSize, GetSize() );
+    }
+
+    int numBytes = ( updateSize + 15 ) & ~15;
+
+    if( usage == BU_DYNAMIC )
+    {
+        CopyBuffer( ( byte* )buffer + offset, ( const byte* )data, numBytes );
+    }
+    else
+    {
 #ifndef ANDROID
-		if (!glConfig.directStateAccess)
+        if (!glConfig.directStateAccess)
 #endif
-		{
-			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
-			glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, GetOffset() + offset, (GLsizeiptr)numBytes, data);
-		}
+        {
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
+            glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, GetOffset() + offset, (GLsizeiptr)numBytes, data);
+        }
 #ifndef ANDROID
-		else {
+        else {
 			glNamedBufferSubData(apiObject, GetOffset() + offset, (GLsizeiptrARB)numBytes, data);
 		}
 #endif
-	}
+    }
 }
 
-/*
-========================
-idIndexBuffer::MapBuffer
-========================
-*/
 void* idIndexBuffer::MapBuffer( bufferMapType_t mapType )
 {
-	assert( apiObject != 0xFFFF );
-	assert( IsMapped() == false );
-	
-	buffer = NULL;
+    assert( apiObject != 0xFFFF );
+    assert( IsMapped() == false );
+
+    buffer = NULL;
 #ifndef ANDROID
-	if (!glConfig.directStateAccess)
+    if (!glConfig.directStateAccess)
 #endif
-	{
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
+    {
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
+
+        if (mapType == BM_READ)
+        {
+            buffer = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, 0, GetAllocedSize(),
+                                      GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+            if (buffer != NULL)
+                buffer = (byte*)buffer + GetOffset();
+        }
+        else if (mapType == BM_WRITE)
+        {
+            GLbitfield flags = GL_MAP_WRITE_BIT;
+            if (usage == BU_DYNAMIC)
+                flags |= GL_MAP_INVALIDATE_BUFFER_BIT;
+            else
+                flags |= GL_MAP_UNSYNCHRONIZED_BIT;
+            buffer = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, 0, GetAllocedSize(), flags);
+            if (buffer != NULL)
+                buffer = (byte*)buffer + GetOffset();
+        }
+        else
+        {
+            assert(false);
+        }
+    }
+#ifndef ANDROID
+    else {
 		if (mapType == BM_READ)
 		{
-			//buffer = glMapBufferARB( GL_ELEMENT_ARRAY_BUFFER_ARB, GL_READ_ONLY_ARB );
-			buffer = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, 0, GetAllocedSize(), GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
-			if (buffer != NULL)
-			{
-				buffer = (byte*)buffer + GetOffset();
-			}
+			buffer = glMapNamedBufferRange(apiObject, 0, GetAllocedSize(),
+				GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
 		}
 		else if (mapType == BM_WRITE)
 		{
-			//buffer = glMapBufferARB( GL_ELEMENT_ARRAY_BUFFER_ARB, GL_WRITE_ONLY_ARB );
-
-			buffer = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, 0, GetAllocedSize(), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_FLUSH_EXPLICIT_BIT);
-			if (buffer != NULL)
-			{
-				buffer = (byte*)buffer + GetOffset();
-			}
-			// assert( IsWriteCombined( buffer ) ); // commented out because it spams the console
+			GLbitfield flags = GL_MAP_WRITE_BIT;
+			if (usage == BU_DYNAMIC)
+				flags |= GL_MAP_INVALIDATE_BUFFER_BIT;
+			else
+				flags |= GL_MAP_UNSYNCHRONIZED_BIT;
+			buffer = glMapNamedBufferRange(apiObject, 0, GetAllocedSize(), flags);
 		}
 		else
 		{
 			assert(false);
 		}
-	}
-#ifndef ANDROID
-	else {
-		switch (mapType) {
-		case BM_READ:
-			buffer = glMapNamedBufferRange(apiObject, 0, GetAllocedSize(), GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
-			break;
-		case BM_WRITE:
-			buffer = glMapNamedBufferRange(apiObject, 0, GetAllocedSize(), GL_MAP_WRITE_BIT /*| GL_MAP_INVALIDATE_RANGE_BIT*/ | GL_MAP_UNSYNCHRONIZED_BIT);
-			break;
-		default:
-			assert(false);
-		}
 		if (buffer != NULL)
-		{
 			buffer = (byte*)buffer + GetOffset();
-		}
 	}
 #endif
-	SetMapped();
-	
-	if( buffer == NULL )
-	{
-		idLib::FatalError( "idIndexBuffer::MapBuffer: failed" );
-	}
-	return buffer;
+    SetMapped();
+
+    if( buffer == NULL )
+    {
+        idLib::FatalError( "idIndexBuffer::MapBuffer: failed" );
+    }
+    return buffer;
 }
 
-/*
-========================
-idIndexBuffer::UnmapBuffer
-========================
-*/
 void idIndexBuffer::UnmapBuffer()
 {
-	assert( apiObject != 0xFFFF );
-	assert( IsMapped() );
-
+    assert( apiObject != 0xFFFF );
+    assert( IsMapped() );
 #ifndef ANDROID
-	if (!glConfig.directStateAccess)
+    if (!glConfig.directStateAccess)
 #endif
-	{
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
-		if (!glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER))
-		{
-			idLib::Printf("idIndexBuffer::UnmapBuffer failed\n");
-		}
-	}
+    {
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
+        if (!glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER))
+            idLib::Printf("idIndexBuffer::UnmapBuffer failed\n");
+    }
 #ifndef ANDROID
-	else {
+    else {
 		if (!glUnmapNamedBuffer(apiObject))
-		{
 			idLib::Printf("idIndexBuffer::UnmapBuffer failed\n");
-		}
 	}
 #endif
-	
-	buffer = NULL;
-	
-	SetUnmapped();
+    buffer = NULL;
+    SetUnmapped();
 }
 
-/*
-========================
-idIndexBuffer::ClearWithoutFreeing
-========================
-*/
 void idIndexBuffer::ClearWithoutFreeing()
 {
-	size = 0;
-	offsetInOtherBuffer = OWNS_BUFFER_FLAG;
-	apiObject = 0xFFFF;
+    size = 0;
+    offsetInOtherBuffer = OWNS_BUFFER_FLAG;
+    apiObject = 0xFFFF;
 }
 
 /*
 ================================================================================================
-
 idUniformBuffer
-
 ================================================================================================
 */
 
-/*
-========================
-idUniformBuffer::idUniformBuffer
-========================
-*/
 idUniformBuffer::idUniformBuffer()
 {
-	size = 0;
-	offsetInOtherBuffer = OWNS_BUFFER_FLAG;
-	apiObject = 0xFFFF;
-	SetUnmapped();
+    size = 0;
+    offsetInOtherBuffer = OWNS_BUFFER_FLAG;
+    apiObject = 0xFFFF;
+    SetUnmapped();
 }
 
-/*
-========================
-idUniformBuffer::AllocBufferObject
-========================
-*/
 bool idUniformBuffer::AllocBufferObject( const void* data, int allocSize, bufferUsageType_t _usage )
 {
-	assert( apiObject == 0xFFFF );
-	assert_16_byte_aligned( data );
-	
-	if( allocSize <= 0 )
-	{
-		idLib::Error( "idUniformBuffer::AllocBufferObject: allocSize = %i", allocSize );
-	}
-	
-	size = allocSize;
-	usage = _usage;
-	
-	bool allocationFailed = false;
-	
-	const int numBytes = GetAllocedSize();
+    assert( apiObject == 0xFFFF );
+    assert_16_byte_aligned( data );
 
-#ifndef ANDROID
-	if (!glConfig.directStateAccess)
-#endif
-	{
-		glGenBuffers(1, (GLuint*)&apiObject);
-		glBindBuffer(GL_UNIFORM_BUFFER, apiObject);
-#ifndef ANDROID
-		glBufferData(GL_UNIFORM_BUFFER, numBytes, NULL, GL_STREAM_DRAW_ARB);
-#else
-        glBufferData(GL_UNIFORM_BUFFER, numBytes, NULL, GL_STREAM_DRAW);
-#endif
-		glBindBuffer(GL_UNIFORM_BUFFER, 0);
-	}
-#ifndef ANDROID
-	else {
-		glCreateBuffers(1, (GLuint*)&apiObject);
-		glNamedBufferStorage(apiObject, numBytes, NULL, bufferStorageFlags);
-	}
-#endif
+    if( allocSize <= 0 )
+    {
+        idLib::Error( "idUniformBuffer::AllocBufferObject: allocSize = %i", allocSize );
+    }
 
-	if( r_showBuffers.GetBool() )
-	{
-		idLib::Printf( "joint buffer alloc %p, api %p (%i joints)\n", this, ( GLuint* )&apiObject, GetSize() );
-	}
-	
-	// copy the data
-	if( data != NULL )
-	{
-		Update( data, allocSize );
-	}
-	
-	return !allocationFailed;
+    size = allocSize;
+    usage = _usage;
+
+    bool allocationFailed = false;
+
+    const int numBytes = GetAllocedSize();
+
+
+    if (usage == BU_DYNAMIC)
+    {
+#ifndef ANDROID
+        if (!glConfig.directStateAccess)
+#endif
+        {
+            glGenBuffers(1, (GLuint*)&apiObject);
+            glBindBuffer(GL_UNIFORM_BUFFER, apiObject);
+            glBufferData(GL_UNIFORM_BUFFER, numBytes, NULL, GL_STREAM_DRAW);
+            glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        }
+#ifndef ANDROID
+        else {
+			glCreateBuffers(1, (GLuint*)&apiObject);
+			glNamedBufferStorage(apiObject, numBytes, NULL, bufferStorageFlags);
+		}
+#endif
+    }
+    else
+    {
+#ifndef ANDROID
+        if (!glConfig.directStateAccess)
+#endif
+        {
+            glGenBuffers(1, (GLuint*)&apiObject);
+            glBindBuffer(GL_UNIFORM_BUFFER, apiObject);
+            glBufferData(GL_UNIFORM_BUFFER, numBytes, data, GL_STATIC_DRAW);
+            glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        }
+#ifndef ANDROID
+        else {
+			glCreateBuffers(1, (GLuint*)&apiObject);
+			glNamedBufferStorage(apiObject, numBytes, data, bufferStorageFlags);
+		}
+#endif
+    }
+
+    if( r_showBuffers.GetBool() )
+    {
+        idLib::Printf( "uniform buffer alloc %p, api %p (%i bytes)\n", this, ( GLuint* )&apiObject, GetSize() );
+    }
+
+    if( data != NULL && usage == BU_DYNAMIC )
+    {
+        Update( data, allocSize );
+    }
+
+    return !allocationFailed;
 }
 
-/*
-========================
-idUniformBuffer::FreeBufferObject
-========================
-*/
 void idUniformBuffer::FreeBufferObject()
 {
-	if( IsMapped() )
-	{
-		UnmapBuffer();
-	}
-	
-	// if this is a sub-allocation inside a larger buffer, don't actually free anything.
-	if( OwnsBuffer() == false )
-	{
-		ClearWithoutFreeing();
-		return;
-	}
-	
-	if( apiObject == 0xFFFF )
-	{
-		return;
-	}
-	
-	if( r_showBuffers.GetBool() )
-	{
-		idLib::Printf( "joint buffer free %p, api %p (%i size)\n", this, ( GLuint* )&apiObject, GetSize() );
-	}
-	
-	glDeleteBuffers( 1, ( GLuint* )&apiObject );
-	
-	ClearWithoutFreeing();
+    if( IsMapped() )
+    {
+        UnmapBuffer();
+    }
+
+    if( OwnsBuffer() == false )
+    {
+        ClearWithoutFreeing();
+        return;
+    }
+
+    if( apiObject == 0xFFFF )
+        return;
+
+    if( r_showBuffers.GetBool() )
+    {
+        idLib::Printf( "uniform buffer free %p, api %p (%i size)\n", this, ( GLuint* )&apiObject, GetSize() );
+    }
+
+    glDeleteBuffers( 1, ( GLuint* )&apiObject );
+    ClearWithoutFreeing();
 }
 
-/*
-========================
-idUniformBuffer::Update
-========================
-*/
 void idUniformBuffer::Update( const void* data, int updateSize, int offset ) const
 {
-	assert( apiObject != 0xFFFF );
-	assert_16_byte_aligned( data );
-	assert( ( GetOffset() & 15 ) == 0 );
-	
-	if( updateSize > GetSize() )
-	{
-		idLib::FatalError( "idUniformBuffer::Update: size overrun, %i > %i\n", updateSize, GetSize() );
-	}
-	
-	const int numBytes = ( updateSize + 15 ) & ~15;
-	
-	if( usage == BU_DYNAMIC )
-	{
-		CopyBuffer( ( byte* )buffer + offset, ( const byte* )data, numBytes );
-	}
-	else
-	{
+    assert( apiObject != 0xFFFF );
+    assert_16_byte_aligned( data );
+    assert( ( GetOffset() & 15 ) == 0 );
+
+    if( updateSize > GetSize() )
+    {
+        idLib::FatalError( "idUniformBuffer::Update: size overrun, %i > %i\n", updateSize, GetSize() );
+    }
+
+    const int numBytes = ( updateSize + 15 ) & ~15;
+
+    if( usage == BU_DYNAMIC )
+    {
+        CopyBuffer( ( byte* )buffer + offset, ( const byte* )data, numBytes );
+    }
+    else
+    {
 #ifndef ANDROID
-		if (!glConfig.directStateAccess)
+        if (!glConfig.directStateAccess)
 #endif
-		{
-			glBindBuffer(GL_ARRAY_BUFFER, apiObject);
-			glBufferSubData(GL_ARRAY_BUFFER, GetOffset() + offset, (GLsizeiptr)numBytes, data);
-		}
+        {
+            glBindBuffer(GL_UNIFORM_BUFFER, apiObject);
+            glBufferSubData(GL_UNIFORM_BUFFER, GetOffset() + offset, (GLsizeiptr)numBytes, data);
+        }
 #ifndef ANDROID
-		else {
+        else {
 			glNamedBufferSubData(apiObject, GetOffset() + offset, (GLsizeiptr)numBytes, data);
 		}
 #endif
-	}
+    }
 }
 
-/*
-========================
-idUniformBuffer::MapBuffer
-========================
-*/
 void* idUniformBuffer::MapBuffer( bufferMapType_t mapType )
 {
-	assert( IsMapped() == false );
-	assert( mapType == BM_WRITE );
-	assert( apiObject != 0xFFFF );
-	
-	int numBytes = GetAllocedSize();
-	
-	buffer = NULL;
-#ifndef ANDROID
-	if (!glConfig.directStateAccess)
-#endif
-	{
-		glBindBuffer(GL_UNIFORM_BUFFER, apiObject);
-		numBytes = numBytes;
-		assert(GetOffset() == 0);
+    assert( IsMapped() == false );
+    assert( mapType == BM_WRITE );
+    assert( apiObject != 0xFFFF );
 
-		buffer = glMapBufferRange(GL_UNIFORM_BUFFER, 0, GetAllocedSize(), GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_FLUSH_EXPLICIT_BIT);
-	}
+    buffer = NULL;
 #ifndef ANDROID
-	else {
-		numBytes = numBytes;
+    if (!glConfig.directStateAccess)
+#endif
+    {
+        glBindBuffer(GL_UNIFORM_BUFFER, apiObject);
+        assert(GetOffset() == 0);
+
+        GLbitfield flags = GL_MAP_WRITE_BIT;
+        if (usage == BU_DYNAMIC)
+            flags |= GL_MAP_INVALIDATE_BUFFER_BIT;
+        else
+            flags |= GL_MAP_UNSYNCHRONIZED_BIT;
+
+        buffer = glMapBufferRange(GL_UNIFORM_BUFFER, 0, GetAllocedSize(), flags);
+    }
+#ifndef ANDROID
+    else {
 		assert(GetOffset() == 0);
-		buffer = glMapNamedBufferRange(apiObject, 0, GetAllocedSize(), GL_MAP_WRITE_BIT /*| GL_MAP_INVALIDATE_RANGE_BIT*/ | GL_MAP_UNSYNCHRONIZED_BIT);
+		GLbitfield flags = GL_MAP_WRITE_BIT;
+		if (usage == BU_DYNAMIC)
+			flags |= GL_MAP_INVALIDATE_BUFFER_BIT;
+		else
+			flags |= GL_MAP_UNSYNCHRONIZED_BIT;
+		buffer = glMapNamedBufferRange(apiObject, 0, GetAllocedSize(), flags);
 	}
 #endif
-	if( buffer != NULL )
-	{
-		buffer = ( byte* )buffer + GetOffset();
-	}
-	
-	SetMapped();
-	
-	if( buffer == NULL )
-	{
-		idLib::FatalError( "idUniformBuffer::MapBuffer: failed" );
-	}
-	return ( float* ) buffer;
+    if( buffer != NULL )
+    {
+        buffer = ( byte* )buffer + GetOffset();
+    }
+
+    SetMapped();
+
+    if( buffer == NULL )
+    {
+        idLib::FatalError( "idUniformBuffer::MapBuffer: failed" );
+    }
+    return ( float* ) buffer;
 }
 
-/*
-========================
-idUniformBuffer::UnmapBuffer
-========================
-*/
 void idUniformBuffer::UnmapBuffer()
 {
-	assert( apiObject != 0xFFFF );
-	assert( IsMapped() );
-
+    assert( apiObject != 0xFFFF );
+    assert( IsMapped() );
 #ifndef ANDROID
-	if (!glConfig.directStateAccess)
+    if (!glConfig.directStateAccess)
 #endif
-	{
-		glBindBuffer(GL_UNIFORM_BUFFER, apiObject);
-		if (!glUnmapBuffer(GL_UNIFORM_BUFFER))
-		{
-			idLib::Printf("idUniformBuffer::UnmapBuffer failed\n");
-		}
-	}
+    {
+        glBindBuffer(GL_UNIFORM_BUFFER, apiObject);
+        if (!glUnmapBuffer(GL_UNIFORM_BUFFER))
+            idLib::Printf("idUniformBuffer::UnmapBuffer failed\n");
+    }
 #ifndef ANDROID
-	else {
+    else {
 		if (!glUnmapNamedBuffer(apiObject))
-		{
 			idLib::Printf("idUniformBuffer::UnmapBuffer failed\n");
-		}
 	}
 #endif
-	
-	buffer = NULL;
-	
-	SetUnmapped();
+    buffer = NULL;
+    SetUnmapped();
 }
 
-/*
-========================
-idUniformBuffer::ClearWithoutFreeing
-========================
-*/
 void idUniformBuffer::ClearWithoutFreeing()
 {
-	size = 0;
-	offsetInOtherBuffer = OWNS_BUFFER_FLAG;
-	apiObject = 0xFFFF;
+    size = 0;
+    offsetInOtherBuffer = OWNS_BUFFER_FLAG;
+    apiObject = 0xFFFF;
 }

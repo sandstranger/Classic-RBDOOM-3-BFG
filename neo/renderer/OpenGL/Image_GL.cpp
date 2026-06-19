@@ -1583,3 +1583,11 @@ void idImage::Resize( int width, int height, bool recalculateLevels )
 	}
 	AllocImage();
 }
+
+void ClearTexturesBuffers()
+{
+	s_decodeBuffer.resize(0);
+	s_etc2Buffer.resize(0);
+	s_textureBuffer.resize(0);
+	s_etc2CacheBuffer.resize(0);
+}

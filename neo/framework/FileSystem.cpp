@@ -128,6 +128,7 @@ struct searchpath_t
 
 #if ANDROID
 extern "C" void ClearRamCache();
+extern void ClearTexturesBuffers();
 #endif
 
 class idFileSystemLocal : public idFileSystem
@@ -737,6 +738,7 @@ void idFileSystemLocal::UnloadMapResources( const char* name )
 {
 #if ANDROID
 	ClearRamCache();
+	ClearTexturesBuffers();
 #endif
 
 	if( name == NULL || *name == '\0' || idStr::Icmp( "_startup", name ) == 0 )

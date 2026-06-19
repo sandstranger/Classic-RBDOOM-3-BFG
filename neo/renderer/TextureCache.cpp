@@ -259,7 +259,6 @@ bool idTextureCache::TryGetCachedETC2(const char* textureName,
     }
     auto* buffer = reinterpret_cast<std::byte *>(outBuffer.data());
     if (file->Read(buffer, header.dataSize) != (int)header.dataSize) {
-        outBuffer.clear();
         delete file;
         return false;
     }
@@ -420,7 +419,6 @@ bool idTextureCache::TryGetFromRamCache(uint64_t hash, std::vector<uint8_t>& out
         std::lock_guard<std::mutex> lock(m_ramCacheMutex);
         auto it = m_ramCacheIndex.find(hash);
         if (it == m_ramCacheIndex.end()) {
-            outBuffer.clear();
             return false;
         }
 

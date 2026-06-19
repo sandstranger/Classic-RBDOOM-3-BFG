@@ -519,7 +519,6 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 					                          static_cast<GLsizei>(cachedSize),
 					                          cachedEtc2);
 				}
-                s_etc2CacheBuffer.clear();
                 cachedEtc2 = nullptr;
             }
 
@@ -610,8 +609,6 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 				                          GL_COMPRESSED_RGBA8_ETC2_EAC,
 				                          static_cast<GLsizei>(etc2CompressedSize),
 				                          etc2Data);
-                s_decodeBuffer.clear();
-                s_etc2Buffer.clear();
 			}
 		}
 		else
@@ -1492,7 +1489,6 @@ void idImage::AllocImage()
 							}
 							byte* data = s_textureBuffer.data();
                             glCompressedTexImage2D(uploadTarget + side, level, GL_COMPRESSED_RGBA8_ETC2_EAC, w, h, 0, etc2CompressedSize, data);
-							s_textureBuffer.clear();
                         } else {
 							if (s_textureBuffer.size() < compressedSize)
 							{
@@ -1500,7 +1496,6 @@ void idImage::AllocImage()
 							}
 							byte* data = s_textureBuffer.data();
                             glCompressedTexImage2D(uploadTarget + side, level, internalFormat, w, h, 0, compressedSize, data);
-							s_textureBuffer.clear();
                         }
 #else
                         byte* data = (byte*)Mem_Alloc(compressedSize, TAG_TEMP);

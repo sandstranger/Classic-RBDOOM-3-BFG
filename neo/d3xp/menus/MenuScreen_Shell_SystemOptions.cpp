@@ -713,7 +713,7 @@ idSWFScriptVar idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings
 		//	return LinearAdjust( r_lodBias.GetFloat(), -1.0f, 1.0f, 0.0f, 100.0f );
 		// RB end
 		case SYSTEM_FIELD_BRIGHTNESS:
-			return LinearAdjust( r_lightScale.GetFloat(), 0.0f, 5.0f, 0.0f, 100.0f );
+			return LinearAdjust( r_lightScale.GetFloat(), 0.0f, MAX_LIGHT_SCALE, 0.0f, 100.0f );
 	}
 	return false;
 }

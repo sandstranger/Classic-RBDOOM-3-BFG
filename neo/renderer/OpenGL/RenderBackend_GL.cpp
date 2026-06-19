@@ -39,6 +39,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "../RenderCommon.h"
 #include "../RenderBackend.h"
 #include "../../framework/Common_local.h"
+#include "SDL3/SDL.h"
+#include "SDL3/SDL_egl.h"
 #if ANDROID
 
 #define GL_MULTISAMPLE                    0x809D
@@ -78,6 +80,22 @@ void RB_SetMVP( const idRenderMatrix& mvp );
 
 glContext_t glcontext;
 static uintptr_t currentVertOffset = ~0;
+static bool gEnableEGLSynchronization = false;
+static bool eglNativeFenceSyncAvailable = false;
+static bool eglFenceSyncAvailable = false;
+static EGLSyncKHR previousSwapSync = EGL_NO_SYNC_KHR;
+using PFNEGLGETCURRENTDISPLAYPROC = EGLDisplay (*)();
+
+static PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR_ptr;
+static PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR_ptr;
+static PFNEGLCLIENTWAITSYNCKHRPROC eglClientWaitSyncKHR_ptr;
+static PFNEGLGETCURRENTDISPLAYPROC p_eglGetCurrentDisplay;
+
+#define eglCreateSyncKHR eglCreateSyncKHR_ptr
+#define eglDestroySyncKHR eglDestroySyncKHR_ptr
+#define eglClientWaitSyncKHR eglClientWaitSyncKHR_ptr
+static EGLDisplay eglDisplay = nullptr;
+
 #if ANDROID
 const int DEFAULT_GLES_VERSION = 320;
 int glesVersion = DEFAULT_GLES_VERSION;
@@ -92,6 +110,11 @@ void setHardwareDXTSupport(const bool enableDXTSupport) {
 __attribute__((used)) __attribute__((visibility("default")))
 void setGLESVersion(const int targetGLESVersion) {
 	glesVersion = targetGLESVersion;
+}
+
+__attribute__((used)) __attribute__((visibility("default")))
+void updateEGLSynchronizationState(const bool enableEGLSynchronization) {
+	gEnableEGLSynchronization = enableEGLSynchronization;
 }
 }
 
@@ -315,6 +338,44 @@ static void R_CheckPortableExtensions()
 	else if( idStr::Icmpn( glConfig.vendor_string, "Intel", 5 ) == 0 )
 	{
 		glConfig.vendor = VENDOR_INTEL;
+	}
+
+	p_eglGetCurrentDisplay = reinterpret_cast<PFNEGLGETCURRENTDISPLAYPROC>(SDL_EGL_GetProcAddress("eglGetCurrentDisplay"));
+    eglDisplay = p_eglGetCurrentDisplay();
+	auto eglQueryStringPtr =reinterpret_cast<PFNEGLQUERYSTRINGPROC>(SDL_EGL_GetProcAddress("eglQueryString"));
+	const char* eglExtensions = eglQueryStringPtr(eglDisplay, EGL_EXTENSIONS);
+	if (eglExtensions == nullptr)
+	{
+		common->Warning("eglQueryString(EGL_EXTENSIONS) returned NULL");
+	} else {
+		common->Printf("Available EGL extensions:\n%s\n", eglExtensions);
+		eglNativeFenceSyncAvailable = (strstr(eglExtensions, "EGL_ANDROID_native_fence_sync") !=
+		                               nullptr);
+		eglFenceSyncAvailable = (strstr(eglExtensions, "EGL_KHR_fence_sync") != nullptr);
+
+		if (eglNativeFenceSyncAvailable || eglFenceSyncAvailable) {
+			eglCreateSyncKHR_ptr = (PFNEGLCREATESYNCKHRPROC) SDL_EGL_GetProcAddress("eglCreateSyncKHR");
+			eglDestroySyncKHR_ptr = (PFNEGLDESTROYSYNCKHRPROC) SDL_EGL_GetProcAddress(
+					"eglDestroySyncKHR");
+			eglClientWaitSyncKHR_ptr = (PFNEGLCLIENTWAITSYNCKHRPROC) SDL_EGL_GetProcAddress(
+					"eglClientWaitSyncKHR");
+
+			if (eglCreateSyncKHR_ptr == nullptr ||
+			    eglDestroySyncKHR_ptr == nullptr ||
+			    eglClientWaitSyncKHR_ptr == nullptr) {
+				common->Warning("Failed to load EGL sync functions via eglGetProcAddress");
+				eglNativeFenceSyncAvailable = false;
+				eglFenceSyncAvailable = false;
+			}
+
+			if (eglNativeFenceSyncAvailable) {
+				common->Printf("EGL_ANDROID_native_fence_sync: SUPPORTED\n");
+			} else if (eglFenceSyncAvailable) {
+				common->Printf("EGL_KHR_fence_sync: SUPPORTED (fallback)\n");
+			}
+		} else {
+			common->Printf("WARNING: No EGL fence sync support available\n");
+		}
 	}
 
 #ifndef ANDROID
@@ -2139,20 +2200,87 @@ We want to exit this with the GPU idle, right at vsync
 
 void idRenderBackend::GL_BlockingSwapBuffers()
 {
-    RENDERLOG_PRINTF("***************** GL_BlockingSwapBuffers *****************\n\n\n");
-    const int beforeSwap = Sys_Milliseconds();
-    GLimp_SwapBuffers();
-    const int afterSwap = Sys_Milliseconds();
-    if (r_showSwapBuffers.GetBool() && afterSwap - beforeSwap > 1) {
-        common->Printf("%i msec to swapBuffers\n", afterSwap - beforeSwap);
-    }
-    const int64 exitBlockTime = Sys_Microseconds();
-    static int64 prevBlockTime;
-    if (r_showSwapBuffers.GetBool() && prevBlockTime) {
-        const int delta = (int) (exitBlockTime - prevBlockTime);
-        common->Printf("blockToBlock: %i\n", delta);
-    }
-    prevBlockTime = exitBlockTime;
+	RENDERLOG_PRINTF("***************** GL_BlockingSwapBuffers *****************\n\n\n");
+	if (!gEnableEGLSynchronization)
+	{
+		const int beforeSwap = Sys_Milliseconds();
+		GLimp_SwapBuffers();
+		const int afterSwap = Sys_Milliseconds();
+		if (r_showSwapBuffers.GetBool() && afterSwap - beforeSwap > 1) {
+			common->Printf("%i msec to swapBuffers\n", afterSwap - beforeSwap);
+		}
+		const int64 exitBlockTime = Sys_Microseconds();
+		static int64 prevBlockTime;
+		if (r_showSwapBuffers.GetBool() && prevBlockTime) {
+			const int delta = (int) (exitBlockTime - prevBlockTime);
+			common->Printf("blockToBlock: %i\n", delta);
+		}
+		prevBlockTime = exitBlockTime;
+	}
+	else
+	{
+		if (eglDisplay == EGL_NO_DISPLAY) {
+			common->Warning("eglGetCurrentDisplay() returned EGL_NO_DISPLAY, falling back to basic swap");
+			GLimp_SwapBuffers();
+			return;
+		}
+        const int beforeSwap = Sys_Milliseconds();
+
+		if (eglNativeFenceSyncAvailable) {
+			EGLSyncKHR currentSync = eglCreateSyncKHR(eglDisplay, EGL_SYNC_NATIVE_FENCE_ANDROID,
+			                                          NULL);
+
+			if (currentSync == EGL_NO_SYNC_KHR) {
+				common->Warning("eglCreateSyncKHR(EGL_SYNC_NATIVE_FENCE_ANDROID) failed");
+				GLimp_SwapBuffers();
+				return;
+			}
+
+			GLimp_SwapBuffers();
+
+			if (previousSwapSync != EGL_NO_SYNC_KHR) {
+				EGLint result = eglClientWaitSyncKHR(eglDisplay, previousSwapSync, 0,
+				                                     EGL_FOREVER_KHR);
+
+				if (result == EGL_TIMEOUT_EXPIRED_KHR) {
+					common->Warning("eglClientWaitSyncKHR timeout expired");
+				} else if (result == EGL_FALSE) {
+					common->Warning("eglClientWaitSyncKHR failed");
+				}
+
+				eglDestroySyncKHR(eglDisplay, previousSwapSync);
+			}
+
+			previousSwapSync = currentSync;
+		} else if (eglFenceSyncAvailable) {
+			EGLSyncKHR currentSync = eglCreateSyncKHR(eglDisplay, EGL_SYNC_FENCE_KHR, NULL);
+
+			GLimp_SwapBuffers();
+
+			if (previousSwapSync != EGL_NO_SYNC_KHR) {
+				eglClientWaitSyncKHR(eglDisplay, previousSwapSync, 0, EGL_FOREVER_KHR);
+				eglDestroySyncKHR(eglDisplay, previousSwapSync);
+			}
+
+			previousSwapSync = currentSync;
+		} else {
+			GLimp_SwapBuffers();
+		}
+
+		const int afterSwap = Sys_Milliseconds();
+		if (r_showSwapBuffers.GetBool() && afterSwap - beforeSwap > 1) {
+			common->Printf("%i msec to swapBuffers\n", afterSwap - beforeSwap);
+		}
+
+		const int64 exitBlockTime = Sys_Microseconds();
+
+		static int64 prevBlockTime;
+		if (r_showSwapBuffers.GetBool() && prevBlockTime) {
+			const int delta = (int) (exitBlockTime - prevBlockTime);
+			common->Printf("blockToBlock: %i\n", delta);
+		}
+		prevBlockTime = exitBlockTime;
+	}
 }
 /*
 =============

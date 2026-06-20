@@ -21,9 +21,7 @@ public:
     ~Impl() { Shutdown(); }
 
     void Init() {
-
-        const char* extensions = (const char*)glGetString(GL_EXTENSIONS);
-        if (!extensions || !strstr(extensions, "GL_OES_get_program_binary")) {
+        if (!GLAD_GL_OES_get_program_binary) {
             idLib::Printf("idShaderBinaryCache: GL_OES_get_program_binary not supported.\n");
             binarySupported = false;
             return;

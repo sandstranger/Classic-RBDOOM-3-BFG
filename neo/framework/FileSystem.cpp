@@ -128,6 +128,7 @@ struct searchpath_t
 
 #if ANDROID
 extern "C" void ClearRamCache();
+extern "C" void clearBlobShaderCache();
 extern void ClearTexturesBuffers();
 #endif
 
@@ -738,6 +739,7 @@ void idFileSystemLocal::UnloadMapResources( const char* name )
 {
 #if ANDROID
 	ClearRamCache();
+	clearBlobShaderCache();
 	ClearTexturesBuffers();
 #endif
 

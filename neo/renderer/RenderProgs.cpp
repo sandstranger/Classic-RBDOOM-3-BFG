@@ -46,6 +46,19 @@ void CreateDescriptorPools( VkDescriptorPool( &pools )[ NUM_FRAME_DATA ] );
 
 idRenderProgManager renderProgManager;
 
+#ifdef ANDROID
+extern "C"{
+__attribute__((used)) __attribute__((visibility("default")))
+void clearBlobShaderCache()
+{
+    if (renderProgManager.shaderCacheWasInit)
+    {
+        renderProgManager.binaryCache.Clear();
+    }
+}
+}
+#endif
+
 /*
 ================================================================================================
 idRenderProgManager::idRenderProgManager()
@@ -62,6 +75,10 @@ idRenderProgManager::~idRenderProgManager()
 */
 idRenderProgManager::~idRenderProgManager()
 {
+	if (shaderCacheWasInit)
+	{
+		binaryCache.Shutdown();
+	}
 }
 
 /*

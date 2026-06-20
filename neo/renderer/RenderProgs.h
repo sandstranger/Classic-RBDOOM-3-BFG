@@ -27,6 +27,9 @@ If you have questions concerning this license or the applicable additional terms
 
 ===========================================================================
 */
+
+#include "OpenGL/ShaderBinaryCache.h"
+
 #ifndef __RENDERPROGS_H__
 #define __RENDERPROGS_H__
 
@@ -623,7 +626,9 @@ public:
 	
 	static const int	MAX_GLSL_USER_PARMS = 8;
 	const char*	GetGLSLParmName( int rp ) const;
-	
+    idShaderBinaryCache binaryCache;
+    bool shaderCacheWasInit = false;
+
 	void		SetUniformValue( const renderParm_t rp, const float* value );
 	void		CommitUniforms( uint64 stateBits );
 	void		CachePipeline( uint64 stateBits );
@@ -830,6 +835,7 @@ private:
 		uint			progId;
 		int				uniformArray;
 		idList<int>		uniforms;
+		idStr           glslSource;
 	};
 	
 	struct renderProg_t

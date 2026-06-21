@@ -181,15 +181,13 @@ void idVertexBuffer::Update( const void* data, int updateSize, int offset ) cons
     assert( ( GetOffset() & 15 ) == 0 );
 
     if( updateSize > GetSize() )
-    {
         idLib::FatalError( "idVertexBuffer::Update: size overrun, %i > %i\n", updateSize, GetSize() );
-    }
 
     int numBytes = ( updateSize + 15 ) & ~15;
+    int totalOffset = GetOffset() + offset;
 
     if( usage == BU_DYNAMIC )
     {
-
         CopyBuffer( ( byte* )buffer + offset, ( const byte* )data, numBytes );
     }
     else
@@ -199,12 +197,28 @@ void idVertexBuffer::Update( const void* data, int updateSize, int offset ) cons
 #endif
         {
             glBindBuffer(GL_ARRAY_BUFFER, apiObject);
-            glBufferSubData(GL_ARRAY_BUFFER, GetOffset() + offset, (GLsizeiptr)numBytes, data);
+            void* ptr = glMapBufferRange(GL_ARRAY_BUFFER, totalOffset, numBytes,
+                                         GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+            if (ptr == NULL)
+                idLib::FatalError("idVertexBuffer::Update: glMapBufferRange failed");
+
+            memcpy(ptr, data, numBytes);
+
+            if (!glUnmapBuffer(GL_ARRAY_BUFFER))
+                idLib::Printf("idVertexBuffer::Update: glUnmapBuffer failed\n");
         }
 #ifndef ANDROID
         else {
-			glNamedBufferSubData(apiObject, GetOffset() + offset, (GLsizeiptrARB)numBytes, data);
-		}
+            void* ptr = glMapNamedBufferRange(apiObject, totalOffset, numBytes,
+                                              GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+            if (ptr == NULL)
+                idLib::FatalError("idVertexBuffer::Update: glMapNamedBufferRange failed");
+
+            memcpy(ptr, data, numBytes);
+
+            if (!glUnmapNamedBuffer(apiObject))
+                idLib::Printf("idVertexBuffer::Update: glUnmapNamedBuffer failed\n");
+        }
 #endif
     }
 }
@@ -434,11 +448,10 @@ void idIndexBuffer::Update( const void* data, int updateSize, int offset ) const
     assert( ( GetOffset() & 15 ) == 0 );
 
     if( updateSize > GetSize() )
-    {
         idLib::FatalError( "idIndexBuffer::Update: size overrun, %i > %i\n", updateSize, GetSize() );
-    }
 
     int numBytes = ( updateSize + 15 ) & ~15;
+    int totalOffset = GetOffset() + offset;
 
     if( usage == BU_DYNAMIC )
     {
@@ -451,12 +464,28 @@ void idIndexBuffer::Update( const void* data, int updateSize, int offset ) const
 #endif
         {
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
-            glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, GetOffset() + offset, (GLsizeiptr)numBytes, data);
+            void* ptr = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, totalOffset, numBytes,
+                                         GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+            if (ptr == NULL)
+                idLib::FatalError("idIndexBuffer::Update: glMapBufferRange failed");
+
+            memcpy(ptr, data, numBytes);
+
+            if (!glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER))
+                idLib::Printf("idIndexBuffer::Update: glUnmapBuffer failed\n");
         }
 #ifndef ANDROID
         else {
-			glNamedBufferSubData(apiObject, GetOffset() + offset, (GLsizeiptrARB)numBytes, data);
-		}
+            void* ptr = glMapNamedBufferRange(apiObject, totalOffset, numBytes,
+                                              GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+            if (ptr == NULL)
+                idLib::FatalError("idIndexBuffer::Update: glMapNamedBufferRange failed");
+
+            memcpy(ptr, data, numBytes);
+
+            if (!glUnmapNamedBuffer(apiObject))
+                idLib::Printf("idIndexBuffer::Update: glUnmapNamedBuffer failed\n");
+        }
 #endif
     }
 }
@@ -672,11 +701,10 @@ void idUniformBuffer::Update( const void* data, int updateSize, int offset ) con
     assert( ( GetOffset() & 15 ) == 0 );
 
     if( updateSize > GetSize() )
-    {
         idLib::FatalError( "idUniformBuffer::Update: size overrun, %i > %i\n", updateSize, GetSize() );
-    }
 
     const int numBytes = ( updateSize + 15 ) & ~15;
+    int totalOffset = GetOffset() + offset;
 
     if( usage == BU_DYNAMIC )
     {
@@ -689,12 +717,28 @@ void idUniformBuffer::Update( const void* data, int updateSize, int offset ) con
 #endif
         {
             glBindBuffer(GL_UNIFORM_BUFFER, apiObject);
-            glBufferSubData(GL_UNIFORM_BUFFER, GetOffset() + offset, (GLsizeiptr)numBytes, data);
+            void* ptr = glMapBufferRange(GL_UNIFORM_BUFFER, totalOffset, numBytes,
+                                         GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+            if (ptr == NULL)
+                idLib::FatalError("idUniformBuffer::Update: glMapBufferRange failed");
+
+            memcpy(ptr, data, numBytes);
+
+            if (!glUnmapBuffer(GL_UNIFORM_BUFFER))
+                idLib::Printf("idUniformBuffer::Update: glUnmapBuffer failed\n");
         }
 #ifndef ANDROID
         else {
-			glNamedBufferSubData(apiObject, GetOffset() + offset, (GLsizeiptr)numBytes, data);
-		}
+            void* ptr = glMapNamedBufferRange(apiObject, totalOffset, numBytes,
+                                              GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+            if (ptr == NULL)
+                idLib::FatalError("idUniformBuffer::Update: glMapNamedBufferRange failed");
+
+            memcpy(ptr, data, numBytes);
+
+            if (!glUnmapNamedBuffer(apiObject))
+                idLib::Printf("idUniformBuffer::Update: glUnmapNamedBuffer failed\n");
+        }
 #endif
     }
 }

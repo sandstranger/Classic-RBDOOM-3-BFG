@@ -1343,12 +1343,12 @@ void idImage::AllocImage()
 
         case FMT_RGBA32F:
 		case FMT_RGBA16F:
-			internalFormat = GL_RGB10_A2;
+			internalFormat = GL_RGBA16F;
 			dataFormat = GL_RGBA;
 #ifndef ANDROID
 			dataType = GL_UNSIGNED_BYTE;
 #else
-			dataType = GL_UNSIGNED_INT_2_10_10_10_REV;
+			dataType = GL_HALF_FLOAT;
 #endif
 			break;
 		case FMT_X16:

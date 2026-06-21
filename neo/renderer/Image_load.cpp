@@ -73,7 +73,7 @@ int BitsForFormat( textureFormat_t format )
 			return ( 32 * 6 );
 		case FMT_RGBA32F:
 		case FMT_RGBA16F:
-			return 32;
+			return 64;
 		case FMT_R32F:
 			return 8;
 		// RB end

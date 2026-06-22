@@ -1738,14 +1738,14 @@ void idRenderBackend::CheckCVars()
 		case GLDRV_OPENGL_MESA_CORE_PROFILE:
 			r_fullscreen.SetInteger( 1 );
 			r_useSSAO.SetInteger(0);
-			r_displayRefresh.SetInteger(0);
+			com_engineHz.SetInteger(r_displayRefresh.GetInteger());
             break;
 #endif
 		case GLDRV_OPENGL_ES2:
 		case GLDRV_OPENGL_ES3:
 			r_fullscreen.SetInteger( 1 );
 			r_useSSAO.SetInteger(0);
-			r_displayRefresh.SetInteger(0);
+			com_engineHz.SetInteger(r_displayRefresh.GetInteger());
 			break;
 			
 		default:

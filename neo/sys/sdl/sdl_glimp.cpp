@@ -43,10 +43,10 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "renderer/RenderCommon.h"
 #include "sdl_local.h"
-
 #if ANDROID
 #include <vector>
 #include "AngleShaderCache.h"
+#include "SwappyController.h"
 #endif
 
 idCVar in_nograb( "in_nograb", "0", CVAR_SYSTEM | CVAR_NOCHEAT, "prevents input grabbing" );
@@ -487,7 +487,6 @@ bool GLimp_Init( glimpParms_t parms )
 #else
 	SDL_GL_MakeCurrent(window, context);
 	angle_blobcache_install("doom3_bfg_edition");
-
 	if (!gladLoadGLES2Loader((GLADloadproc)SDL_GL_GetProcAddress)) {
         common->FatalError("Failed to initialize GLAD\n");
         return false;
@@ -712,6 +711,10 @@ void GLimp_Shutdown()
 		SDL_DestroyWindow( window );
 		window = NULL;
 	}
+
+#ifdef ANDROID
+    DestroySwappy();
+#endif
 	atexit(SDL_Quit);
 }
 
@@ -722,24 +725,24 @@ GLimp_SwapBuffers
 */
 void GLimp_SwapBuffers()
 {
-	if( r_swapInterval.IsModified() )
+#ifdef ANDROID
+    if (SwappySwapBuffers()){
+        return;
+    }
+#endif
+	if (r_swapInterval.IsModified())
 	{
 		r_swapInterval.ClearModified();
-		
 		int interval = 0;
-		if( r_swapInterval.GetInteger() == 1 )
-		{
-			interval = ( glConfig.swapControlTearAvailable ) ? -1 : 1;
-		}
-		else if( r_swapInterval.GetInteger() == 2 )
-		{
+		if (r_swapInterval.GetInteger() == 1)
+			interval = (glConfig.swapControlTearAvailable) ? -1 : 1;
+		else if (r_swapInterval.GetInteger() == 2)
 			interval = 1;
-		}
 		SDL_GL_SetSwapInterval(interval);
 	}
-	SDL_GL_SwapWindow( window );
-}
 
+	SDL_GL_SwapWindow(window);
+}
 /*
 =================
 GLimp_SetGamma

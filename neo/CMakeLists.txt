@@ -1981,7 +1981,7 @@ else()
             ${JPEG_LIBRARY}
 			${OpenSSL_LIBRARY}
     	    ${CMAKE_DL_LIBS}
-			AngleShaderCache
+			AndroidGraphicsLayer
     	    log)
 endif()
 		if (USE_OPENXR) 

@@ -544,6 +544,7 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 	//GK: End
 		case SYSTEM_FIELD_FRAMERATE:
 		{
+#ifndef ANDROID
 			if (R_GetRefreshListForDisplay(r_fullscreen.GetInteger() > 0 ? r_fullscreen.GetInteger() - 1 : 0, refreshList)) {
 				idList<int> framerateList = refreshList;
 				framerateList.AddUnique(30);
@@ -561,6 +562,7 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 				static const int values[numValues] = { 30,40,60, 120 };
 				com_engineHz.SetInteger(AdjustOption(com_engineHz.GetInteger(), values, numValues, adjustAmount));
 			}
+#endif
 			break;
 		}
 		case SYSTEM_FIELD_VSYNC:

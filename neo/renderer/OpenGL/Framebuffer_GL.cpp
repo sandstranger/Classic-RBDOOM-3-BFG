@@ -378,9 +378,8 @@ void Framebuffer::Init()
     else
 #endif
     {
-        globalFramebuffers.hdrFBO->AddColorBuffer(GL_RGBA16F, 0);
-        globalFramebuffers.hdrFBO->AddDepthBuffer(GL_DEPTH24_STENCIL8);
-
+        globalFramebuffers.hdrFBO->AddColorBuffer(GL_RGB10_A2, 0);
+        globalFramebuffers.hdrFBO->AddDepthBuffer(GL_DEPTH_COMPONENT24);
         globalFramebuffers.hdrFBO->AttachImage2D(GL_TEXTURE_2D, globalImages->currentRenderHDRImage, 0);
         globalFramebuffers.hdrFBO->AttachImageDepth(GL_TEXTURE_2D, globalImages->currentDepthImage);
     }
@@ -408,7 +407,7 @@ void Framebuffer::Init()
     globalFramebuffers.hdr64FBO->Bind();
 #endif
 
-    globalFramebuffers.hdr64FBO->AddColorBuffer(GL_RGBA16F, 0);
+    globalFramebuffers.hdr64FBO->AddColorBuffer(GL_RGB10_A2, 0);
     globalFramebuffers.hdr64FBO->AttachImage2D(GL_TEXTURE_2D, globalImages->currentRenderHDRImage64, 0);
 
     globalFramebuffers.hdr64FBO->Check();
@@ -487,8 +486,8 @@ void Framebuffer::Init()
     globalFramebuffers.geometryBufferFBO->Bind();
 #endif
 
-    globalFramebuffers.geometryBufferFBO->AddColorBuffer(GL_RGBA16F, 0);
-    globalFramebuffers.geometryBufferFBO->AddStencilBuffer(GL_DEPTH24_STENCIL8);
+    globalFramebuffers.geometryBufferFBO->AddColorBuffer(GL_RGB10_A2, 0);
+    globalFramebuffers.geometryBufferFBO->AddStencilBuffer(GL_DEPTH_COMPONENT24);
     globalFramebuffers.geometryBufferFBO->AttachImage2D(GL_TEXTURE_2D, globalImages->currentNormalsImage, 0);
     globalFramebuffers.geometryBufferFBO->AttachImageDepth(GL_TEXTURE_2D, globalImages->currentDepthImage);
     globalFramebuffers.geometryBufferFBO->Check();

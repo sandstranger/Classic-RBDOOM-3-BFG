@@ -272,32 +272,6 @@ static void R_PrintExtensionStatus(bool extBool, const char* extName) {
 	}
 }
 
-#if ANDROID
-static inline bool IsDXTBCSupported() {
-    GLint numFormats = 0;
-    glGetIntegerv(GL_NUM_COMPRESSED_TEXTURE_FORMATS, &numFormats);
-    if (numFormats <= 0) {
-        return false;
-    }
-    std::vector<GLint> formats(numFormats);
-    glGetIntegerv(GL_COMPRESSED_TEXTURE_FORMATS, formats.data());
-
-    for (GLint i = 0; i < numFormats; ++i) {
-        switch (formats[i]) {
-            case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
-            case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
-            case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
-            case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
-            case GL_COMPRESSED_RED_RGTC1_EXT:
-            case GL_COMPRESSED_SIGNED_RED_RGTC1_EXT:
-                return true;
-        }
-    }
-
-    return false;
-}
-#endif
-
 /*
 ==================
 R_CheckPortableExtensions
@@ -369,9 +343,9 @@ static void R_CheckPortableExtensions()
 	// GL_EXT_texture_filter_anisotropic
 	glConfig.anisotropicFilterAvailable = GLEW_EXT_texture_filter_anisotropic != 0;
 #else
-    glConfig.textureCompressionAvailable = g_enableDXTSupport && IsDXTBCSupported();
+    glConfig.textureCompressionAvailable = g_enableDXTSupport && GLAD_GL_EXT_texture_compression_s3tc;
     glConfig.multitextureAvailable = true;
-	glConfig.anisotropicFilterAvailable = GLAD_GL_EXT_texture_filter_anisotropic !=0;
+	glConfig.anisotropicFilterAvailable = GLAD_GL_EXT_texture_filter_anisotropic;
 #endif
 	if( glConfig.anisotropicFilterAvailable )
 	{
@@ -1764,11 +1738,14 @@ void idRenderBackend::CheckCVars()
 		case GLDRV_OPENGL_MESA_CORE_PROFILE:
 			r_fullscreen.SetInteger( 1 );
 			r_useSSAO.SetInteger(0);
+			r_displayRefresh.SetInteger(0);
             break;
 #endif
 		case GLDRV_OPENGL_ES2:
 		case GLDRV_OPENGL_ES3:
 			r_fullscreen.SetInteger( 1 );
+			r_useSSAO.SetInteger(0);
+			r_displayRefresh.SetInteger(0);
 			break;
 			
 		default:

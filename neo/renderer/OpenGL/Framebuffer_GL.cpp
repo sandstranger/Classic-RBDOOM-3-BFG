@@ -379,7 +379,9 @@ void Framebuffer::Init()
 #endif
     {
         globalFramebuffers.hdrFBO->AddColorBuffer(GL_RGB10_A2, 0);
+#ifndef ANDROID
         globalFramebuffers.hdrFBO->AddDepthBuffer(GL_DEPTH_COMPONENT24);
+#endif
         globalFramebuffers.hdrFBO->AttachImage2D(GL_TEXTURE_2D, globalImages->currentRenderHDRImage, 0);
         globalFramebuffers.hdrFBO->AttachImageDepth(GL_TEXTURE_2D, globalImages->currentDepthImage);
     }

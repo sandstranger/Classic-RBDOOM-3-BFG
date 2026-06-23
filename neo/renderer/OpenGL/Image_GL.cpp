@@ -196,7 +196,7 @@ void idImage::Bind()
 				target = GL_TEXTURE_2D_ARRAY;
 				break;
 			case TT_2D_MULTISAMPLE:
-				target = GL_TEXTURE_2D_MULTISAMPLE;
+				target = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
 				break;
 			}
 			glActiveTexture( GL_TEXTURE0 + texUnit );
@@ -214,78 +214,49 @@ CopyFramebuffer
 
 void idImage::CopyFramebufferLegacy(int x, int y, int imageWidth, int imageHeight, bool forceLDR) {
 	int target = GL_TEXTURE_2D;
-	switch (opts.textureType)
-	{
-	case TT_2D:
-		target = GL_TEXTURE_2D;
-		break;
-	case TT_CUBIC:
-		target = GL_TEXTURE_CUBE_MAP;
-		break;
-	case TT_2D_ARRAY:
-		target = GL_TEXTURE_2D_ARRAY;
-		break;
-	case TT_2D_MULTISAMPLE:
-		target = GL_TEXTURE_2D_MULTISAMPLE;
-		break;
-	default:
-		//idLib::FatalError( "%s: bad texture type %d", GetName(), opts.textureType );
-		return;
+	switch (opts.textureType) {
+		case TT_2D:   target = GL_TEXTURE_2D; break;
+		case TT_CUBIC: target = GL_TEXTURE_CUBE_MAP; break;
+		case TT_2D_ARRAY: target = GL_TEXTURE_2D_ARRAY; break;
+        case TT_2D_MULTISAMPLE: target = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE; break;
+		default: return;
 	}
 
 	glBindTexture(target, texnum);
+
+	if (forceLDR) {
+		glTexImage2D(target, 0, GL_RGBA8, imageWidth, imageHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+	} else {
 #if !defined(USE_GLES2)
-	if (Framebuffer::IsDefaultFramebufferActive())
-	{
-		glReadBuffer(GL_BACK);
-	}
-#endif
-	opts.width = imageWidth;
-	opts.height = imageHeight;
-#if defined(USE_GLES2)
-	glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, x, y, imageWidth, imageHeight, 0);
-#else
-	if (r_useHDR.GetBool() && globalFramebuffers.hdrFBO->IsBound())
-	{
-
-		//if( backEnd.glState.currentFramebuffer != NULL && backEnd.glState.currentFramebuffer->IsMultiSampled() )
-
-#if defined(USE_HDR_MSAA)
-		if (globalFramebuffers.hdrFBO->IsMultiSampled())
-		{
-			glBindFramebuffer(GL_READ_FRAMEBUFFER, globalFramebuffers.hdrFBO->GetFramebuffer());
-			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, globalFramebuffers.hdrNonMSAAFBO->GetFramebuffer());
-			glBlitFramebuffer(0, 0, glConfig.nativeScreenWidth, glConfig.nativeScreenHeight,
-				0, 0, glConfig.nativeScreenWidth, glConfig.nativeScreenHeight,
-				GL_COLOR_BUFFER_BIT,
-				GL_LINEAR);
-
-			globalFramebuffers.hdrNonMSAAFBO->Bind();
-
-			glCopyTexImage2D(target, 0, forceLDR ? GL_RGBA8 : GL_RGBA16F, x, y, imageWidth, imageHeight, 0);
-
-			globalFramebuffers.hdrFBO->Bind();
-		}
-		else
+		if (r_useHDR.GetBool()) {
+#   if !defined(ANDROID)
+			glTexImage2D(target, 0, GL_RGBA16F, imageWidth, imageHeight, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+#   else
+			glTexImage2D(target, 0, GL_RGB10_A2, imageWidth, imageHeight, 0, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV, nullptr);
+#   endif
+		} else
 #endif
 		{
-#ifndef ANDROID
-			glCopyTexImage2D(target, 0, forceLDR ? GL_RGBA8 : GL_RGBA16F, x, y, imageWidth, imageHeight, 0);
-#else
-			glCopyTexImage2D(target, 0, GL_RGBA8, x, y, imageWidth, imageHeight, 0);
-#endif
+			glTexImage2D(target, 0, GL_RGBA8, imageWidth, imageHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 		}
 	}
-	else
-	{
-		glCopyTexImage2D(target, 0, GL_RGBA8, x, y, imageWidth, imageHeight, 0);
-	}
-#endif
 
-	// these shouldn't be necessary if the image was initialized properly
+	static GLuint copyFBO = 0;
+	if (copyFBO == 0) {
+		glGenFramebuffers(1, &copyFBO);
+	}
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, copyFBO);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, texnum, 0);
+    glBlitFramebuffer(
+			x, y, x + imageWidth, y + imageHeight,
+			0, 0, imageWidth, imageHeight,
+			GL_COLOR_BUFFER_BIT, GL_LINEAR
+	);
+
+	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, 0, 0);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameterf(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
 	glTexParameterf(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glTexParameterf(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
@@ -1398,8 +1369,8 @@ void idImage::AllocImage()
 			numSides = 6;
 			break;
 		case TT_2D_MULTISAMPLE:
-			target = GL_TEXTURE_2D_MULTISAMPLE;
-			uploadTarget = GL_TEXTURE_2D_MULTISAMPLE;
+			target = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
+			uploadTarget = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
 			numSides = 1;
 			break;
 			//RB End
@@ -1433,15 +1404,17 @@ void idImage::AllocImage()
 #ifndef ANDROID
 			glTexImage2DMultisample(uploadTarget, opts.samples, internalFormat, w, h, GL_FALSE);
 #else
-			if (glTexStorage2DMultisample!= nullptr) {
-				glTexStorage2DMultisample(
-						GL_TEXTURE_2D_MULTISAMPLE,
-						opts.samples,
-						internalFormat,
-						w, h,
-						GL_FALSE
-				);
-			}
+            if (glConfig.hasMSAAEXT) {
+                glTexImage2D(uploadTarget, 0, internalFormat, w, h, 0, dataFormat, dataType, nullptr);
+            } else if (glTexStorage2DMultisample!= nullptr) {
+                glTexStorage2DMultisample(
+                        GL_TEXTURE_2D_MULTISAMPLE,
+                        opts.samples,
+                        internalFormat,
+                        w, h,
+                        GL_FALSE
+                );
+            }
 #endif
 		}else{
 			if (opts.textureType == TT_CUBIC)

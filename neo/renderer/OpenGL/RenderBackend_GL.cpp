@@ -343,6 +343,8 @@ static void R_CheckPortableExtensions()
 	// GL_EXT_texture_filter_anisotropic
 	glConfig.anisotropicFilterAvailable = GLEW_EXT_texture_filter_anisotropic != 0;
 #else
+    glGetIntegerv(GL_MAX_SAMPLES, &glConfig.maxSupportedSamples);
+	glConfig.hasMSAAEXT = glFramebufferTexture2DMultisampleEXT != nullptr;
     glConfig.textureCompressionAvailable = g_enableDXTSupport && GLAD_GL_EXT_texture_compression_s3tc;
     glConfig.multitextureAvailable = true;
 	glConfig.anisotropicFilterAvailable = GLAD_GL_EXT_texture_filter_anisotropic;
@@ -1701,7 +1703,7 @@ void idRenderBackend::CheckCVars()
 #ifndef ANDROID
 	if( r_antiAliasing.IsModified() )
 #else
-	if( r_antiAliasing.IsModified() && isGLES32Version())
+	if( r_antiAliasing.IsModified() && (glConfig.hasMSAAEXT || isGLES32Version()))
 #endif
 	{
 		switch( r_antiAliasing.GetInteger() )

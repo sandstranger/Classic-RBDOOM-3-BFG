@@ -197,8 +197,7 @@ void idVertexBuffer::Update( const void* data, int updateSize, int offset ) cons
 #endif
         {
             glBindBuffer(GL_ARRAY_BUFFER, apiObject);
-            void* ptr = glMapBufferRange(GL_ARRAY_BUFFER, totalOffset, numBytes,
-                                         GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+            void* ptr = glMapBufferRange(GL_ARRAY_BUFFER, totalOffset, numBytes,GL_MAP_WRITE_BIT);
             if (ptr == NULL)
                 idLib::FatalError("idVertexBuffer::Update: glMapBufferRange failed");
 
@@ -464,8 +463,7 @@ void idIndexBuffer::Update( const void* data, int updateSize, int offset ) const
 #endif
         {
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
-            void* ptr = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, totalOffset, numBytes,
-                                         GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+            void* ptr = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, totalOffset, numBytes,GL_MAP_WRITE_BIT);
             if (ptr == NULL)
                 idLib::FatalError("idIndexBuffer::Update: glMapBufferRange failed");
 
@@ -717,8 +715,7 @@ void idUniformBuffer::Update( const void* data, int updateSize, int offset ) con
 #endif
         {
             glBindBuffer(GL_UNIFORM_BUFFER, apiObject);
-            void* ptr = glMapBufferRange(GL_UNIFORM_BUFFER, totalOffset, numBytes,
-                                         GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+            void* ptr = glMapBufferRange(GL_UNIFORM_BUFFER, totalOffset, numBytes,GL_MAP_WRITE_BIT);
             if (ptr == NULL)
                 idLib::FatalError("idUniformBuffer::Update: glMapBufferRange failed");
 

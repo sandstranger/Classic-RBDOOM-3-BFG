@@ -754,7 +754,7 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 
 #if ANDROID
 	extern bool isGLES32Version();
-	bool multisamplingAvailable = isGLES32Version();
+	bool multisamplingAvailable = glConfig.hasMSAAEXT || isGLES32Version();
 #endif
 
 	filter = filterParm;

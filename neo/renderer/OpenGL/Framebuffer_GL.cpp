@@ -781,7 +781,15 @@ void Framebuffer::AttachImage2D(int target, const idImage* image, int index, int
         return;
     }
 
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + index, target, image->texnum, mipmapLod);
+    if (image->opts.textureType == TT_2D_MULTISAMPLE && glConfig.hasMSAAEXT)
+    {
+        glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0 + index,GL_TEXTURE_2D,image->texnum,
+                                             mipmapLod,image->opts.samples);
+    }
+    else
+    {
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + index, target, image->texnum, mipmapLod);
+    }
 }
 
 void Framebuffer::AttachImage3D(const idImage* image)
@@ -797,7 +805,15 @@ void Framebuffer::AttachImageDepth(int target, const idImage* image)
         return;
     }
 
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, target, image->texnum, 0);
+    if (image->opts.textureType == TT_2D_MULTISAMPLE && glConfig.hasMSAAEXT)
+    {
+        glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT,GL_TEXTURE_2D,image->texnum,0,
+                                             image->opts.samples);
+    } else
+    {
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, target, image->texnum,
+                               0);
+    }
 }
 
 void Framebuffer::AttachImageDepthLayer(const idImage* image, int layer)

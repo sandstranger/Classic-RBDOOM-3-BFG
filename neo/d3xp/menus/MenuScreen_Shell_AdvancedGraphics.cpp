@@ -493,6 +493,7 @@ void idMenuScreen_Shell_AdvancedGraphics::idMenuDataSource_AdvancedGraphics::Adj
 		}
 		case ADV_FIELD_ANTIALIASING:
 		{
+#ifndef ANDROID
 			// RB: disabled 16x MSAA
 			static const int numValues = 5;
 			static const int values[numValues] =
@@ -503,6 +504,27 @@ void idMenuScreen_Shell_AdvancedGraphics::idMenuDataSource_AdvancedGraphics::Adj
 				ANTI_ALIASING_MSAA_4X,
 				ANTI_ALIASING_MSAA_8X
 			};
+#else
+			const int maxSamples = glConfig.maxSupportedSamples;
+			int numValues = 2;
+			const int msaaLevels[] = { 2, 4, 8 };
+			for (int lvl : msaaLevels) {
+				if (lvl <= maxSamples) numValues++;
+			}
+			int values[numValues];
+			values[0] = ANTI_ALIASING_NONE;
+			values[1] = ANTI_ALIASING_SMAA_1X;
+			int idx = 2;
+			for (int lvl : msaaLevels) {
+				if (lvl <= maxSamples) {
+					switch (lvl) {
+						case 2: values[idx++] = ANTI_ALIASING_MSAA_2X; break;
+						case 4: values[idx++] = ANTI_ALIASING_MSAA_4X; break;
+						case 8: values[idx++] = ANTI_ALIASING_MSAA_8X; break;
+					}
+				}
+			}
+#endif
 			// RB end
 			r_antiAliasing.SetInteger(AdjustOption(r_antiAliasing.GetInteger(), values, numValues, adjustAmount));
 			break;

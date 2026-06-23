@@ -133,7 +133,9 @@ struct glconfig_t
 	int					maxTextureImageUnits;
 	int					uniformBufferOffsetAlignment;
 	float				maxTextureAnisotropy;
-	
+	bool  				hasMSAAEXT = false;
+	GLint 				maxSupportedSamples = 0;
+
 	int					colorBits;
 	int					depthBits;
 	int					stencilBits;

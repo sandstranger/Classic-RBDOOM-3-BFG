@@ -265,7 +265,6 @@ public:
 	{
 		return imgName;
 	}
-	
 	// Makes this image active on the current GL texture unit.
 	// automatically enables or disables cube mapping
 	// May perform file loading if the image was not preloaded.
@@ -275,6 +274,7 @@ public:
 	void		GenerateShadowArray( int width, int height, textureFilter_t filter, textureRepeat_t repeat, textureUsage_t usage );
 	// RB end
 
+	void 		EnsureCopyResolveFBO();
 	void		CopyFramebuffer( int x, int y, int width, int height, bool forceLDR = false );
 	void		CopyDepthbuffer( int x, int y, int width, int height );
 	
@@ -406,8 +406,10 @@ public:
 	GLuint				texnum;				// gl texture binding
 private:
 	friend class idImageManager;
-	
-	void		DeriveOpts();
+    GLuint copyResolveFBO = 0;
+    bool copyResolveDirty = true;
+
+    void		DeriveOpts();
 	void		AllocImage();
 	void		SetSamplerState( textureFilter_t tf, textureRepeat_t tr );
 	

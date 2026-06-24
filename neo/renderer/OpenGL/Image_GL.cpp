@@ -529,7 +529,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 					cacheHit = idTextureCache::Instance().TryGetCachedETC2(
 							imgName.c_str(),
 							pic, compressedSize,
-							dxtWidth, dxtHeight,
+							width, height,
 							GL_COMPRESSED_RGBA8_ETC2_EAC,
 							1,
                             s_etc2CacheBuffer, &cachedSize
@@ -539,7 +539,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 					{
                         cachedEtc2 = reinterpret_cast<std::byte *>(s_etc2CacheBuffer.data());
                         idTextureCache::Instance().SaveToRamCache(hash, cachedEtc2, cachedSize,
-						                                          dxtWidth, dxtHeight, GL_COMPRESSED_RGBA8_ETC2_EAC);
+						                                          width, height, GL_COMPRESSED_RGBA8_ETC2_EAC);
 					}
 				}
 
@@ -550,8 +550,9 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                         cachedEtc2 = reinterpret_cast<std::byte *>(s_etc2CacheBuffer.data());
                     }
 
+
 					glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
-					                          dxtWidth, dxtHeight,
+					                          width, height,
 					                          GL_COMPRESSED_RGBA8_ETC2_EAC,
 					                          static_cast<GLsizei>(cachedSize),
 					                          cachedEtc2);
@@ -610,7 +611,6 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 					std::swap(dpic[i * 4], dpic[i * 4 + 2]);
 				}
 #endif
-
 				const uint32_t blocks = (dxtWidth / 4) * (dxtHeight / 4);
 				const size_t etc2CompressedSize = blocks * 16;
 				if (s_etc2Buffer.size() < etc2CompressedSize)
@@ -630,11 +630,11 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 				if (g_enableTextureCache)
 				{
 					idTextureCache::Instance().SaveToRamCache(hash, etc2Data, etc2CompressedSize,
-					                                          dxtWidth, dxtHeight, GL_COMPRESSED_RGBA8_ETC2_EAC);
+					                                          width, height, GL_COMPRESSED_RGBA8_ETC2_EAC);
 					idTextureCache::Instance().SaveToCacheAsync(
 							imgName.c_str(),
 							pic, compressedSize,
-							dxtWidth, dxtHeight,
+							width, height,
 							GL_COMPRESSED_RGBA8_ETC2_EAC,
 							1,
 							etc2Data, etc2CompressedSize
@@ -642,7 +642,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 				}
 
 				glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
-				                          dxtWidth, dxtHeight,
+				                          width, height,
 				                          GL_COMPRESSED_RGBA8_ETC2_EAC,
 				                          static_cast<GLsizei>(etc2CompressedSize),
 				                          etc2Data);
@@ -1519,9 +1519,9 @@ void idImage::AllocImage()
 
 #elif ANDROID
                         if (!glConfig.textureCompressionAvailable) {
-                            w = (w + 3) & ~3;
-                            h = (h + 3) & ~3;
-                            const int etc2CompressedSize = ((w / 4) * (h / 4)) * 16;
+                            const int dxtWidth = (w + 3) & ~3;
+                            const int dxtHeight = (h + 3) & ~3;
+                            const int etc2CompressedSize = ((dxtWidth / 4) * (dxtHeight / 4)) * 16;
 							if (s_textureBuffer.size() < etc2CompressedSize)
 							{
 								s_textureBuffer.resize(etc2CompressedSize);

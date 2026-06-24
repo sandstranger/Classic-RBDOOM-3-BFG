@@ -511,14 +511,14 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 #ifdef ANDROID
 		if (!glConfig.textureCompressionAvailable)
 		{
-			const int dxtWidth = (width + 3) & ~3;
-			const int dxtHeight = (height + 3) & ~3;
+            const size_t dxtWidth = ((static_cast<size_t>(width) + 3) / 4) * 4;
+            const size_t dxtHeight = ((static_cast<size_t>(height) + 3) / 4) * 4;
 			bool cacheHit = false;
 			uint64_t hash = 0;
 
 			if (g_enableTextureCache)
 			{
-				hash = ComputeTextureHash(pic, compressedSize, dxtWidth, dxtHeight, GL_COMPRESSED_RGBA8_ETC2_EAC);
+				hash = ComputeTextureHash(pic, compressedSize, width, height, GL_COMPRESSED_RGBA8_ETC2_EAC);
 				std::byte* cachedEtc2 = nullptr;
 				size_t cachedSize = 0;
 
@@ -549,7 +549,6 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                     {
                         cachedEtc2 = reinterpret_cast<std::byte *>(s_etc2CacheBuffer.data());
                     }
-
 
 					glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
 					                          width, height,
@@ -590,9 +589,9 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 					}
 				}
 
-				const int pixelCount = dxtWidth * dxtHeight;
+				const size_t pixelCount = dxtWidth * dxtHeight;
 #if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
-				int i = 0;
+                size_t i = 0;
                 for (; i <= pixelCount - 16; i += 16)
                 {
                     uint8x16x4_t pixels = vld4q_u8(&dpic[i * 4]);
@@ -606,13 +605,13 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                     std::swap(dpic[i * 4], dpic[i * 4 + 2]);
                 }
 #else
-				for (int i = 0; i < pixelCount; i++)
+				for (size_t i = 0; i < pixelCount; i++)
 				{
 					std::swap(dpic[i * 4], dpic[i * 4 + 2]);
 				}
 #endif
-				const uint32_t blocks = (dxtWidth / 4) * (dxtHeight / 4);
-				const size_t etc2CompressedSize = blocks * 16;
+                const size_t blocks = (dxtWidth / 4) * (dxtHeight / 4);
+                const size_t etc2CompressedSize = blocks * 16;
 				if (s_etc2Buffer.size() < etc2CompressedSize)
 				{
 					s_etc2Buffer.resize(etc2CompressedSize);
@@ -623,7 +622,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 						reinterpret_cast<const uint32_t*>(dpic),
 						reinterpret_cast<uint64_t*>(etc2Data),
 						blocks,
-						dxtWidth,
+						width,
 						true
 				);
 
@@ -1519,15 +1518,16 @@ void idImage::AllocImage()
 
 #elif ANDROID
                         if (!glConfig.textureCompressionAvailable) {
-                            const int dxtWidth = (w + 3) & ~3;
-                            const int dxtHeight = (h + 3) & ~3;
-                            const int etc2CompressedSize = ((dxtWidth / 4) * (dxtHeight / 4)) * 16;
+                            const size_t dxtWidth = ((static_cast<size_t>(w) + 3) / 4) * 4;
+                            const size_t dxtHeight = ((static_cast<size_t>(h) + 3) / 4) * 4;
+                            const size_t etc2CompressedSize = ((dxtWidth / 4) * (dxtHeight / 4)) * 16;
 							if (s_textureBuffer.size() < etc2CompressedSize)
 							{
 								s_textureBuffer.resize(etc2CompressedSize);
 							}
 							byte* data = s_textureBuffer.data();
-                            glCompressedTexImage2D(uploadTarget + side, level, GL_COMPRESSED_RGBA8_ETC2_EAC, w, h, 0, etc2CompressedSize, data);
+                            glCompressedTexImage2D(uploadTarget + side, level, GL_COMPRESSED_RGBA8_ETC2_EAC, w, h, 0,
+                                                   static_cast<GLsizei>(etc2CompressedSize), data);
                         } else {
 							if (s_textureBuffer.size() < compressedSize)
 							{

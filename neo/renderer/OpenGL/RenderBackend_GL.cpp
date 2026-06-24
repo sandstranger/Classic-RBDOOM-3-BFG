@@ -107,6 +107,30 @@ void updateGLSynchronizationState(const bool enableGLSynchronization) {
 bool isGLES32Version (){
     return glesVersion == DEFAULT_GLES_VERSION;
 }
+
+static inline bool IsDXTBCSupported() {
+	GLint numFormats = 0;
+	glGetIntegerv(GL_NUM_COMPRESSED_TEXTURE_FORMATS, &numFormats);
+	if (numFormats <= 0) {
+		return false;
+	}
+	std::vector<GLint> formats(numFormats);
+	glGetIntegerv(GL_COMPRESSED_TEXTURE_FORMATS, formats.data());
+
+	for (GLint i = 0; i < numFormats; ++i) {
+		switch (formats[i]) {
+			case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
+			case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
+			case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
+			case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
+			case GL_COMPRESSED_RED_RGTC1_EXT:
+			case GL_COMPRESSED_SIGNED_RED_RGTC1_EXT:
+				return true;
+		}
+	}
+
+	return false;
+}
 #else
 bool isGLES32Version (){
     return true;
@@ -345,7 +369,7 @@ static void R_CheckPortableExtensions()
 #else
     glGetIntegerv(GL_MAX_SAMPLES, &glConfig.maxSupportedSamples);
 	glConfig.hasMSAAEXT = glFramebufferTexture2DMultisampleEXT != nullptr;
-    glConfig.textureCompressionAvailable = g_enableDXTSupport && GLAD_GL_EXT_texture_compression_s3tc;
+    glConfig.textureCompressionAvailable = g_enableDXTSupport && IsDXTBCSupported();
     glConfig.multitextureAvailable = true;
 	glConfig.anisotropicFilterAvailable = GLAD_GL_EXT_texture_filter_anisotropic;
 #endif

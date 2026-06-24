@@ -278,8 +278,6 @@ Framebuffer::Framebuffer(const char* name, int w, int h)
 {
     fboName = name;
     frameBuffer = 0;
-
-    memset(colorBuffers, 0, sizeof(colorBuffers));
     colorFormat = 0;
 
     depthBuffer = 0;
@@ -687,57 +685,67 @@ void Framebuffer::AddColorBuffer(int format, int index, int multiSamples)
 
     colorFormat = format;
 
-    bool notCreatedYet = colorBuffers[index] == 0;
+    const bool useMSAA = (multiSamples > 0);
+    msaaSamples = useMSAA;
+    const bool notCreatedYet = (colorTextures[index] == 0);
 
     if (notCreatedYet)
     {
-        glGenRenderbuffers(1, &colorBuffers[index]);
+        glGenTextures(1, &colorTextures[index]);
     }
 
-    glBindRenderbuffer(GL_RENDERBUFFER, colorBuffers[index]);
-
-    if (multiSamples > 0)
+    glBindTexture(GL_TEXTURE_2D, colorTextures[index]);
+    if (useMSAA)
     {
-        glRenderbufferStorageMultisample(GL_RENDERBUFFER, multiSamples, format, width, height);
-        msaaSamples = true;
+        glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0 + index,GL_TEXTURE_2D,colorTextures[index],0,multiSamples);
     }
     else
     {
-        glRenderbufferStorage(GL_RENDERBUFFER, format, width, height);
-    }
+        glTexImage2D(GL_TEXTURE_2D,0,format,width,height,0,GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0 + index,GL_TEXTURE_2D,colorTextures[index],0);
 
-    if (notCreatedYet)
-    {
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + index, GL_RENDERBUFFER, colorBuffers[index]);
+        if (notCreatedYet)
+        {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
     }
 }
 
 void Framebuffer::AddDepthBuffer(int format, int multiSamples)
 {
     depthFormat = format;
-
-    bool notCreatedYet = depthBuffer == 0;
+    const bool useMSAA = (multiSamples > 0);
+    msaaSamples = useMSAA;
+    const bool notCreatedYet = (depthTexture == 0);
 
     if (notCreatedYet)
     {
-        glGenRenderbuffers(1, &depthBuffer);
+        glGenTextures(1, &depthTexture);
     }
 
-    glBindRenderbuffer(GL_RENDERBUFFER, depthBuffer);
+    glBindTexture(GL_TEXTURE_2D, depthTexture);
 
-    if (multiSamples > 0)
+    if (useMSAA)
     {
-        glRenderbufferStorageMultisample(GL_RENDERBUFFER, multiSamples, format, width, height);
-        msaaSamples = true;
+        glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_TEXTURE_2D,depthTexture,0,multiSamples);
     }
     else
     {
-        glRenderbufferStorage(GL_RENDERBUFFER, format, width, height);
-    }
+        glTexImage2D(GL_TEXTURE_2D,0,format,width,height,0,GL_DEPTH_COMPONENT,GL_UNSIGNED_SHORT,nullptr);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,GL_TEXTURE_2D,depthTexture,0);
 
-    if (notCreatedYet)
-    {
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, depthBuffer);
+        if (notCreatedYet)
+        {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+        }
     }
 }
 

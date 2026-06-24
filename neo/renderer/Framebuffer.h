@@ -218,10 +218,10 @@ private:
 
     uint32_t frameBuffer;
 
-    uint32_t colorBuffers[MAX_COLOR_ATTACHMENTS];
+    GLuint colorTextures[MAX_COLOR_ATTACHMENTS] = {};
     int colorFormat;
-
     uint32_t depthBuffer;
+    GLuint depthTexture;
     int depthFormat;
 
     uint32_t stencilBuffer;

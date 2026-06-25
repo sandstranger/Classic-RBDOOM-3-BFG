@@ -212,53 +212,41 @@ CopyFramebuffer
 ====================
 */
 
-void idImage::CopyFramebufferLegacy(int x, int y, int imageWidth, int imageHeight, bool forceLDR) {
-	int target = GL_TEXTURE_2D;
-	switch (opts.textureType) {
-		case TT_2D:   target = GL_TEXTURE_2D; break;
-		case TT_CUBIC: target = GL_TEXTURE_CUBE_MAP; break;
-		case TT_2D_ARRAY: target = GL_TEXTURE_2D_ARRAY; break;
-        case TT_2D_MULTISAMPLE: target = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE; break;
-		default: return;
-	}
+void idImage::CopyFramebufferLegacy(int x, int y, int imageWidth, int imageHeight, bool forceLDR)
+{
+    int target = GL_TEXTURE_2D;
+    switch (opts.textureType) {
+        case TT_2D:              target = GL_TEXTURE_2D; break;
+        case TT_CUBIC:           target = GL_TEXTURE_CUBE_MAP; break;
+        case TT_2D_ARRAY:        target = GL_TEXTURE_2D_ARRAY; break;
+        case TT_2D_MULTISAMPLE:  target = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE; break;
+        default: return;
+    }
 
-	glBindTexture(target, texnum);
+    const textureFormat_t desiredFormat = FMT_RGBA8;
+    bool needRecreate = (texnum == TEXTURE_NOT_LOADED) ||
+                        (opts.width != imageWidth) ||
+                        (opts.height != imageHeight) ||
+                        (opts.format != desiredFormat);
 
-	if (forceLDR) {
-		glTexImage2D(target, 0, GL_RGBA8, imageWidth, imageHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-	} else {
-#if !defined(USE_GLES2)
-		if (r_useHDR.GetBool()) {
-#   if !defined(ANDROID)
-			glTexImage2D(target, 0, GL_RGBA16F, imageWidth, imageHeight, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
-#   else
-			glTexImage2D(target, 0, GL_RGB10_A2, imageWidth, imageHeight, 0, GL_RGBA, GL_UNSIGNED_INT_2_10_10_10_REV, nullptr);
-#   endif
-		} else
-#endif
-		{
-			glTexImage2D(target, 0, GL_RGBA8, imageWidth, imageHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-		}
-	}
+    if (needRecreate) {
+        if (texnum == TEXTURE_NOT_LOADED) {
+            glGenTextures(1, (GLuint*)&texnum);
+        }
+        opts.width  = imageWidth;
+        opts.height = imageHeight;
+        opts.format = desiredFormat;
 
-	static GLuint copyFBO = 0;
-	if (copyFBO == 0) {
-		glGenFramebuffers(1, &copyFBO);
-	}
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, copyFBO);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, texnum, 0);
-    glBlitFramebuffer(
-			x, y, x + imageWidth, y + imageHeight,
-			0, 0, imageWidth, imageHeight,
-			GL_COLOR_BUFFER_BIT, GL_LINEAR
-	);
-
-	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, 0, 0);
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-	glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameterf(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTexParameterf(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-	glTexParameterf(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(target, texnum);
+        glCopyTexImage2D(target, 0, GL_RGBA8, x, y, imageWidth, imageHeight, 0);
+        glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameterf(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameterf(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameterf(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    } else {
+        glBindTexture(target, texnum);
+        glCopyTexSubImage2D(target, 0, 0, 0, x, y, imageWidth, imageHeight);
+    }
 }
 
 void idImage::CopyFramebufferDSA(int x, int y, int imageWidth, int imageHeight, bool forceLDR) {
@@ -309,86 +297,21 @@ void idImage::CopyFramebufferDSA(int x, int y, int imageWidth, int imageHeight, 
 #endif
 }
 
-void idImage::EnsureCopyResolveFBO()
+void idImage::CopyFramebuffer( int x, int y, int imageWidth, int imageHeight, bool forceLDR )
 {
-	if (copyResolveFBO == 0)
-	{
-		glGenFramebuffers(1, &copyResolveFBO);
-		copyResolveDirty = true;
+#ifndef ANDROID
+    if (!glConfig.directStateAccess) {
+		CopyFramebufferLegacy(x, y, imageWidth, imageHeight, forceLDR);
 	}
-
-	if (!copyResolveDirty)
-	{
-		return;
+	else {
+		CopyFramebufferDSA(x, y, imageWidth, imageHeight, forceLDR);
 	}
-
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, copyResolveFBO);
-	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texnum, 0);
-
-	GLenum drawBuf = GL_COLOR_ATTACHMENT0;
-	glDrawBuffers(1, &drawBuf);
-
-	copyResolveDirty = false;
+#else
+    CopyFramebufferLegacy(x, y, imageWidth, imageHeight, forceLDR);
+#endif
+    tr.backend.pc.c_copyFrameBuffer++;
 }
 
-void idImage::CopyFramebuffer(int x, int y, int imageWidth, int imageHeight, bool forceLDR)
-{
-	if (opts.textureType != TT_2D)
-	{
-		return;
-	}
-
-	textureFormat_t desiredFormat = FMT_RGBA8;
-
-	if (opts.width != imageWidth || opts.height != imageHeight || opts.format != desiredFormat || texnum == TEXTURE_NOT_LOADED)
-	{
-		opts.width = imageWidth;
-		opts.height = imageHeight;
-		opts.format = desiredFormat;
-
-		AllocImage();
-		copyResolveDirty = true;
-	}
-
-	EnsureCopyResolveFBO();
-
-#if !defined(USE_GLES2)
-	if (Framebuffer::IsDefaultFramebufferActive())
-	{
-		glReadBuffer(GL_BACK);
-	}
-#endif
-
-#if defined(USE_HDR_MSAA)
-	if (r_useHDR.GetBool() && globalFramebuffers.hdrFBO->IsBound() && globalFramebuffers.hdrFBO->IsMultiSampled())
-	{
-		glBindFramebuffer(GL_READ_FRAMEBUFFER, globalFramebuffers.hdrFBO->GetFramebuffer());
-		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, globalFramebuffers.hdrNonMSAAFBO->GetFramebuffer());
-
-		glBlitFramebuffer(
-			0, 0, glConfig.nativeScreenWidth, glConfig.nativeScreenHeight,
-			0, 0, glConfig.nativeScreenWidth, glConfig.nativeScreenHeight,
-			GL_COLOR_BUFFER_BIT,
-			GL_LINEAR
-		);
-
-		glBindFramebuffer(GL_READ_FRAMEBUFFER, globalFramebuffers.hdrNonMSAAFBO->GetFramebuffer());
-	}
-#endif
-
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, copyResolveFBO);
-
-	glBlitFramebuffer(
-			x, y, x + imageWidth, y + imageHeight,
-			0, 0, imageWidth, imageHeight,
-			GL_COLOR_BUFFER_BIT,
-			GL_NEAREST
-	);
-
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-	tr.backend.pc.c_copyFrameBuffer++;
-}
 
 /*
 ====================
@@ -1579,7 +1502,6 @@ void idImage::AllocImage()
 	//GL_CheckErrors();
 
 	SetTexParameters();
-	copyResolveDirty = true;
 }
 
 /*
@@ -1602,13 +1524,6 @@ void idImage::PurgeImage()
 		glcontext.tmu[i].current2DArray = TEXTURE_NOT_LOADED;
 		glcontext.tmu[i].currentCubeMap = TEXTURE_NOT_LOADED;
 	}
-
-	if (copyResolveFBO != 0)
-	{
-		glDeleteFramebuffers(1, &copyResolveFBO);
-		copyResolveFBO = 0;
-	}
-	copyResolveDirty = true;
 }
 
 /*

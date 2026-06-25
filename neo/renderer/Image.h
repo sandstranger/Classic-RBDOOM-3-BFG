@@ -406,8 +406,6 @@ public:
 	GLuint				texnum;				// gl texture binding
 private:
 	friend class idImageManager;
-    GLuint copyResolveFBO = 0;
-    bool copyResolveDirty = true;
 
     void		DeriveOpts();
 	void		AllocImage();

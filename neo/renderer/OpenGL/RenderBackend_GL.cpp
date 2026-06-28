@@ -765,7 +765,7 @@ void idRenderBackend::Init()
 	
 	// allocate the frame data, which may be more if smp is enabled
 	R_InitFrameData();
-	cmdBufferPool.Init(32 * 1024 * 1024);
+	cmdBufferPool.Init(24 * 1024 * 1024);
 	currentCmdBuffer = cmdBufferPool.GetWriteBuffer();
 	frameData->cmdHead = (emptyCommand_t *) currentCmdBuffer->Alloc(sizeof(emptyCommand_t));
 	// Reset our gamma

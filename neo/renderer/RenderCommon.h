@@ -39,8 +39,81 @@ If you have questions concerning this license or the applicable additional terms
 #include "Font.h"
 #include "Framebuffer.h"
 
+class CommandBuffer {
+public:
+	CommandBuffer() : buffer(nullptr), size(0), writeOffset(0) {}
+	~CommandBuffer() { Shutdown(); }
 
+	void Init(int sizeInBytes) {
+		if (buffer) return;
+		size = sizeInBytes;
+		buffer = (byte*)Mem_Alloc(size, TAG_RENDER);
+		Reset();
+	}
+	void Shutdown() {
+		if (buffer) { Mem_Free(buffer); buffer = nullptr; }
+		size = 0; writeOffset = 0;
+	}
+	void Reset() { writeOffset = 0; }
+	void* Alloc(int bytes) {
+		int aligned = (bytes + 15) & ~15;
+		if (writeOffset + aligned > size) {
+			common->Warning("CommandBuffer overflow! Increase size.");
+			return nullptr;
+		}
+		void* ptr = buffer + writeOffset;
+		writeOffset += aligned;
+		return ptr;
+	}
+	int GetUsed() const { return writeOffset; }
+	byte* GetBuffer() const { return buffer; }
+	int GetSize() const { return size; }
 
+private:
+	byte* buffer;
+	int size;
+	int writeOffset;
+};
+
+class CommandBufferPool {
+public:
+	CommandBufferPool() : currentWriteIndex(0) {}
+	~CommandBufferPool() { Shutdown(); }
+
+	void Init(int bufferSize) {
+		buffers[0].Init(bufferSize);
+		buffers[1].Init(bufferSize);
+		ResetAll();
+	}
+	void Shutdown() {
+		buffers[0].Shutdown();
+		buffers[1].Shutdown();
+	}
+	void ResetAll() {
+		buffers[0].Reset();
+		buffers[1].Reset();
+	}
+	CommandBuffer* GetWriteBuffer() {
+		CommandBuffer* buf = &buffers[currentWriteIndex];
+		currentWriteIndex ^= 1;
+		return buf;
+	}
+	CommandBuffer* GetReadBuffer() {
+		return &buffers[currentWriteIndex ^ 1];
+	}
+	void ResetBuffers() {
+		buffers[0].Reset();
+		buffers[1].Reset();
+		currentWriteIndex = 0;
+	}
+
+private:
+	CommandBuffer buffers[2];
+	int currentWriteIndex;
+};
+
+extern CommandBufferPool cmdBufferPool;
+extern CommandBuffer* currentCmdBuffer;
 // maximum texture units
 const int MAX_PROG_TEXTURE_PARMS	= 16;
 

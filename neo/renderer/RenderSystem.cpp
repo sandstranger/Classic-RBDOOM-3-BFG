@@ -35,7 +35,8 @@ If you have questions concerning this license or the applicable additional terms
 
 idRenderSystemLocal	tr;
 idRenderSystem* renderSystem = &tr;
-
+CommandBuffer* currentCmdBuffer;
+CommandBufferPool cmdBufferPool;
 /*
 =====================
 R_PerformanceCounters
@@ -160,18 +161,25 @@ drawSurfsCommand_t, etc) and links it to the end of the
 current command chain.
 ============
 */
-void* R_GetCommandBuffer( int bytes )
-{
-	emptyCommand_t*	cmd;
-	
-	cmd = ( emptyCommand_t* )R_FrameAlloc( bytes, FRAME_ALLOC_DRAW_COMMAND );
-	cmd->next = NULL;
-	frameData->cmdTail->next = &cmd->commandId;
+void* R_GetCommandBuffer( int bytes ) {
+	if (currentCmdBuffer == nullptr) {
+		currentCmdBuffer = cmdBufferPool.GetWriteBuffer();
+		frameData->cmdHead = nullptr;
+		frameData->cmdTail = nullptr;
+	}
+	emptyCommand_t* cmd = (emptyCommand_t*)currentCmdBuffer->Alloc(bytes);
+	if (!cmd) {
+		common->FatalError("Command buffer overflow!");
+	}
+	cmd->next = nullptr;
+	if (frameData->cmdTail) {
+		frameData->cmdTail->next = &cmd->commandId;
+	} else {
+		frameData->cmdHead = cmd;
+	}
 	frameData->cmdTail = cmd;
-	
-	return ( void* )cmd;
+	return cmd;
 }
-
 /*
 =================
 R_ViewStatistics
@@ -720,91 +728,45 @@ void idRenderSystemLocal::SwapCommandBuffers_FinishRendering(
 idRenderSystemLocal::SwapCommandBuffers_FinishCommandBuffers
 =====================
 */
-const emptyCommand_t* idRenderSystemLocal::SwapCommandBuffers_FinishCommandBuffers()
-{
-	if( !IsInitialized() )
-	{
-		return NULL;
-	}
-	
-	// close any gui drawing
+const emptyCommand_t* idRenderSystemLocal::SwapCommandBuffers_FinishCommandBuffers() {
+    if (!IsInitialized()) return nullptr;
 	guiModel->EmitFullScreen();
-	guiModel->Clear();
-	
-	// unmap the buffer objects so they can be used by the GPU
-	vertexCache.BeginBackEnd();
-	
-	// save off this command buffer
-	const emptyCommand_t* commandBufferHead = frameData->cmdHead;
-	
-	// copy the code-used drawsurfs that were
-	// allocated at the start of the buffer memory to the backEnd referenced locations
-	backend.unitSquareSurface = tr.unitSquareSurface_;
-	backend.zeroOneCubeSurface = tr.zeroOneCubeSurface_;
-	backend.testImageSurface = tr.testImageSurface_;
-	
-	// use the other buffers next frame, because another CPU
-	// may still be rendering into the current buffers
-	R_ToggleSmpFrame();
-	
-	// possibly change the stereo3D mode
-	// PC
-	UpdateStereo3DMode();
-	
-	// prepare the new command buffer
-	guiModel->BeginFrame();
-	
-	//------------------------------
-	// Make sure that geometry used by code is present in the buffer cache.
-	// These use frame buffer cache (not static) because they may be used during
-	// map loads.
-	//
-	// It is important to do this first, so if the buffers overflow during
-	// scene generation, the basic surfaces needed for drawing the buffers will
-	// always be present.
-	//------------------------------
-	R_InitDrawSurfFromTri( tr.unitSquareSurface_, *tr.unitSquareTriangles );
-	R_InitDrawSurfFromTri( tr.zeroOneCubeSurface_, *tr.zeroOneCubeTriangles );
-	R_InitDrawSurfFromTri( tr.testImageSurface_, *tr.testImageTriangles );
-	
-	// Reset render crop to be the full screen
-	renderCrops[0].x1 = 0;
-	renderCrops[0].y1 = 0;
-	renderCrops[0].x2 = GetWidth() - 1;
-	renderCrops[0].y2 = GetHeight() - 1;
-	currentRenderCrop = 0;
-	
-	// this is the ONLY place this is modified
-	frameCount++;
-	
-	// just in case we did a common->Error while this
-	// was set
-	guiRecursionLevel = 0;
-	
-	// the first rendering will be used for commands like
-	// screenshot, rather than a possible subsequent remote
-	// or mirror render
-//	primaryWorld = NULL;
+    guiModel->Clear();
 
-	// set the time for shader effects in 2D rendering
-	frameShaderTime = Sys_Milliseconds() * 0.001;
-	
-#if 1 //!defined(USE_VULKAN)
-	// RB: TODO RC_SET_BUFFER is not handled in OpenGL
-	setBufferCommand_t* cmd2 = ( setBufferCommand_t* )R_GetCommandBuffer( sizeof( *cmd2 ) );
-	cmd2->commandId = RC_SET_BUFFER;
-	
-#if defined(USE_VULKAN)
-	cmd2->buffer = 0;
-#else
-	cmd2->buffer = ( int )GL_BACK;
-#endif
-	
-#endif
-	
-	// the old command buffer can now be rendered, while the new one can
-	// be built in parallel
-	return commandBufferHead;
+    vertexCache.BeginBackEnd();
+	const emptyCommand_t* commandBufferHead = frameData->cmdHead;
+
+    backend.unitSquareSurface = tr.unitSquareSurface_;
+    backend.zeroOneCubeSurface = tr.zeroOneCubeSurface_;
+    backend.testImageSurface = tr.testImageSurface_;
+
+    CommandBuffer* newBuf = cmdBufferPool.GetWriteBuffer(); // получаем следующий буфер
+    newBuf->Reset();
+    currentCmdBuffer = newBuf;
+	frameData->cmdHead = nullptr;
+    frameData->cmdTail = nullptr;
+
+    R_ToggleSmpFrame();
+	UpdateStereo3DMode();
+	guiModel->BeginFrame();
+
+    R_InitDrawSurfFromTri( tr.unitSquareSurface_, *tr.unitSquareTriangles );
+    R_InitDrawSurfFromTri( tr.zeroOneCubeSurface_, *tr.zeroOneCubeTriangles );
+    R_InitDrawSurfFromTri( tr.testImageSurface_, *tr.testImageTriangles );
+
+    renderCrops[0].x1 = 0; renderCrops[0].y1 = 0;
+    renderCrops[0].x2 = GetWidth() - 1; renderCrops[0].y2 = GetHeight() - 1;
+    currentRenderCrop = 0;
+
+    frameCount++;
+    guiRecursionLevel = 0;
+    frameShaderTime = Sys_Milliseconds() * 0.001;
+
+    setBufferCommand_t* cmd2 = (setBufferCommand_t*)R_GetCommandBuffer(sizeof(*cmd2));
+    cmd2->commandId = RC_SET_BUFFER;
+    cmd2->buffer = (int)GL_BACK;
+
+    return commandBufferHead;
 }
 
 /*

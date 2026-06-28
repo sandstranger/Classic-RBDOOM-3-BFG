@@ -47,12 +47,11 @@ idDxtDecoder::EmitBlock
 void idDxtDecoder::EmitBlock( byte* outPtr, int x, int y, const byte* colorBlock )
 {
     outPtr += ( y * width + x ) * 4;
+    const int stride = width * 4;
     uint8x16_t row0 = vld1q_u8( colorBlock );
     uint8x16_t row1 = vld1q_u8( colorBlock + 16 );
     uint8x16_t row2 = vld1q_u8( colorBlock + 32 );
     uint8x16_t row3 = vld1q_u8( colorBlock + 48 );
-
-    int stride = width * 4;
     vst1q_u8( outPtr, row0 ); outPtr += stride;
     vst1q_u8( outPtr, row1 ); outPtr += stride;
     vst1q_u8( outPtr, row2 ); outPtr += stride;
@@ -78,7 +77,7 @@ idDxtDecoder::DecodeAlphaValues
 #if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
 void idDxtDecoder::DecodeAlphaValues( byte* colorBlock, const int offset )
 {
-    uint8_t alphas[8];
+    uint8_t alphas[16] = {0};
     alphas[0] = ReadByte();
     alphas[1] = ReadByte();
 
@@ -98,31 +97,20 @@ void idDxtDecoder::DecodeAlphaValues( byte* colorBlock, const int offset )
         alphas[7] = 255;
     }
 
-    uint8x8_t aPalette = vld1_u8(alphas);
-
+    uint8x16_t aPalette = vld1q_u8(alphas);
     uint8_t rawIndices[8];
     for(int i = 0; i < 6; ++i) rawIndices[i] = ReadByte();
-
     uint64_t bits = *(uint64_t*)rawIndices;
     alignas(16) uint8_t idx[16];
+
     for(int i = 0; i < 16; ++i) {
         idx[i] = (uint8_t)((bits >> (i * 3)) & 7);
     }
-
-    uint8x8_t lowIdx = vld1_u8(&idx[0]);
-    uint8x8_t highIdx = vld1_u8(&idx[8]);
-
-    uint8x8_t resLow = vtbl1_u8(aPalette, lowIdx);
-    uint8x8_t resHigh = vtbl1_u8(aPalette, highIdx);
-
-    uint8x16_t finalAlphas = vcombine_u8(resLow, resHigh);
-
-    byte* pixelStart = colorBlock;
-
-    uint8x16x4_t rgba = vld4q_u8(pixelStart);
-
+    uint8x16_t indices = vld1q_u8(idx);
+    uint8x16_t finalAlphas = vqtbl1q_u8(aPalette, indices);
+    uint8x16x4_t rgba = vld4q_u8(colorBlock);
     rgba.val[offset] = finalAlphas;
-    vst4q_u8(pixelStart, rgba);
+    vst4q_u8(colorBlock, rgba);
 }
 #else
 void idDxtDecoder::DecodeAlphaValues( byte* colorBlock, const int offset )
@@ -178,64 +166,56 @@ idDxtDecoder::DecodeColorValues
 #if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
 void idDxtDecoder::DecodeColorValues( byte* colorBlock, bool noBlack, bool writeAlpha )
 {
-	alignas(16) uint8_t colors[4][4];
+    alignas(16) uint8_t colors[16];
+    unsigned short color0 = ReadUShort();
+    unsigned short color1 = ReadUShort();
 
-	unsigned short color0 = ReadUShort();
-	unsigned short color1 = ReadUShort();
+    ColorFrom565( color0, &colors[0] );
+    ColorFrom565( color1, &colors[4] );
+    colors[3] = 255;
+    colors[7] = 255;
 
-	ColorFrom565( color0, colors[0] );
-	ColorFrom565( color1, colors[1] );
-	colors[0][3] = 255;
-	colors[1][3] = 255;
+    if( noBlack || color0 > color1 ) {
+        for(int c=0; c<3; ++c) {
+            colors[8+c]  = ( 2 * colors[0+c] + colors[4+c] ) / 3;
+            colors[12+c] = ( colors[0+c] + 2 * colors[4+c] ) / 3;
+        }
+        colors[11] = 255;
+        colors[15] = 255;
+    } else {
+        for(int c=0; c<3; ++c) {
+            colors[8+c]  = ( colors[0+c] + colors[4+c] ) >> 1;
+            colors[12+c] = 0;
+        }
+        colors[11] = 255;
+        colors[15] = 0;
+    }
 
-	if( noBlack || color0 > color1 ) {
-		for(int c=0; c<3; ++c) {
-			colors[2][c] = ( 2 * colors[0][c] + colors[1][c] ) / 3;
-			colors[3][c] = ( colors[0][c] + 2 * colors[1][c] ) / 3;
-		}
-		colors[2][3] = 255;
-		colors[3][3] = 255;
-	} else {
-		for(int c=0; c<3; ++c) {
-			colors[2][c] = ( colors[0][c] + colors[1][c] ) >> 1;
-			colors[3][c] = 0;
-		}
-		colors[2][3] = 255;
-		colors[3][3] = 0;
-	}
+    uint8x16_t palette = vld1q_u8(colors);
+    uint32_t indexes = ReadUInt();
+    alignas(16) uint8_t lookup_idx[64];
+    for( int i = 0; i < 16; i++ ) {
+        uint8_t color_idx = ((indexes >> (i * 2)) & 3) * 4;
+        lookup_idx[i*4 + 0] = color_idx + 0; // R
+        lookup_idx[i*4 + 1] = color_idx + 1; // G
+        lookup_idx[i*4 + 2] = color_idx + 2; // B
+        lookup_idx[i*4 + 3] = color_idx + 3; // A
+    }
 
-	uint32x4_t cV = vld1q_u32((const uint32_t*)colors);
+    uint32x4_t rgbMask = vdupq_n_u32(0x00FFFFFF);
+    for( int i = 0; i < 4; i++ ) {
+        uint8x16_t pIdx = vld1q_u8(&lookup_idx[i * 16]);
+        uint8x16_t newPixels = vqtbl1q_u8(palette, pIdx);
+        uint8_t* target = colorBlock + i * 16;
 
-	uint32_t indexes = ReadUInt();
-
-	uint32x4_t rgbMask = vdupq_n_u32(0x00FFFFFF);
-
-	for( int i = 0; i < 4; i++ )
-	{
-		uint32_t pix0_idx = (indexes >> 0) & 3;
-		uint32_t pix1_idx = (indexes >> 2) & 3;
-		uint32_t pix2_idx = (indexes >> 4) & 3;
-		uint32_t pix3_idx = (indexes >> 6) & 3;
-		indexes >>= 8;
-
-		uint32_t p0, p1, p2, p3;
-		uint32_t* palette_ptr = (uint32_t*)colors;
-		p0 = palette_ptr[pix0_idx];
-		p1 = palette_ptr[pix1_idx];
-		p2 = palette_ptr[pix2_idx];
-		p3 = palette_ptr[pix3_idx];
-
-		uint32x4_t newPixels = { p0, p1, p2, p3 };
-		uint32_t* target = (uint32_t*)(colorBlock + i * 16);
-
-		if( writeAlpha ) {
-			vst1q_u32(target, newPixels);
-		} else {
-			uint32x4_t oldPixels = vld1q_u32(target);
-			uint32x4_t result = vbslq_u32(rgbMask, newPixels, oldPixels);
-			vst1q_u32(target, result);
-		}
-	}
+        if( writeAlpha ) {
+            vst1q_u8(target, newPixels);
+        } else {
+            uint32x4_t oldP = vld1q_u32((uint32_t*)target);
+            uint32x4_t result = vbslq_u32(rgbMask, vreinterpretq_u32_u8(newPixels), oldP);
+            vst1q_u32((uint32_t*)target, result);
+        }
+    }
 }
 #else
 void idDxtDecoder::DecodeColorValues( byte* colorBlock, bool noBlack, bool writeAlpha )
@@ -396,13 +376,6 @@ idDxtDecoder::DecompressYCoCgDXT5
 */
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
-static inline byte DescaleYCoCgByte( byte c, int scale )
-{
-    int v = int( c ) - 128;
-    v /= scale;
-    return byte( v + 128 );
-}
-
 void idDxtDecoder::DecompressYCoCgDXT5( const byte* inBuf, byte* outBuf, int _width, int _height )
 {
     DecompressImageDXT5_nVidia7x( inBuf, outBuf, _width, _height );
@@ -410,29 +383,42 @@ void idDxtDecoder::DecompressYCoCgDXT5( const byte* inBuf, byte* outBuf, int _wi
     const int pixelCount = _width * _height;
     int i = 0;
 
+    const uint8x8_t v_128_u8 = vdup_n_u8( 128 );
+    const int16x8_t v_128_s16 = vdupq_n_s16( 128 );
+
     for( ; i + 8 <= pixelCount; i += 8 )
     {
         uint8x8x4_t px = vld4_u8( outBuf + i * 4 );
 
-        alignas( 8 ) byte r[8];
-        alignas( 8 ) byte g[8];
-        alignas( 8 ) byte b[8];
+        uint8x8_t scale8 = vadd_u8( vshr_n_u8( px.val[2], 3 ), vdup_n_u8( 1 ) );
+        uint16x8_t scale16 = vmovl_u8( scale8 );
 
-        vst1_u8( r, px.val[0] );
-        vst1_u8( g, px.val[1] );
-        vst1_u8( b, px.val[2] );
+        float32x4_t scale_low_f = vcvtq_f32_u32( vmovl_u16( vget_low_u16( scale16 ) ) );
+        float32x4_t scale_high_f = vcvtq_f32_u32( vmovl_u16( vget_high_u16( scale16 ) ) );
 
-        for( int lane = 0; lane < 8; ++lane )
-        {
-            const int scale = ( b[lane] >> 3 ) + 1;
-            r[lane] = DescaleYCoCgByte( r[lane], scale );
-            g[lane] = DescaleYCoCgByte( g[lane], scale );
-            b[lane] = 0;
-        }
+        int16x8_t r16 = vreinterpretq_s16_u16( vsubl_u8( px.val[0], v_128_u8 ) );
+        float32x4_t r_low_f  = vcvtq_f32_s32( vmovl_s16( vget_low_s16( r16 ) ) );
+        float32x4_t r_high_f = vcvtq_f32_s32( vmovl_s16( vget_high_s16( r16 ) ) );
 
-        px.val[0] = vld1_u8( r );
-        px.val[1] = vld1_u8( g );
-        px.val[2] = vld1_u8( b );
+        r_low_f = vdivq_f32( r_low_f, scale_low_f );
+        r_high_f = vdivq_f32( r_high_f, scale_high_f );
+
+        int16x8_t r_res16 = vcombine_s16( vmovn_s32( vcvtq_s32_f32( r_low_f ) ),
+                                          vmovn_s32( vcvtq_s32_f32( r_high_f ) ) );
+        px.val[0] = vqmovun_s16( vaddq_s16( r_res16, v_128_s16 ) );
+
+        int16x8_t g16 = vreinterpretq_s16_u16( vsubl_u8( px.val[1], v_128_u8 ) );
+        float32x4_t g_low_f  = vcvtq_f32_s32( vmovl_s16( vget_low_s16( g16 ) ) );
+        float32x4_t g_high_f = vcvtq_f32_s32( vmovl_s16( vget_high_s16( g16 ) ) );
+
+        g_low_f = vdivq_f32( g_low_f, scale_low_f );
+        g_high_f = vdivq_f32( g_high_f, scale_high_f );
+
+        int16x8_t g_res16 = vcombine_s16( vmovn_s32( vcvtq_s32_f32( g_low_f ) ),
+                                          vmovn_s32( vcvtq_s32_f32( g_high_f ) ) );
+        px.val[1] = vqmovun_s16( vaddq_s16( g_res16, v_128_s16 ) );
+
+        px.val[2] = vdup_n_u8( 0 );
 
         vst4_u8( outBuf + i * 4, px );
     }
@@ -505,45 +491,23 @@ void idDxtDecoder::DecodeNormalYValues( byte* normalBlock, const int offsetY, by
     c0 = NormalBiasFrom565( normal0 );
     c1 = NormalScaleFrom565( normal0 );
 
-    const uint8_t yTableBytes[8] =
-            {
-                    ny0, ny1, ny2, ny3,
-                    0, 0, 0, 0
-            };
-
-    const uint8x8_t yTable = vld1_u8( yTableBytes );
+    alignas(16) const uint8_t yTableBytes[16] = { ny0, ny1, ny2, ny3, 0 };
+    const uint8x16_t yTable = vld1q_u8( yTableBytes );
 
     unsigned int indexes = ReadUInt();
 
-    uint8_t idxBytes0[8];
-    uint8_t idxBytes1[8];
-
-    for( int i = 0; i < 8; ++i )
-    {
-        idxBytes0[i] = ( uint8_t )( indexes & 3 );
-        indexes >>= 2;
-    }
-    for( int i = 0; i < 8; ++i )
-    {
-        idxBytes1[i] = ( uint8_t )( indexes & 3 );
-        indexes >>= 2;
+    alignas(16) uint8_t idxBytes[16];
+    for( int i = 0; i < 16; ++i ) {
+        idxBytes[i] = ( uint8_t )( (indexes >> (i * 2)) & 3 );
     }
 
-    const uint8x8_t idx0 = vld1_u8( idxBytes0 );
-    const uint8x8_t idx1 = vld1_u8( idxBytes1 );
+    const uint8x16_t idx = vld1q_u8( idxBytes );
 
-    const uint8x8_t out0 = vtbl1_u8( yTable, idx0 );
-    const uint8x8_t out1 = vtbl1_u8( yTable, idx1 );
+    const uint8x16_t yOut = vqtbl1q_u8( yTable, idx );
 
-    uint8_t yOut[16];
-    vst1_u8( yOut + 0, out0 );
-    vst1_u8( yOut + 8, out1 );
-
-    byte* normalYPtr = normalBlock + offsetY;
-    for( int i = 0; i < 16; ++i )
-    {
-        normalYPtr[i * 4] = yOut[i];
-    }
+    uint8x16x4_t rgba = vld4q_u8( normalBlock );
+    rgba.val[offsetY] = yOut;
+    vst4q_u8( normalBlock, rgba );
 }
 #else
 void idDxtDecoder::DecodeNormalYValues( byte* normalBlock, const int offsetY, byte& c0, byte& c1 )
@@ -651,33 +615,27 @@ void UnRotateNormals( const byte* block, float* normals, byte c0, byte c1 )
     const float32x4_t minusOne  = vdupq_n_f32( -1.0f );
     const float32x4_t biasVec   = vdupq_n_f32( 128.0f );
     const float32x4_t invScale  = vdupq_n_f32( 1.0f / float( scale ) );
+    const float32x4_t zeroVec   = vdupq_n_f32( 0.0f );
 
     for( int i = 0; i < 16; i += 8 )
     {
-        const uint8x8x4_t px = vld4_u8( (const uint8_t*)( block + i * 4 ) );
+        const uint8x8x4_t px = vld4_u8( block + i * 4 );
 
-        // R -> x
         uint16x8_t r16 = vmovl_u8( px.val[0] );
-        uint32x4_t r32_0 = vmovl_u16( vget_low_u16( r16 ) );
-        uint32x4_t r32_1 = vmovl_u16( vget_high_u16( r16 ) );
+        float32x4_t x0 = vcvtq_f32_u32( vmovl_u16( vget_low_u16( r16 ) ) );
+        float32x4_t x1 = vcvtq_f32_u32( vmovl_u16( vget_high_u16( r16 ) ) );
 
-        // G -> y
         uint16x8_t g16 = vmovl_u8( px.val[1] );
-        uint32x4_t g32_0 = vmovl_u16( vget_low_u16( g16 ) );
-        uint32x4_t g32_1 = vmovl_u16( vget_high_u16( g16 ) );
+        float32x4_t y0 = vcvtq_f32_u32( vmovl_u16( vget_low_u16( g16 ) ) );
+        float32x4_t y1 = vcvtq_f32_u32( vmovl_u16( vget_high_u16( g16 ) ) );
 
-        float32x4_t x0 = vcvtq_f32_u32( r32_0 );
-        float32x4_t x1 = vcvtq_f32_u32( r32_1 );
-        float32x4_t y0 = vcvtq_f32_u32( g32_0 );
-        float32x4_t y1 = vcvtq_f32_u32( g32_1 );
-
-        x0 = vmlaq_n_f32( minusOne, x0, 2.0f / 255.0f );
-        x1 = vmlaq_n_f32( minusOne, x1, 2.0f / 255.0f );
+        x0 = vmlaq_f32( minusOne, x0, mulVec );
+        x1 = vmlaq_f32( minusOne, x1, mulVec );
 
         y0 = vaddq_f32( vmulq_f32( vsubq_f32( y0, biasVec ), invScale ), biasVec );
         y1 = vaddq_f32( vmulq_f32( vsubq_f32( y1, biasVec ), invScale ), biasVec );
-        y0 = vmlaq_n_f32( minusOne, y0, 2.0f / 255.0f );
-        y1 = vmlaq_n_f32( minusOne, y1, 2.0f / 255.0f );
+        y0 = vmlaq_f32( minusOne, y0, mulVec );
+        y1 = vmlaq_f32( minusOne, y1, mulVec );
 
         float32x4_t rx0 = vmlsq_f32( vmulq_f32( cVec, x0 ), sVec, y0 );
         float32x4_t ry0 = vmlaq_f32( vmulq_f32( sVec, x0 ), cVec, y0 );
@@ -685,24 +643,11 @@ void UnRotateNormals( const byte* block, float* normals, byte c0, byte c1 )
         float32x4_t rx1 = vmlsq_f32( vmulq_f32( cVec, x1 ), sVec, y1 );
         float32x4_t ry1 = vmlaq_f32( vmulq_f32( sVec, x1 ), cVec, y1 );
 
-        float rx[4], ry[4];
-        vst1q_f32( rx, rx0 );
-        vst1q_f32( ry, ry0 );
+        float32x4x4_t out0 = { rx0, ry0, zeroVec, zeroVec };
+        vst4q_f32( normals + i * 4, out0 );
 
-        for( int k = 0; k < 4; ++k )
-        {
-            normals[( i + k ) * 4 + 0] = rx[k];
-            normals[( i + k ) * 4 + 1] = ry[k];
-        }
-
-        vst1q_f32( rx, rx1 );
-        vst1q_f32( ry, ry1 );
-
-        for( int k = 0; k < 4; ++k )
-        {
-            normals[( i + 4 + k ) * 4 + 0] = rx[k];
-            normals[( i + 4 + k ) * 4 + 1] = ry[k];
-        }
+        float32x4x4_t out1 = { rx1, ry1, zeroVec, zeroVec };
+        vst4q_f32( normals + (i + 4) * 4, out1 );
     }
 }
 #else
@@ -839,60 +784,60 @@ void idDxtDecoder::DecompressNormalMapDXT5Renormalize( const byte* inBuf, byte* 
             DecodeAlphaValues( block, 3 );
             DecodeColorValues( block, false, false );
 
-            for( int k = 0; k < 64; k += 16 )
+            for( int k = 0; k < 64; k += 32 )
             {
-                float x[4], y[4], z[4];
+                uint8x8x4_t px = vld4_u8( block + k );
 
-                for(int p = 0; p < 4; p++) {
-#if 0
-                    x[p] = block[k + p*4 + 0];
-                    y[p] = block[k + p*4 + 1];
-                    z[p] = block[k + p*4 + 3];
-#else
-                    x[p] = block[k + p*4 + 3];
-                    y[p] = block[k + p*4 + 1];
-                    z[p] = block[k + p*4 + 2];
-#endif
-                }
+                uint16x8_t cx = vmovl_u8( px.val[3] );
+                uint16x8_t cy = vmovl_u8( px.val[1] );
+                uint16x8_t cz = vmovl_u8( px.val[2] );
 
-                float32x4_t vx = vmlaq_f32(v_minus_one, vld1q_f32(x), v_scale);
-                float32x4_t vy = vmlaq_f32(v_minus_one, vld1q_f32(y), v_scale);
-                float32x4_t vz = vmlaq_f32(v_minus_one, vld1q_f32(z), v_scale);
+                float32x4_t x_low = vcvtq_f32_u32( vmovl_u16( vget_low_u16( cx ) ) );
+                float32x4_t x_high = vcvtq_f32_u32( vmovl_u16( vget_high_u16( cx ) ) );
 
-                float32x4_t dot = vmulq_f32(vx, vx);
-                dot = vmlaq_f32(dot, vy, vy);
-                dot = vmlaq_f32(dot, vz, vz);
+                float32x4_t y_low = vcvtq_f32_u32( vmovl_u16( vget_low_u16( cy ) ) );
+                float32x4_t y_high = vcvtq_f32_u32( vmovl_u16( vget_high_u16( cy ) ) );
 
-                float32x4_t rsq = vrsqrteq_f32(dot);
-                rsq = vmulq_f32(rsq, vrsqrtsq_f32(dot, vmulq_f32(rsq, rsq)));
+                float32x4_t z_low = vcvtq_f32_u32( vmovl_u16( vget_low_u16( cz ) ) );
+                float32x4_t z_high = vcvtq_f32_u32( vmovl_u16( vget_high_u16( cz ) ) );
 
-                vx = vmulq_f32(vx, rsq);
-                vy = vmulq_f32(vy, rsq);
-                vz = vmulq_f32(vz, rsq);
+                auto renormalize = [&](float32x4_t& vx, float32x4_t& vy, float32x4_t& vz) {
+                    vx = vmlaq_f32(v_minus_one, vx, v_scale);
+                    vy = vmlaq_f32(v_minus_one, vy, v_scale);
+                    vz = vmlaq_f32(v_minus_one, vz, v_scale);
 
-                vx = vmlaq_f32(v_half, vmlaq_f32(v_half, vx, v_half), v_255);
-                vy = vmlaq_f32(v_half, vmlaq_f32(v_half, vy, v_half), v_255);
-                vz = vmlaq_f32(v_half, vmlaq_f32(v_half, vz, v_half), v_255);
+                    float32x4_t dot = vmulq_f32(vx, vx);
+                    dot = vmlaq_f32(dot, vy, vy);
+                    dot = vmlaq_f32(dot, vz, vz);
 
-                uint32x4_t ix = vcvtq_u32_f32(vx);
-                uint32x4_t iy = vcvtq_u32_f32(vy);
-                uint32x4_t iz = vcvtq_u32_f32(vz);
+                    float32x4_t rsq = vrsqrteq_f32(dot);
+                    rsq = vmulq_f32(rsq, vrsqrtsq_f32(dot, vmulq_f32(rsq, rsq)));
 
-                block[k + 0*4 + 0] = vgetq_lane_u32(ix, 0);
-                block[k + 0*4 + 1] = vgetq_lane_u32(iy, 0);
-                block[k + 0*4 + 2] = vgetq_lane_u32(iz, 0);
+                    vx = vmulq_f32(vx, rsq);
+                    vy = vmulq_f32(vy, rsq);
+                    vz = vmulq_f32(vz, rsq);
 
-                block[k + 1*4 + 0] = vgetq_lane_u32(ix, 1);
-                block[k + 1*4 + 1] = vgetq_lane_u32(iy, 1);
-                block[k + 1*4 + 2] = vgetq_lane_u32(iz, 1);
+                    vx = vmlaq_f32(v_half, vmlaq_f32(v_half, vx, v_half), v_255);
+                    vy = vmlaq_f32(v_half, vmlaq_f32(v_half, vy, v_half), v_255);
+                    vz = vmlaq_f32(v_half, vmlaq_f32(v_half, vz, v_half), v_255);
+                };
 
-                block[k + 2*4 + 0] = vgetq_lane_u32(ix, 2);
-                block[k + 2*4 + 1] = vgetq_lane_u32(iy, 2);
-                block[k + 2*4 + 2] = vgetq_lane_u32(iz, 2);
+                renormalize(x_low, y_low, z_low);
+                renormalize(x_high, y_high, z_high);
 
-                block[k + 3*4 + 0] = vgetq_lane_u32(ix, 3);
-                block[k + 3*4 + 1] = vgetq_lane_u32(iy, 3);
-                block[k + 3*4 + 2] = vgetq_lane_u32(iz, 3);
+                uint16x4_t rx_l = vmovn_u32( vcvtaq_u32_f32( x_low ) );
+                uint16x4_t rx_h = vmovn_u32( vcvtaq_u32_f32( x_high ) );
+                px.val[0] = vmovn_u16( vcombine_u16( rx_l, rx_h ) );
+
+                uint16x4_t ry_l = vmovn_u32( vcvtaq_u32_f32( y_low ) );
+                uint16x4_t ry_h = vmovn_u32( vcvtaq_u32_f32( y_high ) );
+                px.val[1] = vmovn_u16( vcombine_u16( ry_l, ry_h ) );
+
+                uint16x4_t rz_l = vmovn_u32( vcvtaq_u32_f32( z_low ) );
+                uint16x4_t rz_h = vmovn_u32( vcvtaq_u32_f32( z_high ) );
+                px.val[2] = vmovn_u16( vcombine_u16( rz_l, rz_h ) );
+
+                vst4_u8( block + k, px );
             }
 
             EmitBlock( outBuf, i, j, block );
@@ -986,47 +931,57 @@ void idDxtDecoder::DecompressNormalMapDXT5( const byte* inBuf, byte* outBuf, int
     this->height = _height;
     this->inData = inBuf;
 
+    const float32x4_t one = vdupq_n_f32(1.0f);
+    const float32x4_t zero = vdupq_n_f32(0.0f);
+    const float32x4_t scale = vdupq_n_f32(127.5f);
+
     for (int j = 0; j < _height; j += 4) {
         for (int i = 0; i < _width; i += 4) {
             DecodeAlphaValues(block, 0);
             DecodeNormalYValues(block, 1, c0, c1);
 
-            float normals[16 * 4];
+            alignas(16) float normals[16 * 4];
             UnRotateNormals(block, normals, c0, c1);
 
-            const float32x4_t one = vdupq_n_f32(1.0f);
-            const float32x4_t zero = vdupq_n_f32(0.0f);
+            for (int k = 0; k < 16; k += 8) {
+                float32x4x4_t n0 = vld4q_f32(&normals[k * 4]);
+                float32x4x4_t n1 = vld4q_f32(&normals[(k + 4) * 4]);
 
-            for (int k = 0; k < 16; k += 4) {
-                // normals layout: 4 floats per pixel (x, y, z, w), 4 pixels at a time
-                float32x4x4_t n = vld4q_f32(&normals[k * 4]);
+                auto process_normals = [&](float32x4_t x, float32x4_t y) -> float32x4x3_t {
+                    float32x4_t xx = vmulq_f32(x, x);
+                    float32x4_t yy = vmulq_f32(y, y);
+                    float32x4_t z = vsubq_f32(one, vaddq_f32(xx, yy));
+                    z = vmaxq_f32(z, zero);
 
-                float32x4_t x = n.val[0];
-                float32x4_t y = n.val[1];
+                    z = vsqrtq_f32(z);
 
-                float32x4_t xx = vmulq_f32(x, x);
-                float32x4_t yy = vmulq_f32(y, y);
-                float32x4_t z = vsubq_f32(one, vaddq_f32(xx, yy));
-                z = vmaxq_f32(z, zero);
+                    x = vmulq_f32(vaddq_f32(x, one), scale);
+                    y = vmulq_f32(vaddq_f32(y, one), scale);
+                    z = vmulq_f32(vaddq_f32(z, one), scale);
 
-                float x4[4];
-                float y4[4];
-                float z4[4];
+                    return {x, y, z};
+                };
 
-                vst1q_f32(x4, x);
-                vst1q_f32(y4, y);
-                vst1q_f32(z4, z);
+                float32x4x3_t res0 = process_normals(n0.val[0], n0.val[1]);
+                float32x4x3_t res1 = process_normals(n1.val[0], n1.val[1]);
 
-                for (int lane = 0; lane < 4; ++lane) {
-                    const int p = k + lane;
-                    const float nx = x4[lane];
-                    const float ny = y4[lane];
-                    const float nz = sqrtf(z4[lane]);
+                uint8x8x4_t out_px;
 
-                    block[p * 4 + 0] = byte(idMath::Ftob((nx + 1.0f) * 127.5f));
-                    block[p * 4 + 1] = byte(idMath::Ftob((ny + 1.0f) * 127.5f));
-                    block[p * 4 + 2] = byte(idMath::Ftob((nz + 1.0f) * 127.5f));
-                }
+                uint16x4_t rx0 = vmovn_u32(vcvtaq_u32_f32(res0.val[0]));
+                uint16x4_t rx1 = vmovn_u32(vcvtaq_u32_f32(res1.val[0]));
+                out_px.val[0] = vmovn_u16(vcombine_u16(rx0, rx1));
+
+                uint16x4_t ry0 = vmovn_u32(vcvtaq_u32_f32(res0.val[1]));
+                uint16x4_t ry1 = vmovn_u32(vcvtaq_u32_f32(res1.val[1]));
+                out_px.val[1] = vmovn_u16(vcombine_u16(ry0, ry1));
+
+                uint16x4_t rz0 = vmovn_u32(vcvtaq_u32_f32(res0.val[2]));
+                uint16x4_t rz1 = vmovn_u32(vcvtaq_u32_f32(res1.val[2]));
+                out_px.val[2] = vmovn_u16(vcombine_u16(rz0, rz1));
+
+                out_px.val[3] = vdup_n_u8(255);
+
+                vst4_u8(block + k * 4, out_px);
             }
 
             EmitBlock(outBuf, i, j, block);

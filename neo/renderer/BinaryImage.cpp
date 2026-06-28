@@ -52,40 +52,48 @@ idCVar image_highQualityCompression( "image_highQualityCompression", "0", CVAR_B
 idCVar r_useHighQualitySky( "r_useHighQualitySky", "0", CVAR_BOOL | CVAR_ARCHIVE, "Use high quality skyboxes" );
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+static inline void Decode8Rgb565ToRgba8888_AARCH64( const byte* src, byte* dst )
+{
+	uint8x16_t srcBytes = vld1q_u8( (const uint8_t*)src );
+	srcBytes = vrev16q_u8( srcBytes );
+	uint16x8_t rgb = vreinterpretq_u16_u8( srcBytes );
+	uint16x8_t r5 = vshrq_n_u16( rgb, 11 );
+	uint16x8_t g6 = vshrq_n_u16( vandq_u16( rgb, vdupq_n_u16( 0x07E0 ) ), 5 );
+	uint16x8_t b5 = vandq_u16( rgb, vdupq_n_u16( 0x001F ) );
+	uint16x8_t r16 = vaddq_u16( vmulq_n_u16( r5, 527 ), vdupq_n_u16( 23 ) );
+	uint16x8_t g16 = vaddq_u16( vmulq_n_u16( g6, 259 ), vdupq_n_u16( 33 ) );
+	uint16x8_t b16 = vaddq_u16( vmulq_n_u16( b5, 527 ), vdupq_n_u16( 23 ) );
+	uint8x8x4_t rgba;
+	rgba.val[0] = vshrn_n_u16( r16, 6 ); // R
+	rgba.val[1] = vshrn_n_u16( g16, 6 ); // G
+	rgba.val[2] = vshrn_n_u16( b16, 6 ); // B
+	rgba.val[3] = vdup_n_u8( 0xFF );     // A
+	vst4_u8( dst, rgba );
+}
+
 static inline void Decode4Rgb565ToRgba8888_NEON( const byte* src, byte* dst )
 {
 	uint8x8_t srcBytes = vld1_u8( (const uint8_t*)src );
 	srcBytes = vrev16_u8( srcBytes );
-
 	uint16x4_t rgb = vreinterpret_u16_u8( srcBytes );
-
-	const uint16x4_t maskG = vdup_n_u16( 0x07E0 );
-	const uint16x4_t maskB = vdup_n_u16( 0x001F );
-
 	uint16x4_t r5 = vshr_n_u16( rgb, 11 );
-	uint16x4_t g6 = vshr_n_u16( vand_u16( rgb, maskG ), 5 );
-	uint16x4_t b5 = vand_u16( rgb, maskB );
-
-	uint32x4_t r32 = vaddq_u32( vmull_n_u16( r5, 527 ), vdupq_n_u32( 23 ) );
-	uint32x4_t g32 = vaddq_u32( vmull_n_u16( g6, 259 ), vdupq_n_u32( 33 ) );
-	uint32x4_t b32 = vaddq_u32( vmull_n_u16( b5, 527 ), vdupq_n_u32( 23 ) );
-
-	uint16x4_t r16 = vshrn_n_u32( r32, 6 );
-	uint16x4_t g16 = vshrn_n_u32( g32, 6 );
-	uint16x4_t b16 = vshrn_n_u32( b32, 6 );
-
-	uint16_t rr[4], gg[4], bb[4];
-	vst1_u16( rr, r16 );
-	vst1_u16( gg, g16 );
-	vst1_u16( bb, b16 );
-
-	for( int i = 0; i < 4; ++i )
-	{
-		dst[i * 4 + 0] = (byte)rr[i];
-		dst[i * 4 + 1] = (byte)gg[i];
-		dst[i * 4 + 2] = (byte)bb[i];
-		dst[i * 4 + 3] = 0xFF;
-	}
+	uint16x4_t g6 = vshr_n_u16( vand_u16( rgb, vdup_n_u16( 0x07E0 ) ), 5 );
+	uint16x4_t b5 = vand_u16( rgb, vdup_n_u16( 0x001F ) );
+	uint16x4_t r16 = vadd_u16( vmul_n_u16( r5, 527 ), vdup_n_u16( 23 ) );
+	uint16x4_t g16 = vadd_u16( vmul_n_u16( g6, 259 ), vdup_n_u16( 33 ) );
+	uint16x4_t b16 = vadd_u16( vmul_n_u16( b5, 527 ), vdup_n_u16( 23 ) );
+	uint8x8_t r = vshrn_n_u16( vcombine_u16( r16, vdup_n_u16( 0 ) ), 6 );
+	uint8x8_t g = vshrn_n_u16( vcombine_u16( g16, vdup_n_u16( 0 ) ), 6 );
+	uint8x8_t b = vshrn_n_u16( vcombine_u16( b16, vdup_n_u16( 0 ) ), 6 );
+	uint8x8_t a = vdup_n_u8( 0xFF );
+	uint8x8_t rg = vzip1_u8( r, g );
+	uint8x8_t ba = vzip1_u8( b, a );
+	uint16x4_t rg16 = vreinterpret_u16_u8( rg );
+	uint16x4_t ba16 = vreinterpret_u16_u8( ba );
+	uint16x4_t p01 = vzip1_u16( rg16, ba16 );
+	uint16x4_t p23 = vzip2_u16( rg16, ba16 );
+	uint8x16_t rgba = vreinterpretq_u8_u16( vcombine_u16( p01, p23 ) );
+	vst1q_u8( dst, rgba );
 }
 #endif
 
@@ -599,26 +607,30 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile* bFile, ID_TIME_T sourceTimeSt
 		// SRS - Convert FMT_RGB565 16-bits to FMT_RGBA8 32-bits in place using pre-allocated space
 		if( ( textureFormat_t )fileData.format == FMT_RGB565 )
 		{
-			//SRS - Make sure we have an integer number of RGBA8 storage slots
 			assert( img.dataSize % 4 == 0 );
 			const int pixelCount = img.dataSize / 4;
 			int p = pixelCount;
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
-			while( p >= 4 )
-			{
-				p -= 4;
 
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+			while( p >= 8 )
+			{
+				p -= 8;
 				const byte* src = img.data + p * 2;
 				byte* dst = img.data + p * 4;
-
+				Decode8Rgb565ToRgba8888_AARCH64( src, dst );
+			}
+			if( p >= 4 )
+			{
+				p -= 4;
+				const byte* src = img.data + p * 2;
+				byte* dst = img.data + p * 4;
 				Decode4Rgb565ToRgba8888_NEON( src, dst );
 			}
 #endif
 			while( p > 0 )
 			{
 				--p;
-
-				uint16 pixelValue_rgb565 = img.data[p * 2 + 0] << 8 | img.data[p * 2 + 1];
+				uint16_t pixelValue_rgb565 = img.data[p * 2 + 0] << 8 | img.data[p * 2 + 1];
 				img.data[p * 4 + 0] = ( ( ( pixelValue_rgb565 ) >> 11 ) * 527 + 23 ) >> 6;
 				img.data[p * 4 + 1] = ( ( ( pixelValue_rgb565 & 0x07E0 ) >>  5 ) * 259 + 33 ) >> 6;
 				img.data[p * 4 + 2] = ( ( ( pixelValue_rgb565 & 0x001F ) ) * 527 + 23 ) >> 6;

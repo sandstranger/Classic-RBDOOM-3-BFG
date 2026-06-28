@@ -513,25 +513,28 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 				}
 
 				const size_t pixelCount = dxtWidth * dxtHeight;
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
-                size_t i = 0;
-                for (; i <= pixelCount - 16; i += 16)
-                {
-                    uint8x16x4_t pixels = vld4q_u8(&dpic[i * 4]);
-                    uint8x16_t temp = pixels.val[0];
-                    pixels.val[0] = pixels.val[2];
-                    pixels.val[2] = temp;
-                    vst4q_u8(&dpic[i * 4], pixels);
-                }
-                for (; i < pixelCount; i++)
-                {
-                    std::swap(dpic[i * 4], dpic[i * 4 + 2]);
-                }
-#else
-				for (size_t i = 0; i < pixelCount; i++)
+#if defined(__aarch64__) || defined(_M_ARM64)
+				size_t i = 0;
+				for (; i <= pixelCount - 16; i += 16)
+				{
+					uint8x16x4_t pixels = vld4q_u8(&dpic[i * 4]);
+
+					uint8x16_t temp = pixels.val[0];
+					pixels.val[0] = pixels.val[2];
+					pixels.val[2] = temp;
+
+					vst4q_u8(&dpic[i * 4], pixels);
+				}
+
+				for (; i < pixelCount; i++)
 				{
 					std::swap(dpic[i * 4], dpic[i * 4 + 2]);
 				}
+#else
+    			for (size_t i = 0; i < pixelCount; i++)
+			    {
+					std::swap(dpic[i * 4], dpic[i * 4 + 2]);
+			    }
 #endif
                 const size_t blocks = (dxtWidth / 4) * (dxtHeight / 4);
                 const size_t etc2CompressedSize = blocks * 16;

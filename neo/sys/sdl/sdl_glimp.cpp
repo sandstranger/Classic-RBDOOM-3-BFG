@@ -694,6 +694,11 @@ bool GLimp_SetScreenParms( glimpParms_t parms )
 GLimp_Shutdown
 ===================
 */
+
+#ifdef ANDROID
+extern void UnloadNGGL4ESPTR();
+#endif
+
 void GLimp_Shutdown()
 {
 	common->Printf( "Shutting down OpenGL subsystem\n" );
@@ -713,6 +718,7 @@ void GLimp_Shutdown()
 	}
 
 #ifdef ANDROID
+	UnloadNGGL4ESPTR();
     DestroySwappy();
 #endif
 	atexit(SDL_Quit);

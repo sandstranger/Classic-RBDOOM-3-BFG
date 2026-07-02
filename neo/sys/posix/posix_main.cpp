@@ -62,6 +62,10 @@ If you have questions concerning this license or the applicable additional terms
 
 #if ANDROID
 #include <string>
+#include <filesystem>
+#include <system_error>
+
+namespace fs = std::filesystem;
 using namespace std;
 #endif
 
@@ -654,32 +658,65 @@ void Sys_RemoveFile(const char* path) {
 Sys_IsFileWritable
 ========================
 */
-bool Sys_IsFileWritable( const char* path )
+bool Sys_IsFileWritable(const char* path)
 {
-	struct stat st;
-	if( stat( path, &st ) == -1 )
-	{
+	if (!path || path[0] == '\0') {
+		return false;
+	}
+
+	std::error_code ec;
+
+	if (!fs::exists(path, ec)) {
 		return true;
 	}
-	
-	return ( st.st_mode & S_IWRITE ) != 0;
-}
+	if (ec) {
+		return true;
+	}
 
+	auto perms = fs::status(path, ec).permissions();
+	if (ec) {
+		return true;
+	}
+
+	if ((perms & fs::perms::owner_write) != fs::perms::none) return true;
+	if ((perms & fs::perms::group_write) != fs::perms::none) return true;
+	if ((perms & fs::perms::others_write) != fs::perms::none) return true;
+
+	return false;
+}
 /*
 ========================
 Sys_IsFolder
 ========================
 */
-sysFolder_t	 Sys_IsFolder( const char* path )
+
+sysFolder_t Sys_IsFolder(const char* path)
 {
-	struct stat buffer;
-	
-	if( stat( path, &buffer ) < 0 )
-	{
-		return FOLDER_ERROR;
-	}
-	
-	return ( buffer.st_mode & S_IFDIR ) != 0 ? FOLDER_YES : FOLDER_NO;
+    if (!path || path[0] == '\0') {
+        return FOLDER_ERROR;
+    }
+
+    std::error_code ec;
+    fs::path p(path);
+
+    p = fs::weakly_canonical(p, ec);
+    if (ec) {
+        return FOLDER_ERROR;
+    }
+
+    if (!fs::exists(p, ec)) {
+        return FOLDER_ERROR;
+    }
+    if (ec) {
+        return FOLDER_ERROR;
+    }
+
+    if (fs::is_directory(p, ec)) {
+        if (!ec) {
+            return FOLDER_YES;
+        }
+    }
+    return FOLDER_NO;
 }
 
 // RB end

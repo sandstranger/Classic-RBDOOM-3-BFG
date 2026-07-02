@@ -312,9 +312,9 @@ int idSaveGameThread::Load()
 	
 	saveFolder.AppendPath( callback->directory );
 	
-	if( fileSystem->IsFolder( saveFolder, "fs_savePath" ) != FOLDER_YES )
+	if( fileSystem->IsFolder( saveFolder, "fs_savepath" ) != FOLDER_YES )
 	{
-		callback->errorCode = SAVEGAME_E_FOLDER_NOT_FOUND;
+        callback->errorCode = SAVEGAME_E_FOLDER_NOT_FOUND;
 		return -1;
 	}
 	
@@ -458,6 +458,7 @@ int idSaveGameThread::Delete()
 idSaveGameThread::Enumerate
 ========================
 */
+
 int idSaveGameThread::Enumerate()
 {
 	idSaveLoadParms* callback = data.saveLoadParms;
@@ -466,7 +467,7 @@ int idSaveGameThread::Enumerate()
 	callback->detailList.Clear();
 	
 	int ret = ERROR_SUCCESS;
-	if( fileSystem->IsFolder( saveFolder, "fs_savePath" ) == FOLDER_YES )
+	if( fileSystem->IsFolder( saveFolder, "fs_savepath" ) == FOLDER_YES )
 	{
 		idFileList* files = fileSystem->ListFilesTree( saveFolder, SAVEGAME_DETAILS_FILENAME );
 		const idStrList& fileList = files->GetList();
@@ -568,7 +569,7 @@ int idSaveGameThread::EnumerateFiles()
 	callback->files.Clear();
 	
 	int ret = ERROR_SUCCESS;
-	if( fileSystem->IsFolder( folder, "fs_savePath" ) == FOLDER_YES )
+	if( fileSystem->IsFolder( folder, "fs_savepath" ) == FOLDER_YES )
 	{
 		// get listing of all the files, but filter out below
 		idFileList* files = fileSystem->ListFilesTree( folder, "*.*" );
@@ -655,7 +656,7 @@ int idSaveGameThread::DeleteFiles()
 	}
 	
 	int ret = ERROR_SUCCESS;
-	if( fileSystem->IsFolder( folder, "fs_savePath" ) == FOLDER_YES )
+	if( fileSystem->IsFolder( folder, "fs_savepath" ) == FOLDER_YES )
 	{
 		// get listing of all the files, but filter out below
 		idFileList* files = fileSystem->ListFilesTree( folder, "*.*" );

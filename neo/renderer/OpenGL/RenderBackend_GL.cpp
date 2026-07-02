@@ -340,7 +340,7 @@ static void R_CheckPortableExtensions()
 		}
 	}
 #else
-    glConfig.driverType = GLDRV_OPENGL_MESA_CORE_PROFILE;
+    glConfig.driverType = GLDRV_OPENGL_MESA;
 #endif
 	// RB end
 #ifndef ANDROID
@@ -688,8 +688,8 @@ void idRenderBackend::Init()
 	//GL_CheckErrors();
 
 #ifdef ANDROID //karin: force setup OpenGLES3.2
-    glConfig.version_string = "4.1";
-	glConfig.shading_language_string = "4.10";
+    glConfig.version_string = "320 es";
+	glConfig.shading_language_string = "320";
 #endif
 
 	float glVersion = atof( idStr(glConfig.version_string).SubStr(0, 3) );
@@ -1759,12 +1759,13 @@ void idRenderBackend::CheckCVars()
 		renderProgManager.LoadAllShaders();
 		glConfig.forceGLSLGeneration = false;
 	}
-	
+
+#ifndef ANDROID
 	// RB: turn off shadow mapping for OpenGL drivers that are too slow
 	switch( glConfig.driverType )
 	{
 #if ANDROID
-		case GLDRV_OPENGL_MESA_CORE_PROFILE:
+		case GLDRV_OPENGL_MESA:
 			r_fullscreen.SetInteger( 1 );
 			r_useSSAO.SetInteger(0);
 			com_engineHz.SetInteger(r_displayRefresh.GetInteger());
@@ -1780,6 +1781,11 @@ void idRenderBackend::CheckCVars()
 		default:
 			break;
 	}
+#else
+	r_fullscreen.SetInteger( 1 );
+	r_useSSAO.SetInteger(0);
+	com_engineHz.SetInteger(r_displayRefresh.GetInteger());
+#endif
 	// RB end
 }
 

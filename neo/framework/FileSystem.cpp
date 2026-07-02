@@ -44,6 +44,7 @@ If you have questions concerning this license or the applicable additional terms
 #include <sys/stat.h>
 #endif
 #include <unistd.h>
+#include <string>
 #endif
 
 
@@ -323,6 +324,18 @@ idCVar	fs_enableBackgroundCaching( "fs_enableBackgroundCaching", "1", CVAR_SYSTE
 
 idFileSystemLocal	fileSystemLocal;
 idFileSystem* 		fileSystem = &fileSystemLocal;
+
+#ifdef ANDROID
+static std::string baseGameDir;
+
+extern "C"{
+__attribute__((used)) __attribute__((visibility("default")))
+void setBaseGameDir (const char *pathToGameDir){
+	baseGameDir = pathToGameDir;
+}
+}
+
+#endif
 
 /*
 ================
@@ -1776,26 +1789,51 @@ const char* idFileSystemLocal::BuildOSPath( const char* base, const char* relati
 idFileSystemLocal::BuildOSPath
 ===================
 */
-const char* idFileSystemLocal::BuildOSPath( const char* base, const char* game, const char* relativePath )
-{
-	static char OSPath[MAX_STRING_CHARS];
-	idStr newPath;
-	
-	// handle case of this already being an OS path
-	if( IsOSPath( relativePath ) )
-	{
+
+static std::string BuildOSPathAsString(const char* base, const char* game, const char* relativePath){
+	if (IsOSPath(relativePath))
 		return relativePath;
-	}
-	
-	idStr strBase = base;
-	strBase.StripTrailing( '/' );
-	strBase.StripTrailing( '\\' );
-	sprintf( newPath, "%s/%s/%s", strBase.c_str(), game, relativePath );
-	ReplaceSeparators( newPath );
-	idStr::Copynz( OSPath, newPath, sizeof( OSPath ) );
-	return OSPath;
+
+	std::string result;
+	std::string strBase = base;
+
+	while (!strBase.empty() && (strBase.back() == '/' || strBase.back() == '\\'))
+		strBase.pop_back();
+
+	result = strBase;
+	result += '/';
+	result += game;
+	result += '/';
+	result += relativePath;
+	for (char& c : result) if (c == '\\') c = '/';
+	return result;
 }
 
+static std::string BuildOSPathAsString(const char* base, const char* relativePath){
+	return BuildOSPathAsString(base, baseGameDir.c_str(),relativePath);
+}
+
+const char* idFileSystemLocal::BuildOSPath(const char* base, const char* game, const char* relativePath)
+{
+	if (IsOSPath(relativePath))
+		return relativePath;
+
+	static thread_local std::string result;
+	std::string strBase = base;
+
+	while (!strBase.empty() && (strBase.back() == '/' || strBase.back() == '\\'))
+		strBase.pop_back();
+
+	result = strBase;
+	result += '/';
+	result += game;
+	result += '/';
+	result += relativePath;
+
+	for (char& c : result) if (c == '\\') c = '/';
+
+	return result.c_str();
+}
 /*
 ================
 idFileSystemLocal::OSPathToRelativePath
@@ -1905,6 +1943,7 @@ idFileSystemLocal::RelativePathToOSPath
 Returns a fully qualified path that can be used with stdio libraries
 =====================
 */
+
 const char* idFileSystemLocal::RelativePathToOSPath( const char* relativePath, const char* basePath, const char* gamedir )
 {
 	const char* path = cvarSystem->GetCVarString( basePath );
@@ -1913,7 +1952,11 @@ const char* idFileSystemLocal::RelativePathToOSPath( const char* relativePath, c
 		path = fs_savepath.GetString();
 	}
 	if (gamedir == NULL) {
+#ifndef ANDROID
 		gamedir = gameFolder;
+#else
+		gamedir = baseGameDir.c_str();
+#endif
 	}
 	return BuildOSPath( path, gamedir, relativePath );
 }
@@ -1929,11 +1972,11 @@ void idFileSystemLocal::RemoveFile( const char* relativePath )
 	
 	if( fs_basepath.GetString()[0] )
 	{
-		OSPath = BuildOSPath( fs_basepath.GetString(), gameFolder, relativePath );
+		OSPath = BuildOSPathAsString( fs_basepath.GetString(), gameFolder, relativePath ).c_str();
 		Sys_RemoveFile(OSPath);
 	}
 	
-	OSPath = BuildOSPath( fs_savepath.GetString(), gameFolder, relativePath );
+	OSPath = BuildOSPathAsString( fs_savepath.GetString(), gameFolder, relativePath ).c_str();
 	Sys_RemoveFile(OSPath);
 }
 
@@ -1947,9 +1990,9 @@ bool idFileSystemLocal::RemoveDir( const char* relativePath )
 	bool success = true;
 	if( fs_savepath.GetString()[0] )
 	{
-		success &= Sys_Rmdir( BuildOSPath( fs_savepath.GetString(), relativePath ) );
+		success &= Sys_Rmdir( BuildOSPathAsString( fs_savepath.GetString(), relativePath ).c_str() );
 	}
-	success &= Sys_Rmdir( BuildOSPath( fs_basepath.GetString(), relativePath ) );
+	success &= Sys_Rmdir( BuildOSPathAsString( fs_basepath.GetString(), relativePath ).c_str() );
 	return success;
 }
 
@@ -2163,8 +2206,8 @@ bool idFileSystemLocal::RenameFile( const char* relativePath, const char* newNam
 		path = fs_savepath.GetString();
 	}
 	
-	idStr oldOSPath = BuildOSPath( path, gameFolder, relativePath );
-	idStr newOSPath = BuildOSPath( path, gameFolder, newName );
+	idStr oldOSPath = BuildOSPathAsString( path, gameFolder, relativePath ).c_str();
+	idStr newOSPath = BuildOSPathAsString( path, gameFolder, newName ).c_str();
 	
 	// RB begin
 #if defined(_WIN32)
@@ -2358,7 +2401,7 @@ int idFileSystemLocal::GetFileList( const char* relativePath, const idStrList& e
 			}
 		}
 		
-		idStr netpath = BuildOSPath( searchPaths[sp].path, searchPaths[sp].gamedir, relativePath );
+		idStr netpath = BuildOSPathAsString( searchPaths[sp].path, searchPaths[sp].gamedir, relativePath ).c_str();
 		
 		for( int i = 0; i < extensions.Num(); i++ )
 		{
@@ -3016,10 +3059,14 @@ void idFileSystemLocal::AddGameDirectory( const char* path, const char* dir )
 			return;
 		}
 	}
+#ifndef ANDROID
 	if (idStr::Cmpn(dir, "base_", 5)) { //GK: Exclude the base_* Paths that are bundled with thw port in order to avoid confusions
 		gameFolder = dir;
 	}
-	
+#else
+	gameFolder = baseGameDir.c_str();
+#endif
+
 	//
 	// add the directory to the search path
 	//
@@ -3033,11 +3080,11 @@ void idFileSystemLocal::AddGameDirectory( const char* path, const char* dir )
 	{
 		if( i == 1 )
 		{
-			pakfile = BuildOSPath( path, dir, "maps" );
+			pakfile = BuildOSPathAsString( path, dir, "maps" ).c_str();
 		}
 		else
 		{
-			pakfile = BuildOSPath( path, dir, "" );
+			pakfile = BuildOSPathAsString( path, dir, "" ).c_str();
 			pakfile[ pakfile.Length() - 1 ] = 0;	// strip the trailing slash
 		}
 		
@@ -3486,7 +3533,7 @@ idFile* idFileSystemLocal::OpenFileReadFlags( const char* relativePath, int sear
 				}
 			}
 			
-			idStr netpath = BuildOSPath( searchPaths[sp].path, searchPaths[sp].gamedir, relativePath );
+			idStr netpath = BuildOSPathAsString( searchPaths[sp].path, searchPaths[sp].gamedir, relativePath ).c_str();
 			idFileHandle fp = OpenOSFile( netpath, FS_READ );
 			if( !fp )
 			{
@@ -3510,7 +3557,7 @@ idFile* idFileSystemLocal::OpenFileReadFlags( const char* relativePath, int sear
 			
 				idStr copypath;
 				idStr name;
-				copypath = BuildOSPath( fs_savepath.GetString(), searchPaths[sp].gamedir, relativePath );
+				copypath = BuildOSPathAsString( fs_savepath.GetString(), searchPaths[sp].gamedir, relativePath ).c_str();
 				netpath.ExtractFileName( name );
 				copypath.StripFilename();
 				copypath += PATHSEPARATOR_STR;
@@ -3669,7 +3716,7 @@ idFile* idFileSystemLocal::OpenFileWrite( const char* relativePath, const char* 
 		path = fs_savepath.GetString();
 	}
 	
-	OSpath = BuildOSPath( path, gameFolder, relativePath );
+	OSpath = BuildOSPathAsString( path, gameFolder, relativePath ).c_str();
 	
 	if( fs_debug.GetInteger() )
 	{
@@ -3829,7 +3876,7 @@ idFile* idFileSystemLocal::OpenFileAppend( const char* relativePath, bool sync, 
 		path = fs_savepath.GetString();
 	}
 	
-	OSpath = BuildOSPath( path, gameFolder, relativePath );
+	OSpath = BuildOSPathAsString( path, gameFolder, relativePath ).c_str();
 	CreateOSPath( OSpath );
 	
 	if( fs_debug.GetInteger() )

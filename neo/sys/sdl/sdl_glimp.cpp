@@ -320,7 +320,7 @@ bool GLimp_Init( glimpParms_t parms )
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,  glesMinorVersion );
-		glConfig.driverType = GLDRV_OPENGL_MESA_CORE_PROFILE;
+		glConfig.driverType = GLDRV_OPENGL_MESA;
 #endif
 #ifndef ANDROID
 		// RB end
@@ -695,10 +695,6 @@ GLimp_Shutdown
 ===================
 */
 
-#ifdef ANDROID
-extern void UnloadNGGL4ESPTR();
-#endif
-
 void GLimp_Shutdown()
 {
 	common->Printf( "Shutting down OpenGL subsystem\n" );
@@ -718,7 +714,6 @@ void GLimp_Shutdown()
 	}
 
 #ifdef ANDROID
-	UnloadNGGL4ESPTR();
     DestroySwappy();
 #endif
 	atexit(SDL_Quit);

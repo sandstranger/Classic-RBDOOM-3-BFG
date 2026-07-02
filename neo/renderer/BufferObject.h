@@ -95,6 +95,7 @@ protected:
 #ifdef ANDROID
     #define RING_BUFFER_SIZE 4
     GLuint              apiObjects[RING_BUFFER_SIZE];
+    GLsync              syncObjects[RING_BUFFER_SIZE];
     int                 ringIndex;
 #endif
     GLuint			apiObject;

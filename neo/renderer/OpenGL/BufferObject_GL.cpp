@@ -87,6 +87,7 @@ idVertexBuffer::idVertexBuffer()
 #ifdef ANDROID
     for ( int i = 0; i < RING_BUFFER_SIZE; i++ ) {
         apiObjects[i] = 0xFFFF;
+        syncObjects[i] = nullptr;
     }
     ringIndex = 0;
 #endif
@@ -130,11 +131,11 @@ bool idVertexBuffer::AllocBufferObject( const void* data, int allocSize, bufferU
 #else
         if ( usage == BU_DYNAMIC ) {
             glGenBuffers(RING_BUFFER_SIZE, apiObjects);
-            for ( int i = 0; i < RING_BUFFER_SIZE; i++ ) {
-                if ( apiObjects[i] == 0xFFFF || apiObjects[i] == 0 ) {
+            for (unsigned int apiObject : apiObjects) {
+                if ( apiObject == 0xFFFF || apiObject == 0 ) {
                     idLib::FatalError("idVertexBuffer::AllocBufferObject: failed generating ring buffer");
                 }
-                glBindBuffer(GL_ARRAY_BUFFER, apiObjects[i]);
+                glBindBuffer(GL_ARRAY_BUFFER, apiObject);
                 glBufferData(GL_ARRAY_BUFFER, numBytes, NULL, GL_STREAM_DRAW);
             }
             ringIndex = 0;
@@ -213,6 +214,12 @@ void idVertexBuffer::FreeBufferObject()
     }
 
 #ifdef ANDROID
+    for (auto & syncObject : syncObjects) {
+        if ( syncObject ) {
+            glDeleteSync( syncObject );
+            syncObject = nullptr;
+        }
+    }
     if ( apiObjects[1] != 0xFFFF ) {
         glDeleteBuffers( RING_BUFFER_SIZE, apiObjects );
     } else {
@@ -281,7 +288,19 @@ void* idVertexBuffer::MapBuffer( bufferMapType_t mapType )
     {
 #ifdef ANDROID
         if ( mapType == BM_WRITE && apiObjects[1] != 0xFFFF ) {
+            if ( syncObjects[ringIndex] ) {
+                glDeleteSync( syncObjects[ringIndex] );
+            }
+            syncObjects[ringIndex] = glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
+
             ringIndex = (ringIndex + 1) % RING_BUFFER_SIZE;
+
+            if ( syncObjects[ringIndex] ) {
+                glClientWaitSync( syncObjects[ringIndex], GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED );
+                glDeleteSync( syncObjects[ringIndex] );
+                syncObjects[ringIndex] = nullptr;
+            }
+
             apiObject = apiObjects[ringIndex];
         }
 #endif
@@ -391,6 +410,7 @@ void idVertexBuffer::ClearWithoutFreeing()
 #ifdef ANDROID
     for ( int i = 0; i < RING_BUFFER_SIZE; i++ ) {
         apiObjects[i] = 0xFFFF;
+        syncObjects[i] = nullptr;
     }
     ringIndex = 0;
 #endif
@@ -417,6 +437,7 @@ idIndexBuffer::idIndexBuffer()
 #ifdef ANDROID
     for ( int i = 0; i < RING_BUFFER_SIZE; i++ ) {
         apiObjects[i] = 0xFFFF;
+        syncObjects[i] = nullptr;
     }
     ringIndex = 0;
 #endif
@@ -461,11 +482,11 @@ bool idIndexBuffer::AllocBufferObject( const void* data, int allocSize, bufferUs
 #else
         if ( usage == BU_DYNAMIC ) {
             glGenBuffers(RING_BUFFER_SIZE, apiObjects);
-            for ( int i = 0; i < RING_BUFFER_SIZE; i++ ) {
-                if ( apiObjects[i] == 0xFFFF || apiObjects[i] == 0 ) {
+            for (unsigned int apiObject : apiObjects) {
+                if ( apiObject == 0xFFFF || apiObject == 0 ) {
                     idLib::FatalError("idIndexBuffer::AllocBufferObject: failed generating ring buffer");
                 }
-                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObjects[i]);
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
                 glBufferData(GL_ELEMENT_ARRAY_BUFFER, numBytes, NULL, GL_STREAM_DRAW);
             }
             ringIndex = 0;
@@ -545,6 +566,12 @@ void idIndexBuffer::FreeBufferObject()
     }
 
 #ifdef ANDROID
+    for (auto & syncObject : syncObjects) {
+        if ( syncObject ) {
+            glDeleteSync( syncObject );
+            syncObject = nullptr;
+        }
+    }
     if ( apiObjects[1] != 0xFFFF ) {
         glDeleteBuffers( RING_BUFFER_SIZE, apiObjects );
     } else {
@@ -613,7 +640,19 @@ void* idIndexBuffer::MapBuffer( bufferMapType_t mapType )
     {
 #ifdef ANDROID
         if ( mapType == BM_WRITE && apiObjects[1] != 0xFFFF ) {
+            if ( syncObjects[ringIndex] ) {
+                glDeleteSync( syncObjects[ringIndex] );
+            }
+            syncObjects[ringIndex] = glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
+
             ringIndex = (ringIndex + 1) % RING_BUFFER_SIZE;
+
+            if ( syncObjects[ringIndex] ) {
+                glClientWaitSync( syncObjects[ringIndex], GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED );
+                glDeleteSync( syncObjects[ringIndex] );
+                syncObjects[ringIndex] = nullptr;
+            }
+
             apiObject = apiObjects[ringIndex];
         }
 #endif
@@ -722,6 +761,7 @@ void idIndexBuffer::ClearWithoutFreeing()
 #ifdef ANDROID
     for ( int i = 0; i < RING_BUFFER_SIZE; i++ ) {
         apiObjects[i] = 0xFFFF;
+        syncObjects[i] = nullptr;
     }
     ringIndex = 0;
 #endif
@@ -748,6 +788,7 @@ idUniformBuffer::idUniformBuffer()
 #ifdef ANDROID
     for ( int i = 0; i < RING_BUFFER_SIZE; i++ ) {
         apiObjects[i] = 0xFFFF;
+        syncObjects[i] = nullptr;
     }
     ringIndex = 0;
 #endif
@@ -788,11 +829,11 @@ bool idUniformBuffer::AllocBufferObject( const void* data, int allocSize, buffer
 #else
         if ( usage == BU_DYNAMIC ) {
             glGenBuffers(RING_BUFFER_SIZE, apiObjects);
-            for ( int i = 0; i < RING_BUFFER_SIZE; i++ ) {
-                if ( apiObjects[i] == 0xFFFF || apiObjects[i] == 0 ) {
+            for (unsigned int apiObject : apiObjects) {
+                if ( apiObject == 0xFFFF || apiObject == 0 ) {
                     idLib::FatalError("idUniformBuffer::AllocBufferObject: failed generating ring buffer");
                 }
-                glBindBuffer(GL_UNIFORM_BUFFER, apiObjects[i]);
+                glBindBuffer(GL_UNIFORM_BUFFER, apiObject);
                 glBufferData(GL_UNIFORM_BUFFER, numBytes, NULL, GL_STREAM_DRAW);
             }
             ringIndex = 0;
@@ -867,6 +908,12 @@ void idUniformBuffer::FreeBufferObject()
     }
 
 #ifdef ANDROID
+    for (auto & syncObject : syncObjects) {
+        if ( syncObject ) {
+            glDeleteSync( syncObject );
+            syncObject = nullptr;
+        }
+    }
     if ( apiObjects[1] != 0xFFFF ) {
         glDeleteBuffers( RING_BUFFER_SIZE, apiObjects );
     } else {
@@ -938,7 +985,19 @@ void* idUniformBuffer::MapBuffer( bufferMapType_t mapType )
     {
 #ifdef ANDROID
         if ( apiObjects[1] != 0xFFFF ) {
+            if ( syncObjects[ringIndex] ) {
+                glDeleteSync( syncObjects[ringIndex] );
+            }
+            syncObjects[ringIndex] = glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
+
             ringIndex = (ringIndex + 1) % RING_BUFFER_SIZE;
+
+            if ( syncObjects[ringIndex] ) {
+                glClientWaitSync( syncObjects[ringIndex], GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED );
+                glDeleteSync( syncObjects[ringIndex] );
+                syncObjects[ringIndex] = nullptr;
+            }
+
             apiObject = apiObjects[ringIndex];
         }
 #endif
@@ -1025,6 +1084,7 @@ void idUniformBuffer::ClearWithoutFreeing()
 #ifdef ANDROID
     for ( int i = 0; i < RING_BUFFER_SIZE; i++ ) {
         apiObjects[i] = 0xFFFF;
+        syncObjects[i] = nullptr;
     }
     ringIndex = 0;
 #endif

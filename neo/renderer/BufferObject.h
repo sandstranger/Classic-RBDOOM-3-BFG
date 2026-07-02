@@ -92,7 +92,12 @@ protected:
 #endif
 #else
     // GL
-    GLintptr			apiObject;
+#ifdef ANDROID
+    #define RING_BUFFER_SIZE 4
+    GLuint              apiObjects[RING_BUFFER_SIZE];
+    int                 ringIndex;
+#endif
+    GLuint			apiObject;
     void* 				buffer;
 #endif
 

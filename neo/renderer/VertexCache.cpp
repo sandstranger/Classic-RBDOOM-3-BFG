@@ -500,16 +500,36 @@ void idVertexCache::BeginBackEnd()
 	
 	// prepare the next frame for writing to by the CPU
 	currentFrame++;
-	
 	listNum = currentFrame % NUM_FRAME_DATA;
-	const int startMap = Sys_Milliseconds();
-	MapGeoBufferSet( frameData[ listNum ] );
-	const int endMap = Sys_Milliseconds();
-	if( endMap - startMap > 1 )
-	{
-		idLib::PrintfIf( r_showVertexCacheTimings.GetBool(), "idVertexCache::map took %i msec\n", endMap - startMap );
-	}
-	
-	ClearGeoBufferSet( frameData[ listNum ] );
+	if ( ( currentFrame & VERTCACHE_FRAME_MASK ) == 0 && currentFrame > 0 )
+    {
+        if ( glConfig.syncAvailable )
+        {
+            GLsync sync = glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
+            GLenum result = glClientWaitSync( sync, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL );
+            glDeleteSync( sync );
+            if ( result == GL_TIMEOUT_EXPIRED || result == GL_WAIT_FAILED )
+            {
+                glFinish();
+            }
+        }
+        for ( int i = 0; i < NUM_FRAME_DATA; i++ )
+        {
+            ClearGeoBufferSet( frameData[i] );
+        }
+        MapGeoBufferSet( frameData[ listNum ] );
+    }
+    else
+    {
+        const int startMap = Sys_Milliseconds();
+        MapGeoBufferSet( frameData[ listNum ] );
+        const int endMap = Sys_Milliseconds();
+        if ( endMap - startMap > 1 )
+        {
+            idLib::PrintfIf( r_showVertexCacheTimings.GetBool(), "idVertexCache::map took %i msec\n", endMap - startMap );
+        }
+    }
+
+    ClearGeoBufferSet( frameData[ listNum ] );
 }
 

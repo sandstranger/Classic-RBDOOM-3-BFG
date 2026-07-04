@@ -73,6 +73,7 @@ idCVar r_showGLExt("r_showGLExt", "0", CVAR_RENDERER | CVAR_BOOL, "Shows the Ope
 //GK: End
 
 extern idCVar r_oldGLSLVersion;
+extern idCVar r_motionBlur;
 void GLimp_SwapBuffers();
 void RB_SetMVP( const idRenderMatrix& mvp );
 
@@ -1784,6 +1785,7 @@ void idRenderBackend::CheckCVars()
 #else
 	r_fullscreen.SetInteger( 1 );
 	r_useSSAO.SetInteger(0);
+	r_motionBlur.SetInteger(0);
 	com_engineHz.SetInteger(r_displayRefresh.GetInteger());
 #endif
 	// RB end

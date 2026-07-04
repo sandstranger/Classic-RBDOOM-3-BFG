@@ -591,9 +591,11 @@ void idMenuScreen_Shell_SystemOptions::idMenuDataSource_SystemSettings::AdjustFi
 		}
 		case SYSTEM_FIELD_MOTIONBLUR:
 		{
+#ifndef ANDROID			
 			static const int numValues = 5;
 			static const int values[numValues] = { 0, 2, 3, 4, 5 };
 			r_motionBlur.SetInteger( AdjustOption( r_motionBlur.GetInteger(), values, numValues, adjustAmount ) );
+#endif			
 			break;
 		}
 		// RB begin

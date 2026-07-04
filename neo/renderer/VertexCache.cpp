@@ -503,12 +503,6 @@ void idVertexCache::BeginBackEnd()
 	listNum = currentFrame % NUM_FRAME_DATA;
 	if ( ( currentFrame & VERTCACHE_FRAME_MASK ) == 0 && currentFrame > 0 )
     {
-        if ( glConfig.syncAvailable )
-        {
-            GLsync sync = glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
-            GLenum result = glClientWaitSync( sync, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL );
-            glDeleteSync( sync );
-        }
         for ( int i = 0; i < NUM_FRAME_DATA; i++ )
         {
             ClearGeoBufferSet( frameData[i] );

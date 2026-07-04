@@ -508,10 +508,6 @@ void idVertexCache::BeginBackEnd()
             GLsync sync = glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
             GLenum result = glClientWaitSync( sync, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL );
             glDeleteSync( sync );
-            if ( result == GL_TIMEOUT_EXPIRED || result == GL_WAIT_FAILED )
-            {
-                glFinish();
-            }
         }
         for ( int i = 0; i < NUM_FRAME_DATA; i++ )
         {

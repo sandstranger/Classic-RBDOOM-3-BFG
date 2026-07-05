@@ -10534,9 +10534,9 @@ float idPlayer::DefaultFov() const
     {
         return 86.0f;
     }
-    else if( fov > 120.0f )
+    else if( fov > 100.0f )
     {
-        return 120.0f;
+        return 100.0f;
     }
 	return fov;
 }
@@ -10726,8 +10726,13 @@ void idPlayer::CalculateViewWeaponPos( idVec3& origin, idMat3& axis )
 		const idDeclEntityDef* classicPitchDef = game->FindEntityDef("classic_pitch_angle", false);
 		classicPitch = classicPitchDef->dict.GetFloat(weap, 0.0);
 	}
-	// these cvars are just for hand tweaking before moving a value to the weapon def
-	idVec3	gunpos( g_gun_x.GetFloat() + vmfov, g_gun_y.GetFloat() + classicYOffs, g_gun_z.GetFloat() );
+    static const float MIN_FOV = 80.0f;
+    static const float MAX_FOV = 100.0f;
+    static const float MIN_FOV_GUN = 3.0f;
+    static const float MAX_FOV_GUN = 0.0f;
+    const float currentFovValue = g_fov.GetFloat();
+    const float gun_x = Lerp( MIN_FOV_GUN, MAX_FOV_GUN,( currentFovValue - MIN_FOV ) / ( MAX_FOV - MIN_FOV ) );
+    idVec3	gunpos( gun_x + vmfov, g_gun_y.GetFloat() + classicYOffs, g_gun_z.GetFloat() );
 	
 	// as the player changes direction, the gun will take a small lag
 	idVec3	gunOfs = GunAcceleratingOffset();

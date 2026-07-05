@@ -31,8 +31,8 @@ If you have questions concerning this license or the applicable additional terms
 
 const static int NUM_GAME_OPTIONS_OPTIONS = 8;
 
-const float MIN_FOV = 86.0f;
-const float MAX_FOV = 120.0f;
+const float MIN_FOV = 80.0f;
+const float MAX_FOV = 100.0f;
 
 const float MIN_FOV_GUN = 3.0f;
 const float MAX_FOV_GUN = 0.0f;
@@ -381,7 +381,7 @@ void idMenuScreen_Shell_GameOptions::idMenuDataSource_GameSettings::AdjustField(
 	const int sprintValues[3] = { 0, 1, 2 };
 	switch (fieldIndex) {
 		case GAME_FIELD_FOV:
-			fields[fieldIndex].SetInteger(idMath::ClampInt(MIN_FOV, MAX_FOV, fields[fieldIndex].ToInteger() + adjustAmount));
+			fields[fieldIndex].SetInteger(idMath::ClampInt(86, MAX_FOV, fields[fieldIndex].ToInteger() + adjustAmount));
 			break;
 		case GAME_FIELD_ALWAYS_SPRINT:
 			fields[fieldIndex].SetInteger(AdjustOption(fields[fieldIndex].ToInteger(), sprintValues, 3, adjustAmount));

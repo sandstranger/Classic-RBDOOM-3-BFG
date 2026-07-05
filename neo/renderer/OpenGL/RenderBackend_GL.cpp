@@ -74,6 +74,7 @@ idCVar r_showGLExt("r_showGLExt", "0", CVAR_RENDERER | CVAR_BOOL, "Shows the Ope
 
 extern idCVar r_oldGLSLVersion;
 extern idCVar r_motionBlur;
+extern idCVar g_fov;
 void GLimp_SwapBuffers();
 void RB_SetMVP( const idRenderMatrix& mvp );
 

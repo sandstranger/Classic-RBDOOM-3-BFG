@@ -10530,18 +10530,14 @@ float idPlayer::DefaultFov() const
 	float fov;
 	
 	fov = g_fov.GetFloat();
-	if( common->IsMultiplayer() )
-	{
-		if( fov < 80.0f )
-		{
-			return 80.0f;
-		}
-		else if( fov > 120.0f )
-		{
-			return 120.0f;
-		}
-	}
-	
+    if( fov < 86.0f )
+    {
+        return 86.0f;
+    }
+    else if( fov > 120.0f )
+    {
+        return 120.0f;
+    }
 	return fov;
 }
 

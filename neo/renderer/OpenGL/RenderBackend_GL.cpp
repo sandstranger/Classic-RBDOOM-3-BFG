@@ -1787,6 +1787,12 @@ void idRenderBackend::CheckCVars()
 	r_useSSAO.SetInteger(0);
 	r_motionBlur.SetInteger(0);
 	com_engineHz.SetInteger(r_displayRefresh.GetInteger());
+    static const float targetFovValue = 86.0f;
+    const auto currentFovValue = g_fov.GetFloat();
+
+    if (currentFovValue < targetFovValue){
+        g_fov.SetFloat(targetFovValue);
+    }
 #endif
 	// RB end
 }

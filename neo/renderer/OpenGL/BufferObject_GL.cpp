@@ -288,17 +288,29 @@ void* idVertexBuffer::MapBuffer( bufferMapType_t mapType )
     {
 #ifdef ANDROID
         if ( mapType == BM_WRITE && apiObjects[1] != 0xFFFF ) {
-            if ( syncObjects[ringIndex] ) {
-                glDeleteSync( syncObjects[ringIndex] );
+            if (syncObjects[ringIndex])
+            {
+                glDeleteSync(syncObjects[ringIndex]);
+                syncObjects[ringIndex] = nullptr;
             }
-            syncObjects[ringIndex] = glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
+
+            syncObjects[ringIndex] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE,0);
 
             ringIndex = (ringIndex + 1) % RING_BUFFER_SIZE;
-
-            if ( syncObjects[ringIndex] ) {
-                glClientWaitSync( syncObjects[ringIndex], GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED );
-                glDeleteSync( syncObjects[ringIndex] );
-                syncObjects[ringIndex] = nullptr;
+            if (syncObjects[ringIndex])
+            {
+                GLenum status = glClientWaitSync(syncObjects[ringIndex],0,0);
+                if (status == GL_ALREADY_SIGNALED || status == GL_CONDITION_SATISFIED)
+                {
+                    glDeleteSync(syncObjects[ringIndex]);
+                    syncObjects[ringIndex] = nullptr;
+                }
+                else
+                {
+                    status = glClientWaitSync(syncObjects[ringIndex],GL_SYNC_FLUSH_COMMANDS_BIT,GL_TIMEOUT_IGNORED);
+                    glDeleteSync(syncObjects[ringIndex]);
+                    syncObjects[ringIndex] = nullptr;
+                }
             }
 
             apiObject = apiObjects[ringIndex];
@@ -640,17 +652,29 @@ void* idIndexBuffer::MapBuffer( bufferMapType_t mapType )
     {
 #ifdef ANDROID
         if ( mapType == BM_WRITE && apiObjects[1] != 0xFFFF ) {
-            if ( syncObjects[ringIndex] ) {
-                glDeleteSync( syncObjects[ringIndex] );
-            }
-            syncObjects[ringIndex] = glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
-
-            ringIndex = (ringIndex + 1) % RING_BUFFER_SIZE;
-
-            if ( syncObjects[ringIndex] ) {
-                glClientWaitSync( syncObjects[ringIndex], GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED );
-                glDeleteSync( syncObjects[ringIndex] );
+            if (syncObjects[ringIndex])
+            {
+                glDeleteSync(syncObjects[ringIndex]);
                 syncObjects[ringIndex] = nullptr;
+            }
+
+            syncObjects[ringIndex] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE,0);
+            ringIndex = (ringIndex + 1) % RING_BUFFER_SIZE;
+            if (syncObjects[ringIndex])
+            {
+                GLenum status = glClientWaitSync(syncObjects[ringIndex],0,0);
+
+                if (status == GL_ALREADY_SIGNALED || status == GL_CONDITION_SATISFIED)
+                {
+                    glDeleteSync(syncObjects[ringIndex]);
+                    syncObjects[ringIndex] = nullptr;
+                }
+                else
+                {
+                    status = glClientWaitSync(syncObjects[ringIndex],GL_SYNC_FLUSH_COMMANDS_BIT,GL_TIMEOUT_IGNORED);
+                    glDeleteSync(syncObjects[ringIndex]);
+                    syncObjects[ringIndex] = nullptr;
+                }
             }
 
             apiObject = apiObjects[ringIndex];
@@ -985,17 +1009,28 @@ void* idUniformBuffer::MapBuffer( bufferMapType_t mapType )
     {
 #ifdef ANDROID
         if ( apiObjects[1] != 0xFFFF ) {
-            if ( syncObjects[ringIndex] ) {
-                glDeleteSync( syncObjects[ringIndex] );
-            }
-            syncObjects[ringIndex] = glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
-
-            ringIndex = (ringIndex + 1) % RING_BUFFER_SIZE;
-
-            if ( syncObjects[ringIndex] ) {
-                glClientWaitSync( syncObjects[ringIndex], GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED );
-                glDeleteSync( syncObjects[ringIndex] );
+            if (syncObjects[ringIndex])
+            {
+                glDeleteSync(syncObjects[ringIndex]);
                 syncObjects[ringIndex] = nullptr;
+            }
+
+            syncObjects[ringIndex] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE,0);
+            ringIndex = (ringIndex + 1) % RING_BUFFER_SIZE;
+            if (syncObjects[ringIndex])
+            {
+                GLenum status = glClientWaitSync(syncObjects[ringIndex],0,0);
+                if (status == GL_ALREADY_SIGNALED || status == GL_CONDITION_SATISFIED)
+                {
+                    glDeleteSync(syncObjects[ringIndex]);
+                    syncObjects[ringIndex] = nullptr;
+                }
+                else
+                {
+                    status = glClientWaitSync(syncObjects[ringIndex],GL_SYNC_FLUSH_COMMANDS_BIT,GL_TIMEOUT_IGNORED);
+                    glDeleteSync(syncObjects[ringIndex]);
+                    syncObjects[ringIndex] = nullptr;
+                }
             }
 
             apiObject = apiObjects[ringIndex];

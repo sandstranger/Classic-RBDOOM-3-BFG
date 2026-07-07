@@ -1867,8 +1867,10 @@ void idCommonLocal::Init( int argc, const char* const* argv, const char* cmdline
 		Printf( "--- Common Initialization Complete ---\n" );
 		
 		idLib::Printf( "QA Timing IIS: %06dms\n", Sys_Milliseconds() );
-		extern void Sys_ClearEvents();
+#ifdef ANDROID
 		Sys_ClearEvents();
+		ReconnectGamepads();
+#endif
 	}
 	catch( idException& )
 	{

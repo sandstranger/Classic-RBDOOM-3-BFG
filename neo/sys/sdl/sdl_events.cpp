@@ -125,10 +125,6 @@ int			eventTail = 0;
 #include "sdl2_scancode_mappings.h"
 #include <map>
 
-#if ANDROID
-static void ReconnectGamepads();
-#endif
-
 static int SDLScanCodeToKeyNum( SDL_Scancode sc )
 {
     int idx = int( sc );
@@ -773,6 +769,7 @@ void Sys_ClearEvents()
     kbd_polls.SetNum(0);
     mouse_polls.SetNum(0);
     memset( &joystick_polls, 0, sizeof(joystick_polls) );
+    memset( &current, 0, sizeof(current) );
     uniStr[0] = 0;
     uniStrPos = 0;
     uniChar = 0;
@@ -1008,7 +1005,7 @@ static void CloseGamepads(){
 	}
 }
 
-static void ReconnectGamepads() {
+void ReconnectGamepads() {
     SDL_UpdateGamepads();
     reverseControllerMap.clear();
     if (virtualControllerIndex != -1) {

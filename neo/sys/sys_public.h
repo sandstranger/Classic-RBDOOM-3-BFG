@@ -601,6 +601,9 @@ void			Sys_DLL_Unload( intptr_t dllHandle );
 void			Sys_GenerateEvents();
 sysEvent_t		Sys_GetEvent();
 void			Sys_ClearEvents();
+#ifdef ANDROID
+void 			ReconnectGamepads();
+#endif
 
 // input is tied to windows, so it needs to be started up and shut down whenever
 // the main window is recreated

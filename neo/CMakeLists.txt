@@ -179,7 +179,7 @@ if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
 		add_definitions(-march=native)
 	endif()
 
-	add_compile_options(-fno-strict-aliasing)
+	add_compile_options(-ffast-math -fomit-frame-pointer -fno-strict-aliasing)
 	
 	set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -D_DEBUG -Og -rdynamic -ggdb -fno-strict-aliasing ${my_warn_flags}")
 	#set(CMAKE_C_FLAGS_DEBUGALL "${CMAKE_C_FLAGS_DEBUGALL} -g -ggdb -D_DEBUG -fno-strict-aliasing ${my_warn_flags}")
@@ -188,16 +188,13 @@ if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
 	set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -g -rdynamic -O3 -DID_RETAIL -DALLOW_DEV -D_GLDEBUG -DNDEBUG -DXR_DEBUG -ffast-math -fno-unsafe-math-optimizations -fomit-frame-pointer -fno-strict-aliasing -Werror -Wno-error=invalid-pch -Wno-error=invalid-offsetof ${my_warn_flags}")
 	#set(CMAKE_C_FLAGS_MINSIZEREL "${CMAKE_C_FLAGS_MINSIZEREL} -Os -ffast-math -fno-unsafe-math-optimizations -fomit-frame-pointer -fno-strict-aliasing ${my_warn_flags}")
 	set(CMAKE_C_FLAGS_RETAIL "${CMAKE_C_FLAGS_RETAIL} -s -O3 -DID_RETAIL -DNDEBUG -ffast-math -fno-strict-aliasing -Werror -Wno-error=invalid-pch -Wno-error=invalid-offsetof ${my_warn_flags}" CACHE STRING "" FORCE)
-	
-	
 
-	
 	set(CMAKE_CXX_FLAGS_DEBUG ${CMAKE_C_FLAGS_DEBUG})
 	#set(CMAKE_CXX_FLAGS_DEBUGALL ${CMAKE_C_FLAGS_DEBUGALL})
 	#set(CMAKE_CXX_FLAGS_PROFILE ${CMAKE_C_FLAGS_PROFILE})
 	set(CMAKE_CXX_FLAGS_RELEASE ${CMAKE_C_FLAGS_RELEASE})
 	set(CMAKE_CXX_FLAGS_RELWITHDEBINFO ${CMAKE_C_FLAGS_RELWITHDEBINFO})
-	set(CMAKE_CXX_FLAGS_MINSIZEREL ${CMAKE_C_FLAGS_MINSIZEREL})
+#	set(CMAKE_CXX_FLAGS_MINSIZEREL ${CMAKE_C_FLAGS_MINSIZEREL})
 	set(CMAKE_CXX_FLAGS_RETAIL ${CMAKE_C_FLAGS_RETAIL} CACHE STRING "" FORCE)
 	
 	SET( CMAKE_EXE_LINKER_FLAGS_RETAIL "" CACHE STRING "" FORCE)

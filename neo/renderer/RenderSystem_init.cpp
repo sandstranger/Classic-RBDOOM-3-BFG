@@ -931,21 +931,39 @@ void R_ReadTiledPixels( int width, int height, byte* buffer, renderView_t* ref =
 			
 			glReadBuffer( GL_BACK );
 #ifdef ANDROID //karin: glReadPixels only support GL_RGBAxxx on OpenGLES
-			byte *tmpbuf = (byte *) R_StaticAlloc(w * h * 4);
-			glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, tmpbuf);
-			const int tmpsize = sysWidth * sysHeight;
+            byte *tmpbuf = (byte *) R_StaticAlloc(w * h * 4);
+            glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, tmpbuf);
+            const int tmpsize = sysWidth * sysHeight;
+            int rowtmp = w * 4;
+            const int neonIterations = w / 16;
+            const int remainder = w % 16;
 
-			int rowtmp = w * 4;
+            for (int _y = 0; _y < h; _y++) {
+                byte *from = tmpbuf + _y * rowtmp;
+                byte *to = buffer + ((yo + _y) * width + xo) * 3;
 
-			for (int _y = 0; _y < h; _y++) {
-				byte *from = tmpbuf + _y * rowtmp;
-				byte *to = buffer + ((yo + _y) * width + xo) * 3;
+                for (int i = 0; i < neonIterations; ++i) {
+                    uint8x16x4_t rgba = vld4q_u8(from);
+                    uint8x16x3_t rgb;
+                    rgb.val[0] = rgba.val[0];
+                    rgb.val[1] = rgba.val[1]; 
+                    rgb.val[2] = rgba.val[2];
 
-				for (int _x = 0; _x < w; _x++) {
-					memcpy(to + _x * 3, from + _x * 4, 3);
-				}
-			}
-			R_StaticFree(tmpbuf);
+                    vst3q_u8(to, rgb);
+                    from += 64;
+                    to += 48; 
+                }
+
+                for (int i = 0; i < remainder; ++i) {
+                    to[0] = from[0];
+                    to[1] = from[1];
+                    to[2] = from[2];
+                    
+                    from += 4;
+                    to += 3;
+                }
+            }
+            R_StaticFree(tmpbuf);
 #else
 			glReadPixels( 0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, temp );
 

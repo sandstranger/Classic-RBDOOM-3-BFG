@@ -179,7 +179,7 @@ if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
 		add_definitions(-march=native)
 	endif()
 
-	add_compile_options(-ffast-math -fomit-frame-pointer -fno-strict-aliasing -ffunction-sections -fdata-sections)
+	add_compile_options(-ffast-math -fomit-frame-pointer -fno-strict-aliasing -ffunction-sections -fdata-sections -ffp-contract=fast)
 	add_link_options(-Wl,--gc-sections)
 	set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -D_DEBUG -Og -rdynamic -ggdb -fno-strict-aliasing ${my_warn_flags}")
 	#set(CMAKE_C_FLAGS_DEBUGALL "${CMAKE_C_FLAGS_DEBUGALL} -g -ggdb -D_DEBUG -fno-strict-aliasing ${my_warn_flags}")

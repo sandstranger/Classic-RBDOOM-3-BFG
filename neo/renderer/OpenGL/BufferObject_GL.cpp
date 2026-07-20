@@ -145,9 +145,11 @@ bool idVertexBuffer::AllocBufferObject( const void* data, int allocSize, bufferU
             if (apiObject == 0xFFFF || apiObject == 0) {
                 idLib::FatalError("idVertexBuffer::AllocBufferObject: failed");
             }
+            for(GLuint &apiObject : apiObjects)
+            {
+                apiObject = 0xFFFF;
+            }
             apiObjects[0] = apiObject;
-            apiObjects[1] = 0xFFFF;
-            apiObjects[2] = 0xFFFF;
             ringIndex = 0;
             glBindBuffer(GL_ARRAY_BUFFER, apiObject);
             glBufferData(GL_ARRAY_BUFFER, numBytes, NULL, bufferUsage);
@@ -496,9 +498,11 @@ bool idIndexBuffer::AllocBufferObject( const void* data, int allocSize, bufferUs
             if (apiObject == 0xFFFF || apiObject == 0) {
                 idLib::FatalError("idIndexBuffer::AllocBufferObject: failed");
             }
+            for(GLuint &apiObject : apiObjects)
+            {
+                apiObject = 0xFFFF;
+            }
             apiObjects[0] = apiObject;
-            apiObjects[1] = 0xFFFF;
-            apiObjects[2] = 0xFFFF;
             ringIndex = 0;
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, apiObject);
             glBufferData(GL_ELEMENT_ARRAY_BUFFER, numBytes, NULL, bufferUsage);
@@ -843,9 +847,11 @@ bool idUniformBuffer::AllocBufferObject( const void* data, int allocSize, buffer
             if (apiObject == 0xFFFF || apiObject == 0) {
                 idLib::FatalError("idUniformBuffer::AllocBufferObject: failed");
             }
+            for(GLuint &apiObject : apiObjects)
+            {
+                apiObject = 0xFFFF;
+            }
             apiObjects[0] = apiObject;
-            apiObjects[1] = 0xFFFF;
-            apiObjects[2] = 0xFFFF;
             ringIndex = 0;
             glBindBuffer(GL_UNIFORM_BUFFER, apiObject);
             glBufferData(GL_UNIFORM_BUFFER, numBytes, NULL, GL_STREAM_DRAW);

@@ -1000,9 +1000,13 @@ void idRenderBackend::GL_StartFrame()
 {
 	if (gEnableGLSynchronization && glConfig.syncAvailable && glIsSync(renderSync[swapIndex]))
 	{
-		glWaitSync(renderSync[swapIndex], 0, GL_TIMEOUT_IGNORED);
+		GLenum status = glClientWaitSync(renderSync[swapIndex], 0, 50000000);
+		while (status == GL_TIMEOUT_EXPIRED)
+		{
+			status = glClientWaitSync(renderSync[swapIndex], 0, 16000000);
+		}
 		glDeleteSync(renderSync[swapIndex]);
-		renderSync[swapIndex] = 0;
+		renderSync[swapIndex] = nullptr;
 	}
 
 	// If we have a stereo pixel format, this will draw to both

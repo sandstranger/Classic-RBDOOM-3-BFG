@@ -288,14 +288,15 @@ void* idVertexBuffer::MapBuffer( bufferMapType_t mapType )
     {
 #ifdef ANDROID
         if ( mapType == BM_WRITE && apiObjects[1] != 0xFFFF ) {
-            if (syncObjects[ringIndex])
+            const auto glSync = syncObjects[ringIndex];
+            if (glSync != nullptr)
             {
-                GLenum status = glClientWaitSync(syncObjects[ringIndex], 0, 50000000);
+                GLenum status = glClientWaitSync(glSync, 0, 50000000);
                 while (status == GL_TIMEOUT_EXPIRED)
                 {
-                    status = glClientWaitSync(syncObjects[ringIndex], 0, 16000000);
+                    status = glClientWaitSync(glSync, 0, 16000000);
                 }
-                glDeleteSync(syncObjects[ringIndex]);
+                glDeleteSync(glSync);
                 syncObjects[ringIndex] = nullptr;
             }
             apiObject = apiObjects[ringIndex];
@@ -639,14 +640,15 @@ void* idIndexBuffer::MapBuffer( bufferMapType_t mapType )
     {
 #ifdef ANDROID
         if ( mapType == BM_WRITE && apiObjects[1] != 0xFFFF ) {
-            if (syncObjects[ringIndex])
+            const auto glSync = syncObjects[ringIndex];
+            if (glSync != nullptr)
             {
-                GLenum status = glClientWaitSync(syncObjects[ringIndex], 0, 50000000);
+                GLenum status = glClientWaitSync(glSync, 0, 50000000);
                 while (status == GL_TIMEOUT_EXPIRED)
                 {
-                    status = glClientWaitSync(syncObjects[ringIndex], 0, 16000000);
+                    status = glClientWaitSync(glSync, 0, 16000000);
                 }
-                glDeleteSync(syncObjects[ringIndex]);
+                glDeleteSync(glSync);
                 syncObjects[ringIndex] = nullptr;
             }
             apiObject = apiObjects[ringIndex];
@@ -983,14 +985,15 @@ void* idUniformBuffer::MapBuffer( bufferMapType_t mapType )
     {
 #ifdef ANDROID
         if ( apiObjects[1] != 0xFFFF ) {
-            if (syncObjects[ringIndex])
+            const auto glSync = syncObjects[ringIndex];
+            if (glSync != nullptr)
             {
-                GLenum status = glClientWaitSync(syncObjects[ringIndex], 0, 50000000);
+                GLenum status = glClientWaitSync(glSync, 0, 50000000);
                 while (status == GL_TIMEOUT_EXPIRED)
                 {
-                    status = glClientWaitSync(syncObjects[ringIndex], 0, 16000000);
+                    status = glClientWaitSync(glSync, 0, 16000000);
                 }
-                glDeleteSync(syncObjects[ringIndex]);
+                glDeleteSync(glSync);
                 syncObjects[ringIndex] = nullptr;
             }
             apiObject = apiObjects[ringIndex];

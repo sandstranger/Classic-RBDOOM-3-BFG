@@ -89,7 +89,6 @@ void idGLFrameFenceRing::EndFrame() {
     }
 
     fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-    glFlush();
     ++frameIndex;
 }
 

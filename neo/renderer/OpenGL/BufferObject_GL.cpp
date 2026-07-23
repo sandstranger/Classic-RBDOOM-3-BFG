@@ -113,20 +113,6 @@ bool idGLBufferRing::Create(GLenum target, GLsizeiptr size, bool persistent) {
         glBindBuffer(target_, buffers[i]);
 
         if (canPersist) {
-
-            GLbitfield coherentFlags = GL_MAP_WRITE_BIT |
-                                       GL_MAP_PERSISTENT_BIT_EXT |
-                                       GL_MAP_COHERENT_BIT_EXT;
-            glBufferStorageEXT(target_, size_, nullptr, coherentFlags);
-            mapped[i] = glMapBufferRange(target_, 0, size_, coherentFlags);
-
-            if (mapped[i] != nullptr) {
-
-                persistent_ = true;
-                coherent_ = true;
-                continue;
-            }
-
             glBindBuffer(target_, buffers[i]);
             glUnmapBuffer(target_);
             glDeleteBuffers(1, &buffers[i]);
@@ -145,8 +131,7 @@ bool idGLBufferRing::Create(GLenum target, GLsizeiptr size, bool persistent) {
                 coherent_ = false;
                 continue;
             }
-
-
+            
             glDeleteBuffers(1, &buffers[i]);
             glGenBuffers(1, &buffers[i]);
             glBindBuffer(target_, buffers[i]);

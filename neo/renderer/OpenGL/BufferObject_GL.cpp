@@ -172,8 +172,8 @@ void* idGLBufferRing::MapForWrite(int slot) {
     }
 
     glBindBuffer(target_, buffers[slot]);
-    return glMapBufferRange(target_, 0, size_,
-                            GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+    glBufferData(target_, size_, nullptr, GL_STREAM_DRAW);
+    return glMapBufferRange(target_, 0, size_,GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
 }
 
 void idGLBufferRing::Unmap(int slot) {
@@ -369,8 +369,8 @@ void* idVertexBuffer::MapBuffer(bufferMapType_t mapType) {
 #endif
         } else if (mapType == BM_WRITE) {
 #ifdef ANDROID
-            buffer = glMapBufferRange(GL_ARRAY_BUFFER, 0, GetAllocedSize(),
-                                      GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+            glBufferData(GL_ARRAY_BUFFER, GetAllocedSize(), nullptr, GL_STREAM_DRAW);
+            buffer = glMapBufferRange(GL_ARRAY_BUFFER, 0, GetAllocedSize(),GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT );
 #else
             buffer = glMapBufferRange(GL_ARRAY_BUFFER, 0, GetAllocedSize(),
                 GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
@@ -617,8 +617,8 @@ void* idIndexBuffer::MapBuffer(bufferMapType_t mapType) {
                                       GL_MAP_READ_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
         } else if (mapType == BM_WRITE) {
 #ifdef ANDROID
-            buffer = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, 0, GetAllocedSize(),
-                                      GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, GetAllocedSize(), nullptr, GL_STREAM_DRAW);
+            buffer = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, 0, GetAllocedSize(), GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
 #else
             buffer = glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, 0, GetAllocedSize(),
                 GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
@@ -863,8 +863,8 @@ void* idUniformBuffer::MapBuffer(bufferMapType_t mapType) {
         assert(GetOffset() == 0);
 
 #ifdef ANDROID
-        buffer = glMapBufferRange(GL_UNIFORM_BUFFER, 0, GetAllocedSize(),
-                                  GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+        glBufferData(GL_UNIFORM_BUFFER, GetAllocedSize(), nullptr, GL_STREAM_DRAW);
+        buffer = glMapBufferRange(GL_UNIFORM_BUFFER, 0, GetAllocedSize(),GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
 #else
         buffer = glMapBufferRange(GL_UNIFORM_BUFFER, 0, GetAllocedSize(),
             GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);

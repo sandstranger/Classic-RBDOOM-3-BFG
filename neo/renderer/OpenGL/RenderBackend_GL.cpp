@@ -2184,7 +2184,7 @@ void idRenderBackend::GL_BlockingSwapBuffers()
 		int nextIndex = swapIndex ^ 1;
 		if (glIsSync(renderSync[nextIndex])) {
 			glDeleteSync(renderSync[nextIndex]);
-			renderSync[nextIndex] = 0;
+			renderSync[nextIndex] = nullptr;
 		}
 
 		renderSync[nextIndex] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);

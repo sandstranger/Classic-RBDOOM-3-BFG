@@ -1,6 +1,5 @@
 /*
 ===========================================================================
-
 Doom 3 BFG Edition GPL Source Code
 Copyright (C) 1993-2012 id Software LLC, a ZeniMax Media company.
 Copyright (C) 2016-2017 Dustin Land
@@ -32,170 +31,208 @@ If you have questions concerning this license or the applicable additional terms
 #if defined( USE_VULKAN )
 #include "Vulkan/Allocator_VK.h"
 #endif
+#include <cstdint>
+#define RING_BUFFER_SIZE 4
 
 enum bufferMapType_t
 {
-    BM_READ,			// map for reading
-    BM_WRITE			// map for writing
+    BM_READ,
+    BM_WRITE
 };
 
 enum bufferUsageType_t
 {
-    BU_STATIC,			// GPU R
-    BU_DYNAMIC,			// GPU R, CPU R/W
+    BU_STATIC,
+    BU_DYNAMIC
 };
 
-// Returns all targets to virtual memory use instead of buffer object use.
-void UnbindBufferObjects();
-bool IsWriteCombined( void* base );
-void CopyBuffer( byte* dst, const byte* src, int numBytes );
+class idGLBufferRing;
+class idGLFrameFenceRing;
+extern idGLFrameFenceRing g_frameFences;
 
-/*
-================================================================================================
-idBufferObject
-================================================================================================
-*/
+class idGLFrameFenceRing {
+public:
+    static constexpr int SLOT_COUNT = RING_BUFFER_SIZE;
+    static constexpr GLuint64 WAIT_TIMEOUT_NS = 16'666'666;
+    static constexpr GLuint64 EMERGENCY_TIMEOUT_NS = 50'000'000;
+
+    idGLFrameFenceRing() = default;
+    ~idGLFrameFenceRing() { Shutdown(); }
+
+    void Shutdown();
+    int  CurrentSlot() const;
+    void BeginFrame();
+    void EndFrame();
+
+private:
+    GLsync fences[SLOT_COUNT]{};
+    uint64_t frameIndex = 0;
+};
+
+class idGLBufferRing {
+public:
+    static constexpr int SLOT_COUNT = RING_BUFFER_SIZE;
+
+    idGLBufferRing() = default;
+    ~idGLBufferRing() { Destroy(); }
+
+    bool Create(GLenum target, GLsizeiptr size, bool persistent);
+    void Destroy();
+
+    GLuint Buffer(int slot) const;
+    void*  MapForWrite(int slot);
+    void   Unmap(int slot);
+
+private:
+    GLenum      target_ = GL_ARRAY_BUFFER;
+    GLsizeiptr  size_ = 0;
+    bool        persistent_ = false;
+    bool coherent_ = false;
+    GLuint      buffers[SLOT_COUNT]{};
+    void*       mapped[SLOT_COUNT]{};
+};
+
+void UnbindBufferObjects();
+bool IsWriteCombined(void* base);
+void CopyBuffer(byte* dst, const byte* src, int numBytes);
+bool R_HasBufferStorage();
+
 class idBufferObject
 {
 public:
     idBufferObject();
 
-    int					GetSize() const { return ( size & ~MAPPED_FLAG ); }
-    int					GetAllocedSize() const { return ( ( size & ~MAPPED_FLAG ) + 15 ) & ~15; }
-    bufferUsageType_t	GetUsage() const { return usage; }
+    int                 GetSize() const { return (size & ~MAPPED_FLAG); }
+    int                 GetAllocedSize() const { return ((size & ~MAPPED_FLAG) + 15) & ~15; }
+    bufferUsageType_t   GetUsage() const { return usage; }
 #if defined( USE_VULKAN )
-    VkBuffer			GetAPIObject() const { return apiObject; }
+    VkBuffer            GetAPIObject() const { return apiObject; }
 #else
-    GLintptr			GetAPIObject() const { return apiObject; }
+    GLuint              GetAPIObject() const { return apiObject; }
 #endif
-    int					GetOffset() const { return ( offsetInOtherBuffer & ~OWNS_BUFFER_FLAG ); }
+    int                 GetOffset() const { return (offsetInOtherBuffer & ~OWNS_BUFFER_FLAG); }
 
-    bool				IsMapped() const { return ( size & MAPPED_FLAG ) != 0; }
-
-protected:
-    void				SetMapped() const { const_cast< int& >( size ) |= MAPPED_FLAG; }
-    void				SetUnmapped() const { const_cast< int& >( size ) &= ~MAPPED_FLAG; }
-    bool				OwnsBuffer() const { return ( ( offsetInOtherBuffer & OWNS_BUFFER_FLAG ) != 0 ); }
+    bool                IsMapped() const { return (size & MAPPED_FLAG) != 0; }
+    bool                IsRingBuffer() const { return isRingBuffer_; }
 
 protected:
-    int					size;					// size in bytes
-    int					offsetInOtherBuffer;	// offset in bytes
-    bufferUsageType_t	usage;
+    void                SetMapped() const { const_cast<int&>(size) |= MAPPED_FLAG; }
+    void                SetUnmapped() const { const_cast<int&>(size) &= ~MAPPED_FLAG; }
+    bool                OwnsBuffer() const { return ((offsetInOtherBuffer & OWNS_BUFFER_FLAG) != 0); }
+
+protected:
+    int                 size;
+    int                 offsetInOtherBuffer;
+    bufferUsageType_t   usage;
 
 #if defined( USE_VULKAN )
-    VkBuffer			apiObject;
+    VkBuffer            apiObject;
 #if defined( USE_AMD_ALLOCATOR )
-	VmaAllocation		vmaAllocation;
-	VmaAllocationInfo	allocation;
+    VmaAllocation       vmaAllocation;
+    VmaAllocationInfo   allocation;
 #else
-	vulkanAllocation_t	allocation;
+    vulkanAllocation_t  allocation;
 #endif
 #else
-    // GL
+
+    GLuint              apiObject;
+    void*               buffer;
+
 #ifdef ANDROID
-    #define RING_BUFFER_SIZE 4
-    GLuint              apiObjects[RING_BUFFER_SIZE];
-    GLsync              syncObjects[RING_BUFFER_SIZE];
-    int                 ringIndex;
+    bool                isRingBuffer_;
+    int                 currentSlot_;
 #endif
-    GLuint			apiObject;
-    void* 				buffer;
 #endif
 
-    static const int	MAPPED_FLAG			= 1 << ( 4 * 8 - 1 );
-    static const int	OWNS_BUFFER_FLAG	= 1 << ( 4 * 8 - 1 );
+    static const int    MAPPED_FLAG         = 1 << (4 * 8 - 1);
+    static const int    OWNS_BUFFER_FLAG    = 1 << (4 * 8 - 1);
 };
 
-/*
-================================================================================================
-idVertexBuffer
-================================================================================================
-*/
 class idVertexBuffer : public idBufferObject
 {
 public:
     idVertexBuffer();
     ~idVertexBuffer();
 
-    bool				AllocBufferObject( const void* data, int allocSize, bufferUsageType_t usage );
-    void				FreeBufferObject();
+    bool                AllocBufferObject(const void* data, int allocSize, bufferUsageType_t usage);
+    void                FreeBufferObject();
 
-    void				Reference( const idVertexBuffer& other );
-    void				Reference( const idVertexBuffer& other, int refOffset, int refSize );
+    void                Reference(const idVertexBuffer& other);
+    void                Reference(const idVertexBuffer& other, int refOffset, int refSize);
 
-    void				Update( const void* data, int size, int offset = 0 ) const;
+    void                Update(const void* data, int size, int offset = 0) const;
 
-    void* 				MapBuffer( bufferMapType_t mapType );
-    idDrawVert* 		MapVertexBuffer( bufferMapType_t mapType )
-    {
-        return static_cast< idDrawVert* >( MapBuffer( mapType ) );
+    void*               MapBuffer(bufferMapType_t mapType);
+    idDrawVert*         MapVertexBuffer(bufferMapType_t mapType) {
+        return static_cast<idDrawVert*>(MapBuffer(mapType));
     }
-    void				UnmapBuffer();
+    void                UnmapBuffer();
 
 private:
-    void				ClearWithoutFreeing();
+    void                ClearWithoutFreeing();
 
-DISALLOW_COPY_AND_ASSIGN( idVertexBuffer );
+#ifdef ANDROID
+    idGLBufferRing      ring_;
+#endif
+
+DISALLOW_COPY_AND_ASSIGN(idVertexBuffer);
 };
 
-/*
-================================================================================================
-idIndexBuffer
-================================================================================================
-*/
 class idIndexBuffer : public idBufferObject
 {
 public:
     idIndexBuffer();
     ~idIndexBuffer();
 
-    bool				AllocBufferObject( const void* data, int allocSize, bufferUsageType_t usage );
-    void				FreeBufferObject();
+    bool                AllocBufferObject(const void* data, int allocSize, bufferUsageType_t usage);
+    void                FreeBufferObject();
 
-    void				Reference( const idIndexBuffer& other );
-    void				Reference( const idIndexBuffer& other, int refOffset, int refSize );
+    void                Reference(const idIndexBuffer& other);
+    void                Reference(const idIndexBuffer& other, int refOffset, int refSize);
 
-    void				Update( const void* data, int size, int offset = 0 ) const;
+    void                Update(const void* data, int size, int offset = 0) const;
 
-    void* 				MapBuffer( bufferMapType_t mapType );
-    triIndex_t* 		MapIndexBuffer( bufferMapType_t mapType )
-    {
-        return static_cast< triIndex_t* >( MapBuffer( mapType ) );
+    void*               MapBuffer(bufferMapType_t mapType);
+    triIndex_t*         MapIndexBuffer(bufferMapType_t mapType) {
+        return static_cast<triIndex_t*>(MapBuffer(mapType));
     }
-    void				UnmapBuffer();
+    void                UnmapBuffer();
 
 private:
-    void				ClearWithoutFreeing();
+    void                ClearWithoutFreeing();
 
-DISALLOW_COPY_AND_ASSIGN( idIndexBuffer );
+#ifdef ANDROID
+    idGLBufferRing      ring_;
+#endif
+
+DISALLOW_COPY_AND_ASSIGN(idIndexBuffer);
 };
 
-/*
-================================================================================================
-idUniformBuffer
-================================================================================================
-*/
 class idUniformBuffer : public idBufferObject
 {
 public:
     idUniformBuffer();
     ~idUniformBuffer();
 
-    bool				AllocBufferObject( const void* data, int allocSize, bufferUsageType_t usage );
-    void				FreeBufferObject();
+    bool                AllocBufferObject(const void* data, int allocSize, bufferUsageType_t usage);
+    void                FreeBufferObject();
 
-    void				Reference( const idUniformBuffer& other );
-    void				Reference( const idUniformBuffer& other, int refOffset, int refSize );
+    void                Reference(const idUniformBuffer& other);
+    void                Reference(const idUniformBuffer& other, int refOffset, int refSize);
 
-    void				Update( const void* data, int size, int offset = 0 ) const;
+    void                Update(const void* data, int size, int offset = 0) const;
 
-    void* 				MapBuffer( bufferMapType_t mapType );
-    void				UnmapBuffer();
+    void*               MapBuffer(bufferMapType_t mapType);
+    void                UnmapBuffer();
 
 private:
-    void				ClearWithoutFreeing();
+    void                ClearWithoutFreeing();
 
-DISALLOW_COPY_AND_ASSIGN( idUniformBuffer );
+#ifdef ANDROID
+    idGLBufferRing      ring_;
+#endif
+
+DISALLOW_COPY_AND_ASSIGN(idUniformBuffer);
 };
 
-#endif // !__BUFFEROBJECT_H__
+#endif

@@ -1000,12 +1000,12 @@ void idRenderBackend::GL_StartFrame()
 {
 	if (gEnableGLSynchronization && glConfig.syncAvailable && glIsSync(renderSync[swapIndex]))
 	{
-		GLenum status = glClientWaitSync(renderSync[swapIndex], 0, 50000000);
-		while (status == GL_TIMEOUT_EXPIRED)
-		{
-			status = glClientWaitSync(renderSync[swapIndex], 0, 16000000);
+		const auto glSync = renderSync[swapIndex];
+		const auto status = glClientWaitSync(glSync, 0, 1000 * 1000 * 16);
+		if (status == GL_TIMEOUT_EXPIRED) {
+			glClientWaitSync(glSync, 0, 1000 * 1000 * 50);
 		}
-		glDeleteSync(renderSync[swapIndex]);
+		glDeleteSync(glSync);
 		renderSync[swapIndex] = nullptr;
 	}
 

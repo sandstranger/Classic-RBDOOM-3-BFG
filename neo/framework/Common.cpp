@@ -1436,7 +1436,17 @@ bool idCommonLocal::IsInitialized() const
 
 //======================================================================================
 
+#ifdef ANDROID
+static bool isOnScreenControlsActive = false;
 
+extern "C"{
+__attribute__((used)) __attribute__((visibility("default")))
+void updateOnScreenControlsActiveState (const bool onScreenControlsActive){
+    isOnScreenControlsActive = onScreenControlsActive;
+}
+}
+
+#endif
 /*
 =================
 idCommonLocal::Init
@@ -1868,8 +1878,10 @@ void idCommonLocal::Init( int argc, const char* const* argv, const char* cmdline
 		
 		idLib::Printf( "QA Timing IIS: %06dms\n", Sys_Milliseconds() );
 #ifdef ANDROID
-		Sys_ClearEvents();
-		ReconnectGamepads();
+        Sys_ClearEvents();
+        if (isOnScreenControlsActive) {
+            ReconnectGamepads();
+        }
 #endif
 	}
 	catch( idException& )

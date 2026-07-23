@@ -135,8 +135,12 @@ idBufferObject::idBufferObject()
 #endif
 	
 #else
-	apiObject = -1;
+	apiObject = 0;
 	buffer = NULL;
+#endif
+#ifdef ANDROID
+	isRingBuffer_ = false;
+	currentSlot_ = 0;
 #endif
 }
 

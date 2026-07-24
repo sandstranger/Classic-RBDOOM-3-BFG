@@ -1227,7 +1227,7 @@ static int	threadPacket[256];
 static int	threadCount;
 static int	defaultAvailable;
 
-#if ANDROID
+#ifdef ANDROID
 static int virtualControllerIndex = -1;
 
 static void CloseGamepads(){
@@ -1291,6 +1291,12 @@ void ReconnectGamepads() {
 			}
 		}
 	}
+}
+extern "C"{
+__attribute__((used)) __attribute__((visibility("default")))
+void onVirtualGamepadCreatedNativeEvent(){
+    ReconnectGamepads();
+}
 }
 #endif
 

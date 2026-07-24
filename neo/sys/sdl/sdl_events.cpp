@@ -1229,6 +1229,7 @@ static int	defaultAvailable;
 
 #ifdef ANDROID
 static int virtualControllerIndex = -1;
+static std::mutex gamepadMutex;
 
 static void CloseGamepads(){
 	for (uint32 i = 0; i < MAX_JOYSTICKS; i++) {
@@ -1245,6 +1246,7 @@ static void CloseGamepads(){
 }
 
 void ReconnectGamepads() {
+    std::lock_guard<std::mutex> lock(gamepadMutex);
     SDL_UpdateGamepads();
     reverseControllerMap.clear();
     if (virtualControllerIndex != -1) {
@@ -1253,7 +1255,10 @@ void ReconnectGamepads() {
     }
     int count = 0;
     SDL_JoystickID *controllers = SDL_GetGamepads(&count);
-    for (uint32 i = 0; i < count; i++) {
+    if (controllers == nullptr) {
+        return;
+    }
+    for (int i = 0; i < count; i++) {
         if (SDL_IsJoystickVirtual(controllers[i])) {
             virtualControllerIndex = i;
             break;
@@ -1264,12 +1269,13 @@ void ReconnectGamepads() {
 
     if (virtualControllerIndex != -1) {
         gcontroller[0] = SDL_OpenGamepad(controllers[virtualControllerIndex]);
+        SDL_free(controllers);
         return;
     }
 
 	int emptyControllerId = -1;
 
-	for (uint32 i = 0; i < MAX_JOYSTICKS; i++) {
+	for (int i = 0; i < MAX_JOYSTICKS; i++) {
 		if (gcontroller[i] == nullptr){
 			emptyControllerId = i;
 			break;
@@ -1277,7 +1283,7 @@ void ReconnectGamepads() {
 	}
 
 	if (emptyControllerId!=-1){
-		for (uint32 i = 0; i < count; i++) {
+		for (int i = 0; i < count; i++) {
             const auto controllerId = controllers[i];
             const auto controller = SDL_OpenGamepad(controllerId);
 			if (controller != nullptr){
@@ -1291,6 +1297,7 @@ void ReconnectGamepads() {
 			}
 		}
 	}
+    SDL_free(controllers);
 }
 extern "C"{
 __attribute__((used)) __attribute__((visibility("default")))

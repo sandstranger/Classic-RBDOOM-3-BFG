@@ -46,8 +46,6 @@ If you have questions concerning this license or the applicable additional terms
 #include "../common/localuser.h"
 #include "../../framework/Common.h"
 
-static bool gameStarted = false;
-
 static const int MAX_JOYSTICKS = 4; //GK: This thing still works only on PC right? Apparently no
 
 // DG: those are needed for moving/resizing windows
@@ -459,7 +457,7 @@ extern void SetMute(bool mute);
 #endif
 
 static void ResumeGame(){
-	if (cvarSystem == nullptr || soundSystem == nullptr || !gameStarted){
+	if (cvarSystem == nullptr || soundSystem == nullptr){
 		return;
 	}
 	// unset modifier, in case alt-tab was used to leave window and ALT is still set
@@ -483,7 +481,7 @@ static void ResumeGame(){
 }
 
 static void PauseGame(){
-	if (cvarSystem == nullptr || soundSystem == nullptr || !gameStarted){
+	if (cvarSystem == nullptr || soundSystem == nullptr){
 		return;
 	}
 #if ANDROID
@@ -497,7 +495,6 @@ static void PauseGame(){
 
 void SDL_Poll()
 {
-	gameStarted = true;
 	sysEvent_t res = { };
 	
 	SDL_Event ev;

@@ -45,6 +45,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../posix/posix_public.h"
 #include "../common/localuser.h"
 #include "../../framework/Common.h"
+#include <mutex>
 
 static const int MAX_JOYSTICKS = 4; //GK: This thing still works only on PC right? Apparently no
 

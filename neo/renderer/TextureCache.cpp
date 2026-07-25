@@ -287,6 +287,10 @@ void idTextureCache::SaveToCacheAsync(const char* textureName,
         if (m_entries.find(fileName) != m_entries.end()) return;
     }
 
+    uint8_t* buffer = BufferPool::Instance().Acquire(etc2Size);
+    if (!buffer) return;
+    memcpy(buffer, etc2Data, etc2Size);
+
     CacheWriteJob job;
     job.cachePath = cachePath;
     job.tempPath = cachePath + ".tmp";
@@ -296,8 +300,8 @@ void idTextureCache::SaveToCacheAsync(const char* textureName,
     job.mipCount = mipCount;
     job.format = format;
     job.timestamp = time(nullptr);
-    job.etc2Data.resize(etc2Size);
-    memcpy(job.etc2Data.data(), etc2Data, etc2Size);
+    job.etc2Data = buffer;
+    job.etc2Size = etc2Size;
 
     {
         std::lock_guard<std::mutex> lock(m_queueMutex);
@@ -331,7 +335,10 @@ void idTextureCache::WorkerThreadFunc() {
 
 void idTextureCache::ProcessJob(const CacheWriteJob& job) {
     idFile* file = fileSystem->OpenFileWrite(job.tempPath.c_str());
-    if (!file) return;
+    if (!file) {
+        BufferPool::Instance().Release(job.etc2Data, job.etc2Size);
+        return;
+    }
 
     CacheHeader header;
     memcpy(header.magic, CACHE_MAGIC, 4);
@@ -342,14 +349,15 @@ void idTextureCache::ProcessJob(const CacheWriteJob& job) {
     header.mipCount = job.mipCount;
     header.format = job.format;
     header.timestamp = job.timestamp;
-    header.dataSize = (uint32_t)job.etc2Data.size();
+    header.dataSize = (uint32_t)job.etc2Size;
 
     file->Write(&header, sizeof(header));
-    file->Write(job.etc2Data.data(), job.etc2Data.size());
+    file->Write(job.etc2Data, job.etc2Size);
     delete file;
 
     if (rename(job.tempPath.c_str(), job.cachePath.c_str()) != 0) {
         remove(job.tempPath.c_str());
+        BufferPool::Instance().Release(job.etc2Data, job.etc2Size);
         return;
     }
 
@@ -359,7 +367,7 @@ void idTextureCache::ProcessJob(const CacheWriteJob& job) {
         CacheEntry entry;
         entry.filename = job.cachePath;
         entry.hash = job.hash;
-        entry.size = sizeof(CacheHeader) + job.etc2Data.size();
+        entry.size = sizeof(CacheHeader) + job.etc2Size;
         entry.lastAccessTime = job.timestamp;
 
         m_entries[fileName] = entry;
@@ -367,6 +375,8 @@ void idTextureCache::ProcessJob(const CacheWriteJob& job) {
 
         EvictIfNeeded();
     }
+
+    BufferPool::Instance().Release(job.etc2Data, job.etc2Size);
 }
 
 void idTextureCache::EvictIfNeeded() {
@@ -399,28 +409,23 @@ void idTextureCache::EvictIfNeeded() {
 
 bool idTextureCache::TryGetFromRamCache(uint64_t hash, std::vector<uint8_t>& outBuffer, size_t* outSize) {
     size_t dataSize = 0;
-
     {
         std::lock_guard<std::mutex> lock(m_ramCacheMutex);
         auto it = m_ramCacheIndex.find(hash);
         if (it == m_ramCacheIndex.end()) return false;
-        dataSize = it->second->etc2Data.size();
+        dataSize = it->second->etc2Size;
     }
 
-    if (outBuffer.size() < dataSize)
-    {
+    if (outBuffer.size() < dataSize) {
         outBuffer.resize(dataSize);
     }
-
     uint8_t* buffer = outBuffer.data();
     if (!buffer) return false;
 
     {
         std::lock_guard<std::mutex> lock(m_ramCacheMutex);
         auto it = m_ramCacheIndex.find(hash);
-        if (it == m_ramCacheIndex.end()) {
-            return false;
-        }
+        if (it == m_ramCacheIndex.end()) return false;
 
         auto& entry = *it->second;
         m_ramCacheList.splice(m_ramCacheList.begin(), m_ramCacheList, it->second);
@@ -430,7 +435,7 @@ bool idTextureCache::TryGetFromRamCache(uint64_t hash, std::vector<uint8_t>& out
             entry.lastAccessTime = std::chrono::steady_clock::now().time_since_epoch().count();
         }
 
-        memcpy(buffer, entry.etc2Data.data(), dataSize);
+        memcpy(buffer, entry.etc2Data, dataSize);
     }
 
     *outSize = dataSize;
@@ -441,16 +446,23 @@ void idTextureCache::SaveToRamCache(uint64_t hash, const void* etc2Data, size_t 
                                     uint32_t width, uint32_t height, uint32_t format) {
     if (etc2Data == nullptr || etc2Size == 0) return;
 
+    uint8_t* buffer = BufferPool::Instance().Acquire(etc2Size);
+    if (!buffer) return;
+    memcpy(buffer, etc2Data, etc2Size);
+
     std::lock_guard<std::mutex> lock(m_ramCacheMutex);
 
-    if (m_ramCacheIndex.find(hash) != m_ramCacheIndex.end()) return;
+    if (m_ramCacheIndex.find(hash) != m_ramCacheIndex.end()) {
+        BufferPool::Instance().Release(buffer, etc2Size);
+        return;
+    }
 
     m_ramCacheList.emplace_front();
     auto& entry = m_ramCacheList.front();
 
     entry.hash = hash;
-    entry.etc2Data.resize(etc2Size);
-    std::memcpy(entry.etc2Data.data(), etc2Data, etc2Size);
+    entry.etc2Data = buffer;
+    entry.etc2Size = etc2Size;
     entry.width = width;
     entry.height = height;
     entry.format = format;
@@ -473,12 +485,16 @@ void idTextureCache::EvictRamCacheIfNeeded() {
         auto& oldest = m_ramCacheList.back();
         m_ramCacheCurrentSize -= oldest.size;
         m_ramCacheIndex.erase(oldest.hash);
+        BufferPool::Instance().Release(oldest.etc2Data, oldest.etc2Size);
         m_ramCacheList.pop_back();
     }
 }
 
 void idTextureCache::ClearRamCache() {
     std::lock_guard<std::mutex> lock(m_ramCacheMutex);
+    for (auto& entry : m_ramCacheList) {
+        BufferPool::Instance().Release(entry.etc2Data, entry.etc2Size);
+    }
     m_ramCacheList.clear();
     m_ramCacheIndex.clear();
     m_ramCacheCurrentSize = 0;
@@ -494,6 +510,7 @@ void idTextureCache::ForceEvictRamCache(float fraction) {
         auto& oldest = m_ramCacheList.back();
         m_ramCacheCurrentSize -= oldest.size;
         m_ramCacheIndex.erase(oldest.hash);
+        BufferPool::Instance().Release(oldest.etc2Data, oldest.etc2Size);
         m_ramCacheList.pop_back();
     }
 }

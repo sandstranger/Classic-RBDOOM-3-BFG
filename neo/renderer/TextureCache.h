@@ -20,7 +20,7 @@ inline uint64_t FNV1a_Hash(const void* data, size_t size) {
 }
 
 inline uint64_t ComputeTextureHash(const void* dxtData, size_t dxtSize,
-                                    int width, int height, int format) {
+                                   int width, int height, int format) {
     uint64_t h = FNV1a_Hash(dxtData, dxtSize);
     h ^= FNV1a_Hash(&width, sizeof(width));
     h ^= FNV1a_Hash(&height, sizeof(height));
@@ -30,12 +30,13 @@ inline uint64_t ComputeTextureHash(const void* dxtData, size_t dxtSize,
 
 struct RamCacheEntry {
     uint64_t hash;
-    std::vector<uint8_t> etc2Data;
+    uint8_t* etc2Data;          // выделяется через BufferPool
+    size_t etc2Size;            // размер данных
     uint32_t width;
     uint32_t height;
     uint32_t format;
     uint64_t lastAccessTime;
-    size_t size;
+    size_t size;                // дублирует etc2Size, оставлено для совместимости
 };
 
 struct CacheEntry {
@@ -48,7 +49,8 @@ struct CacheEntry {
 struct CacheWriteJob {
     std::string cachePath;
     std::string tempPath;
-    std::vector<uint8_t> etc2Data;
+    uint8_t* etc2Data;          // выделяется через BufferPool
+    size_t etc2Size;            // размер данных
     uint64_t hash;
     uint32_t width;
     uint32_t height;
@@ -80,7 +82,7 @@ public:
     bool TryGetFromRamCache(uint64_t hash,
                             std::vector<uint8_t>& outBuffer, size_t* outSize);
 
-    void SaveToRamCache(uint64_t hash,const void* etc2Data, size_t etc2Size,
+    void SaveToRamCache(uint64_t hash, const void* etc2Data, size_t etc2Size,
                         uint32_t width, uint32_t height, uint32_t format);
     void EvictRamCacheIfNeeded();
     size_t GetRamCacheSize() const { return m_ramCacheCurrentSize; }
@@ -99,12 +101,14 @@ private:
     void WorkerThreadFunc();
     void ProcessJob(const CacheWriteJob& job);
     void EvictIfNeeded();
+
     std::string m_cacheDir;
     size_t m_maxSizeBytes = 0;
     size_t m_currentSizeBytes = 0;
     std::unordered_map<std::string, CacheEntry> m_entries;
     std::mutex m_indexMutex;
     bool m_initialized = false;
+
     std::mutex m_queueMutex;
     std::condition_variable m_queueCV;
     std::queue<CacheWriteJob> m_jobQueue;
@@ -112,6 +116,7 @@ private:
     std::atomic<bool> m_shutdownRequested{false};
     std::atomic<size_t> m_pendingJobs{0};
     std::atomic<size_t> m_maxQueueSize{64};
+
     std::unordered_map<uint64_t, std::list<RamCacheEntry>::iterator> m_ramCacheIndex;
     std::list<RamCacheEntry> m_ramCacheList;
     std::mutex m_ramCacheMutex;

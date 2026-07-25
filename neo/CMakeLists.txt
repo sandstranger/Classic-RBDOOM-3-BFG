@@ -1962,6 +1962,7 @@ if (NOT ANDROID)
 			)
 else()
 		target_link_libraries(DoomBFA
+			${SAFFAL_LIBRARY}
 		    ${AVFORMAT_LIBRARY}
 		    ${AVCODEC_LIBRARY}
 		    ${AVUTIL_LIBRARY}

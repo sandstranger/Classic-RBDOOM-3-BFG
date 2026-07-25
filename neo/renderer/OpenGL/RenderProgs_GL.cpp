@@ -361,6 +361,7 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
     if (!shaderCacheWasInit)
     {
         binaryCache.Init();
+		binaryCache.SetMaxRAMCacheSize(32 * 1024 * 1024);
         shaderCacheWasInit = true;
     }
 
@@ -380,11 +381,8 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
     if ( fragmentShaderIndex != -1 )
         combinedSource += "\n" + fShader.glslSource;
 
-    idStr additional = va( "GL_VERSION:%s", glConfig.version_string);
-    additional += va( "_VS_FEATURES_%x", vShader.shaderFeatures );
-    additional += va( "_FS_FEATURES_%x", fShader.shaderFeatures );
+    idStr additional = "";
 
-    // Создаем программу
     GLuint program = glCreateProgram();
     if ( !program ) {
         idLib::Error( "Failed to create GL program" );

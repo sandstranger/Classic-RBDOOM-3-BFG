@@ -37,8 +37,8 @@ public:
         binarySupported = true;
         idLib::Printf("idShaderBinaryCache: %d program binary formats supported.\n", numBinaryFormats);
 
-        cacheFolder = std::string (SDL_GetAndroidCachePath()) + "/id_tech_4_5_shaders_cache/";
-        fileSystem->CreateOSPath( cacheFolder.c_str() );
+        cacheFolder = std::string(SDL_GetAndroidCachePath()) + "/id_tech_4_5_shaders_cache/";
+        fileSystem->CreateOSPath(cacheFolder.c_str());
 
         stopThread = false;
         saveThread = std::thread(&Impl::SaveWorker, this);
@@ -53,6 +53,7 @@ public:
             }
             saveThread.join();
         }
+        std::lock_guard<std::mutex> lock(ramCacheMutex);
         ramCache.clear();
         lruList.clear();
         currentRAMCacheBytes = 0;
@@ -66,14 +67,20 @@ public:
         std::vector<unsigned char> binaryData;
         GLenum format;
 
-        if (GetFromRAMCache(hash, binaryData, format)) {
-            idLib::Printf("Loading shader binary from RAM cache: %s\n", name.c_str());
+        {
+            std::lock_guard<std::mutex> lock(ramCacheMutex);
+            if (GetFromRAMCacheLocked(hash, binaryData, format)) {
+                idLib::Printf("Loading shader binary from RAM cache: %s\n", name.c_str());
+            }
+        }
+        if (!binaryData.empty()) {
             glProgramBinaryOES(program, format, binaryData.data(), binaryData.size());
             GLint linkStatus;
             glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);
             if (linkStatus == GL_TRUE) return true;
             else {
-                RemoveFromRAMCache(hash);
+                std::lock_guard<std::mutex> lock(ramCacheMutex);
+                RemoveFromRAMCacheLocked(hash);
                 return false;
             }
         }
@@ -84,7 +91,8 @@ public:
             GLint linkStatus;
             glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);
             if (linkStatus == GL_TRUE) {
-                AddToRAMCache(hash, binaryData.data(), binaryData.size(), format, name);
+                std::lock_guard<std::mutex> lock(ramCacheMutex);
+                AddToRAMCacheLocked(hash, binaryData.data(), binaryData.size(), format, name);
                 return true;
             } else {
                 fileSystem->RemoveFile(GetCachePath(hash).c_str());
@@ -112,8 +120,11 @@ public:
         }
 
         std::string hash = ComputeHash(shaderSource, additional);
-        if (ramCache.find(hash) == ramCache.end()) {
-            AddToRAMCache(hash, binaryData.data(), binaryLength, format, name);
+        {
+            std::lock_guard<std::mutex> lock(ramCacheMutex);
+            if (ramCache.find(hash) == ramCache.end()) {
+                AddToRAMCacheLocked(hash, binaryData.data(), binaryLength, format, name);
+            }
         }
 
         SaveTask task{hash, name, std::move(binaryData), format};
@@ -125,7 +136,6 @@ public:
     }
 
     void Clear() {
-
         if (saveThread.joinable()) {
             {
                 std::lock_guard<std::mutex> lock(queueMutex);
@@ -138,14 +148,16 @@ public:
             saveThread = std::thread(&Impl::SaveWorker, this);
         }
 
+        std::lock_guard<std::mutex> lock(ramCacheMutex);
         ramCache.clear();
         lruList.clear();
         currentRAMCacheBytes = 0;
     }
 
     void SetMaxRAMCacheSize(size_t maxBytes) {
+        std::lock_guard<std::mutex> lock(ramCacheMutex);
         maxRAMCacheBytes = maxBytes;
-        if (currentRAMCacheBytes > maxRAMCacheBytes) EvictLRU(0);
+        if (currentRAMCacheBytes > maxRAMCacheBytes) EvictLRULocked(0);
     }
 
 private:
@@ -166,6 +178,8 @@ private:
 
     std::unordered_map<std::string, CachedBinary> ramCache;
     std::list<std::string> lruList;
+    std::mutex ramCacheMutex;
+
     std::vector<SaveTask> saveQueue;
     std::mutex queueMutex;
     std::condition_variable queueCond;
@@ -178,6 +192,57 @@ private:
     GLint numBinaryFormats;
     std::vector<GLenum> supportedFormats;
     std::string cacheFolder;
+
+    bool GetFromRAMCacheLocked(const std::string& hash, std::vector<unsigned char>& outData, GLenum& outFormat) {
+        auto it = ramCache.find(hash);
+        if (it == ramCache.end()) return false;
+        CachedBinary& bin = it->second;
+        bin.lastAccess = time(nullptr);
+        lruList.remove(hash);
+        lruList.push_back(hash);
+        outData = bin.data;
+        outFormat = bin.format;
+        return true;
+    }
+
+    void AddToRAMCacheLocked(const std::string& hash, const unsigned char* data, size_t size, GLenum format, const std::string& name) {
+        if (!binarySupported) return;
+        if (currentRAMCacheBytes + size > maxRAMCacheBytes) EvictLRULocked(size);
+        RemoveFromRAMCacheLocked(hash);
+        CachedBinary bin;
+        bin.data.assign(data, data + size);
+        bin.format = format;
+        bin.size = size;
+        bin.hash = hash;
+        bin.name = name;
+        bin.lastAccess = time(nullptr);
+        ramCache.emplace(hash, std::move(bin));
+        lruList.push_back(hash);
+        currentRAMCacheBytes += size;
+    }
+
+    void RemoveFromRAMCacheLocked(const std::string& hash) {
+        auto it = ramCache.find(hash);
+        if (it != ramCache.end()) {
+            currentRAMCacheBytes -= it->second.size;
+            ramCache.erase(it);
+            lruList.remove(hash);
+        }
+    }
+
+    void EvictLRULocked(size_t neededSpace) {
+        while (currentRAMCacheBytes + neededSpace > maxRAMCacheBytes && !lruList.empty()) {
+            const std::string oldestKey = lruList.front();
+            lruList.pop_front();
+            auto it = ramCache.find(oldestKey);
+            if (it != ramCache.end()) {
+                currentRAMCacheBytes -= it->second.size;
+                idLib::Printf("Evicted shader binary from RAM cache: %s (%zu bytes)\n",
+                              it->second.name.c_str(), it->second.size);
+                ramCache.erase(it);
+            }
+        }
+    }
 
     std::string ComputeHash(const std::string& shaderSource, const std::string& additional) {
         std::string combined = shaderSource + additional;
@@ -222,57 +287,6 @@ private:
         return false;
     }
 
-    void AddToRAMCache(const std::string& hash, const unsigned char* data, size_t size, GLenum format, const std::string& name) {
-        if (!binarySupported) return;
-        if (currentRAMCacheBytes + size > maxRAMCacheBytes) EvictLRU(size);
-        RemoveFromRAMCache(hash);
-        CachedBinary bin;
-        bin.data.assign(data, data + size);
-        bin.format = format;
-        bin.size = size;
-        bin.hash = hash;
-        bin.name = name;
-        bin.lastAccess = time(nullptr);
-        ramCache.emplace(hash, std::move(bin));
-        lruList.push_back(hash);
-        currentRAMCacheBytes += size;
-    }
-
-    bool GetFromRAMCache(const std::string& hash, std::vector<unsigned char>& outData, GLenum& outFormat) {
-        auto it = ramCache.find(hash);
-        if (it == ramCache.end()) return false;
-        CachedBinary& bin = it->second;
-        bin.lastAccess = time(nullptr);
-        lruList.remove(hash);
-        lruList.push_back(hash);
-        outData = bin.data;
-        outFormat = bin.format;
-        return true;
-    }
-
-    void EvictLRU(size_t neededSpace) {
-        while (currentRAMCacheBytes + neededSpace > maxRAMCacheBytes && !lruList.empty()) {
-            const std::string oldestKey = lruList.front();
-            lruList.pop_front();
-            auto it = ramCache.find(oldestKey);
-            if (it != ramCache.end()) {
-                currentRAMCacheBytes -= it->second.size;
-                idLib::Printf("Evicted shader binary from RAM cache: %s (%zu bytes)\n",
-                              it->second.name.c_str(), it->second.size);
-                ramCache.erase(it);
-            }
-        }
-    }
-
-    void RemoveFromRAMCache(const std::string& hash) {
-        auto it = ramCache.find(hash);
-        if (it != ramCache.end()) {
-            currentRAMCacheBytes -= it->second.size;
-            ramCache.erase(it);
-            lruList.remove(hash);
-        }
-    }
-
     void SaveWorker() {
         while (true) {
             SaveTask task;
@@ -294,7 +308,8 @@ private:
 
 idShaderBinaryCache::idShaderBinaryCache() : pImpl(std::make_unique<Impl>()) {}
 idShaderBinaryCache::~idShaderBinaryCache() = default;
-void idShaderBinaryCache::Init() { pImpl->Init(); }
+void idShaderBinaryCache::Init() { pImpl->Init();
+}
 void idShaderBinaryCache::Shutdown() { pImpl->Shutdown(); }
 bool idShaderBinaryCache::LoadBinary(GLuint program, const std::string& shaderSource,
                                      const std::string& name, const std::string& additional) {

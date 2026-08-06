@@ -275,6 +275,9 @@ idParticleStage* idDeclParticle::ParseParticleStage( idLexer& src )
 		if( !token.Icmp( "count" ) )
 		{
 			stage->totalParticles = src.ParseInt();
+#ifdef ANDROID
+			stage->totalParticles = idMath::Ftoi(stage->totalParticles * 0.67f);
+#endif
 			continue;
 		}
 		if( !token.Icmp( "time" ) )
@@ -697,8 +700,13 @@ bool idDeclParticle::LoadBinary( idFile* file, unsigned int checksum )
 		{
 			s->material = declManager->FindMaterial( name );
 		}
-		
+
+#ifndef ANDROID
 		file->ReadBig( s->totalParticles );
+#else
+		file->ReadBig(s->totalParticles);
+		s->totalParticles = idMath::Ftoi(s->totalParticles * 0.67f);
+#endif
 		file->ReadFloat( s->cycles );
 		file->ReadBig( s->cycleMsec );
 		file->ReadFloat( s->spawnBunching );
@@ -1131,6 +1139,9 @@ void idParticleStage::Default()
 {
 	material = declManager->FindMaterial( "_default" );
 	totalParticles = 100;
+#ifdef ANDROID
+	totalParticles = idMath::Ftoi(totalParticles * 0.67f);
+#endif
 	spawnBunching = 1.0f;
 	particleLife = 1.5f;
 	timeOffset = 0.0f;

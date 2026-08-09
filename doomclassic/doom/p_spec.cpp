@@ -432,18 +432,18 @@ P_FindSectorFromLineTag
 ( line_t*	line,
  int		start )
 {
-	start = start >= 0 ? ::g->sectors[start].nexttag :
-		::g->sectors[(unsigned)line->tag % (unsigned)::g->numsectors].firsttag;
-	while (start >= 0 && ::g->sectors[start].tag != line->tag)
-		start = ::g->sectors[start].nexttag;
-	return start;
-	// int	i;
+	//start = start >= 0 ? ::g->sectors[start].nexttag :
+	//	::g->sectors[(unsigned)line->tag % (unsigned)::g->numsectors].firsttag;
+	//while (start >= 0 && ::g->sectors[start].tag != line->tag)
+	//	start = ::g->sectors[start].nexttag;
+	//return start;
+	 int	i;
 
-	// for (i = start+1; i < ::g->numsectors; i++)
-	// 	if (::g->sectors[i].tag == line->tag)
-	// 		return i;
+	 for (i = start+1; i < ::g->numsectors; i++)
+	 	if (::g->sectors[i].tag == line->tag)
+	 		return i;
 
-	// return -1;
+	 return -1;
 }
 
 

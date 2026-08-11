@@ -1436,12 +1436,10 @@ void JoystickSamplingThread(void* data){
 extern "C"{
 __attribute__((used)) __attribute__((visibility("default")))
 void onNativeResume() {
-	ResumeGame();
 }
 
 __attribute__((used)) __attribute__((visibility("default")))
 void onNativePause() {
-	PauseGame();
 }
 
 __attribute__((used)) __attribute__((visibility("default")))
@@ -1453,5 +1451,17 @@ __attribute__((used)) __attribute__((visibility("default")))
 bool needToShowScreenControls() {
     return !needToInvokeMouseButtonsEvents();
 }
+}
+bool AndroidLifeCycleEventFilter(void*, SDL_Event* event){
+	switch (event->type)
+	{
+		case SDL_EVENT_WILL_ENTER_BACKGROUND:
+			PauseGame();
+			break;
+		case SDL_EVENT_DID_ENTER_FOREGROUND:
+			ResumeGame();
+			break;
+	}
+	return true;
 }
 #endif

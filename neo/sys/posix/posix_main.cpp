@@ -950,7 +950,9 @@ void Sys_Init() {
 			common->FatalError( "Error while initializing SDL: %s", SDL_GetError() );
 	}
 
-#if ANDROID
+#ifdef ANDROID
+	extern bool AndroidLifeCycleEventFilter(void*, SDL_Event* event);
+	SDL_AddEventWatch(AndroidLifeCycleEventFilter, nullptr);
     if (SDL_AddGamepadMappingsFromFile(g_pathToSDLControllerDB.c_str()) < 0) {
         SDL_Log("Couldn't load mappings: %s\n", SDL_GetError());
     } else{

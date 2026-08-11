@@ -1452,11 +1452,20 @@ bool needToShowScreenControls() {
     return !needToInvokeMouseButtonsEvents();
 }
 }
+
+extern "C" void ClearRamCache();
+extern "C" void clearBlobShaderCache();
+
 bool AndroidLifeCycleEventFilter(void*, SDL_Event* event){
 	switch (event->type)
 	{
+        case SDL_EVENT_LOW_MEMORY:
+            ClearRamCache();
+            clearBlobShaderCache();
+            break;
 		case SDL_EVENT_WILL_ENTER_BACKGROUND:
 			PauseGame();
+            ClearRamCache();
 			break;
 		case SDL_EVENT_DID_ENTER_FOREGROUND:
 			ResumeGame();

@@ -626,7 +626,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                             static_cast<const uint8_t *>(pic), compressedSize,
                             width, height,
                             GL_COMPRESSED_RGBA8_ETC2_EAC,
-                            mipLevel,
+                            gpuMipLevel,
                             s_etc2CacheBuffer, &cachedSize
                     );
 
@@ -719,7 +719,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                             static_cast<const uint8_t *>(pic), compressedSize,
                             width, height,
                             GL_COMPRESSED_RGBA8_ETC2_EAC,
-                            mipLevel,
+                            gpuMipLevel,
                             etc2Data, etc2CompressedSize
                     );
                 }
@@ -781,7 +781,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                         static_cast<const uint8_t *>(pic), rawSourceSize,
                         width, height,
                         internalFormat,
-                        mipLevel,
+                        gpuMipLevel,
                         s_etc2CacheBuffer, &cachedSize
                 );
 
@@ -842,7 +842,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                         static_cast<const uint8_t *>(pic), rawSourceSize,
                         width, height,
                         internalFormat,
-                        mipLevel,
+                        gpuMipLevel,
                         etc2Data, etc2CompressedSize
                 );
             }

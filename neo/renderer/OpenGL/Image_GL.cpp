@@ -62,8 +62,6 @@ Contains the Image implementation for OpenGL.
 #define GL_TEXTURE_MAX_ANISOTROPY_EXT     0x84FE
 #define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
 #if ANDROID
-#define GL_COMPRESSED_RGBA8_ETC2_EAC_LOCAL    0x9278
-#define GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC_LOCAL 0x9279
 
 #define MIPMAPS_SKIP_LEVEL                1
 static bool g_enableTexturesShrinking = false;
@@ -117,8 +115,8 @@ static inline bool IsForcedEtc2Format(textureFormat_t fmt, textureUsage_t usage,
 }
 
 static inline GLenum GetEtc2InternalFormat(bool isSrgb) {
-    return isSrgb ? GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC_LOCAL
-                  : GL_COMPRESSED_RGBA8_ETC2_EAC_LOCAL;
+    return isSrgb ? GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC
+                  : GL_COMPRESSED_RGBA8_ETC2_EAC;
 }
 
 
@@ -615,7 +613,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 
             if (g_enableTextureCache) {
                 hash = ComputeTextureHash(static_cast<const uint8_t *>(pic), compressedSize, width,
-                                          height, GL_COMPRESSED_RGBA8_ETC2_EAC_LOCAL);
+                                          height, GL_COMPRESSED_RGBA8_ETC2_EAC);
                 std::byte *cachedEtc2 = nullptr;
                 size_t cachedSize = 0;
 
@@ -627,8 +625,8 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                             imgName.c_str(),
                             static_cast<const uint8_t *>(pic), compressedSize,
                             width, height,
-                            GL_COMPRESSED_RGBA8_ETC2_EAC_LOCAL,
-                            1,
+                            GL_COMPRESSED_RGBA8_ETC2_EAC,
+                            mipLevel,
                             s_etc2CacheBuffer, &cachedSize
                     );
 
@@ -636,7 +634,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                         cachedEtc2 = reinterpret_cast<std::byte *>(s_etc2CacheBuffer.data());
                         idTextureCache::Instance().SaveToRamCache(hash, cachedEtc2, cachedSize,
                                                                   width, height,
-                                                                  GL_COMPRESSED_RGBA8_ETC2_EAC_LOCAL);
+                                                                  GL_COMPRESSED_RGBA8_ETC2_EAC);
                     }
                 }
 
@@ -647,7 +645,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 
                     glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
                                               width, height,
-                                              GL_COMPRESSED_RGBA8_ETC2_EAC_LOCAL,
+                                              GL_COMPRESSED_RGBA8_ETC2_EAC,
                                               static_cast<GLsizei>(cachedSize),
                                               cachedEtc2);
                 }
@@ -715,20 +713,20 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                 if (g_enableTextureCache) {
                     idTextureCache::Instance().SaveToRamCache(hash, etc2Data, etc2CompressedSize,
                                                               width, height,
-                                                              GL_COMPRESSED_RGBA8_ETC2_EAC_LOCAL);
+                                                              GL_COMPRESSED_RGBA8_ETC2_EAC);
                     idTextureCache::Instance().SaveToCacheAsync(
                             imgName.c_str(),
                             static_cast<const uint8_t *>(pic), compressedSize,
                             width, height,
-                            GL_COMPRESSED_RGBA8_ETC2_EAC_LOCAL,
-                            1,
+                            GL_COMPRESSED_RGBA8_ETC2_EAC,
+                            mipLevel,
                             etc2Data, etc2CompressedSize
                     );
                 }
 
                 glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
                                           width, height,
-                                          GL_COMPRESSED_RGBA8_ETC2_EAC_LOCAL,
+                                          GL_COMPRESSED_RGBA8_ETC2_EAC,
                                           static_cast<GLsizei>(etc2CompressedSize),
                                           etc2Data);
             }
@@ -783,7 +781,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                         static_cast<const uint8_t *>(pic), rawSourceSize,
                         width, height,
                         internalFormat,
-                        1,
+                        mipLevel,
                         s_etc2CacheBuffer, &cachedSize
                 );
 
@@ -844,7 +842,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                         static_cast<const uint8_t *>(pic), rawSourceSize,
                         width, height,
                         internalFormat,
-                        1,
+                        mipLevel,
                         etc2Data, etc2CompressedSize
                 );
             }
@@ -1457,7 +1455,7 @@ void idImage::AllocImage() {
             internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) ) ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 #else
             internalFormat = !glConfig.textureCompressionAvailable
-                             ? GL_COMPRESSED_RGBA8_ETC2_EAC_LOCAL
+                             ? GL_COMPRESSED_RGBA8_ETC2_EAC
                              : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 #endif
             dataFormat = GL_RGBA;
@@ -1468,7 +1466,7 @@ void idImage::AllocImage() {
             internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) && opts.colorFormat != CFM_YCOCG_DXT5 && opts.colorFormat != CFM_NORMAL_DXT5 ) ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 #else
             internalFormat = !glConfig.textureCompressionAvailable
-                             ? GL_COMPRESSED_RGBA8_ETC2_EAC_LOCAL
+                             ? GL_COMPRESSED_RGBA8_ETC2_EAC
                              : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
 #endif
 
@@ -1672,7 +1670,7 @@ void idImage::AllocImage() {
                                 }
                                 byte *data = s_textureBuffer.data();
                                 glCompressedTexImage2D(uploadTarget + side, level,
-                                                       GL_COMPRESSED_RGBA8_ETC2_EAC_LOCAL, w, h, 0,
+                                                       GL_COMPRESSED_RGBA8_ETC2_EAC, w, h, 0,
                                                        static_cast<GLsizei>(etc2CompressedSize),
                                                        data);
                             } else {

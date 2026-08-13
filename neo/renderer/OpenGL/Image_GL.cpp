@@ -115,7 +115,9 @@ static inline bool IsForcedEtc2Format(textureFormat_t fmt, textureUsage_t usage,
 }
 
 static inline GLenum GetEtc2InternalFormat(bool isSrgb) {
-    return GL_COMPRESSED_RGBA8_ETC2_EAC;
+    return isSrgb
+           ? GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC
+           : GL_COMPRESSED_RGBA8_ETC2_EAC;
 }
 
 
@@ -149,7 +151,7 @@ static inline void ZeroAlphaChannel(uint8_t *dpic, size_t pixelCount) {
 
 static inline void ConvertRawToRgba(const void *src, uint8_t *dst,
                                     GLenum dataFormat, GLenum dataType,
-                                    int width, int height, int pixelPitch, bool isSrgb) {
+                                    int width, int height, int pixelPitch) {
     const int stride = (pixelPitch > 0) ? pixelPitch : width;
     const uint8_t *src8 = static_cast<const uint8_t *>(src);
     const uint16_t *src16 = static_cast<const uint16_t *>(src);
@@ -249,15 +251,6 @@ static inline void ConvertRawToRgba(const void *src, uint8_t *dst,
     } else {
 
         memset(dst, 255, static_cast<size_t>(width) * height * 4);
-    }
-
-    if (isSrgb) {
-        const size_t pixelCount = static_cast<size_t>(width) * height;
-        for (size_t i = 0; i < pixelCount; ++i) {
-            dst[i * 4 + 0] = static_cast<uint8_t>(std::pow(dst[i * 4 + 0] / 255.0f, 2.2f) * 255.0f);
-            dst[i * 4 + 1] = static_cast<uint8_t>(std::pow(dst[i * 4 + 1] / 255.0f, 2.2f) * 255.0f);
-            dst[i * 4 + 2] = static_cast<uint8_t>(std::pow(dst[i * 4 + 2] / 255.0f, 2.2f) * 255.0f);
-        }
     }
 }
 
@@ -818,7 +811,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
             memset(dpic, 0, decodeSize);
 
 
-            ConvertRawToRgba(pic, dpic, dataFormat, dataType, width, height, pixelPitch, true);
+            ConvertRawToRgba(pic, dpic, dataFormat, dataType, width, height, pixelPitch);
 
 
             const size_t pixelCount = etc2Width * etc2Height;
@@ -1389,12 +1382,9 @@ This should not be done during normal game-play, if you can avoid it.
 */
 void idImage::AllocImage() {
     PurgeImage();
-
-    int sRGB = r_useSRGB.GetInteger();
-
 #if ANDROID
     const bool forcedEtc2 = IsForcedEtc2Format(opts.format, usage, opts.isRenderTarget, cubeFiles);
-    const bool isSrgb = (glConfig.sRGBFramebufferAvailable && (sRGB == 1 || sRGB == 3));
+    const bool isSrgb = true;
 #else
     const bool forcedEtc2 = false;
     const bool isSrgb = false;

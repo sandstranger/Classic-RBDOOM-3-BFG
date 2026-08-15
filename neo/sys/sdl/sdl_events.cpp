@@ -1297,12 +1297,6 @@ void ReconnectGamepads() {
 	}
     SDL_free(controllers);
 }
-extern "C"{
-__attribute__((used)) __attribute__((visibility("default")))
-void onVirtualGamepadCreatedNativeEvent(){
-    ReconnectGamepads();
-}
-}
 #endif
 
 void JoystickSamplingThread(void* data){
@@ -1459,6 +1453,13 @@ extern "C" void clearBlobShaderCache();
 bool AndroidLifeCycleEventFilter(void*, SDL_Event* event){
 	switch (event->type)
 	{
+		case SDL_EVENT_JOYSTICK_ADDED:
+		case SDL_EVENT_JOYSTICK_REMOVED:
+		case SDL_EVENT_GAMEPAD_ADDED:
+		case SDL_EVENT_GAMEPAD_REMAPPED:
+		case SDL_EVENT_GAMEPAD_REMOVED:
+			ReconnectGamepads();
+			break;
         case SDL_EVENT_LOW_MEMORY:
             ClearRamCache();
             clearBlobShaderCache();

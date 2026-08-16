@@ -806,15 +806,6 @@ void SDL_Poll()
 			Sys_QueEvent(res.evType, res.evValue, res.evValue2, 0, NULL, 0);
 			break;
 			// GameController
-#if ANDROID
-       case SDL_EVENT_JOYSTICK_ADDED:
-       case SDL_EVENT_JOYSTICK_REMOVED:
-       case SDL_EVENT_GAMEPAD_ADDED:
-       case SDL_EVENT_GAMEPAD_REMAPPED:
-       case SDL_EVENT_GAMEPAD_REMOVED:
-           ReconnectGamepads();
-           break;
-#endif
 		case SDL_EVENT_JOYSTICK_AXIS_MOTION:
 		case SDL_EVENT_JOYSTICK_HAT_MOTION:
 		case SDL_EVENT_JOYSTICK_BUTTON_DOWN:

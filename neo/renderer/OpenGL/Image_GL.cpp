@@ -67,10 +67,11 @@ Contains the Image implementation for OpenGL.
 static bool g_enableTexturesShrinking = false;
 bool g_enableTextureCache = false;
 static std::string g_pathToTextureCacheDir;
-static thread_local std::vector<uint8_t> s_decodeBuffer;
-static thread_local std::vector<uint8_t> s_etc2Buffer;
-static thread_local std::vector<uint8_t> s_textureBuffer;
-static thread_local std::vector<uint8_t> s_etc2CacheBuffer;
+static std::vector<uint8_t> s_decodeBuffer;
+static std::vector<uint8_t> s_etc2Buffer;
+static std::vector<uint8_t> s_etc2CacheBuffer;
+static std::vector<uint8_t> s_textureBuffer;
+static std::mutex imageMutex;
 
 extern "C" {
 __attribute__((used)) __attribute__((visibility("default")))
@@ -528,7 +529,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 
     assert(x >= 0 && y >= 0 && mipLevel >= 0 && width >= 0 && height >= 0 &&
            mipLevel < opts.numLevels);
-
+    std::lock_guard<std::mutex> lock(imageMutex);
     int compressedSize = 0;
     const int gpuMipLevel = mipLevel - mipLevelToSkip;
 
@@ -1382,6 +1383,7 @@ This should not be done during normal game-play, if you can avoid it.
 */
 void idImage::AllocImage() {
     PurgeImage();
+    std::lock_guard<std::mutex> lock(imageMutex);
 #if ANDROID
     const bool forcedEtc2 = IsForcedEtc2Format(opts.format, usage, opts.isRenderTarget, cubeFiles);
     const bool isSrgb = true;
@@ -1627,27 +1629,28 @@ void idImage::AllocImage() {
                 if (h < 1) h = 1;
 
                 for (int level = 0; level < effectiveNumLevels; level++) {
-                    if (IsCompressed()) {
-#if ANDROID
-                        if (forcedEtc2) {
-                            const size_t etc2W = ((static_cast<size_t>(w) + 3) / 4) * 4;
-                            const size_t etc2H = ((static_cast<size_t>(h) + 3) / 4) * 4;
-                            const size_t etc2Blocks = (etc2W / 4) * (etc2H / 4);
-                            const size_t etc2CompressedSize = etc2Blocks * 16;
+#ifdef ANDROID
+                    if (forcedEtc2) {
+                        const size_t etc2W = ((static_cast<size_t>(w) + 3) / 4) * 4;
+                        const size_t etc2H = ((static_cast<size_t>(h) + 3) / 4) * 4;
+                        const size_t etc2Blocks = (etc2W / 4) * (etc2H / 4);
+                        const size_t etc2CompressedSize = etc2Blocks * 16;
 
-                            if (s_textureBuffer.size() < etc2CompressedSize) {
-                                s_textureBuffer.resize(etc2CompressedSize);
-                            }
-                            memset(s_textureBuffer.data(), 0, etc2CompressedSize);
+                        if (s_textureBuffer.size() < etc2CompressedSize) {
+                            s_textureBuffer.resize(etc2CompressedSize);
+                        }
+                        memset(s_textureBuffer.data(), 0, etc2CompressedSize);
 
-                            glCompressedTexImage2D(uploadTarget + side, level, internalFormat,
-                                                   static_cast<GLsizei>(etc2W),
-                                                   static_cast<GLsizei>(etc2H),
-                                                   0,
-                                                   static_cast<GLsizei>(etc2CompressedSize),
-                                                   s_textureBuffer.data());
-                        } else
+                        glCompressedTexImage2D(uploadTarget + side, level, internalFormat,
+                                               static_cast<GLsizei>(etc2W),
+                                               static_cast<GLsizei>(etc2H),
+                                               0,
+                                               static_cast<GLsizei>(etc2CompressedSize),
+                                               s_textureBuffer.data());
+                    } else
 #endif
+
+                    if (IsCompressed()) {
                         {
                             int compressedSize = (((w + 3) / 4) * ((h + 3) / 4) * int64(16) *
                                                   BitsForFormat(opts.format)) / 8;
@@ -1760,6 +1763,7 @@ void idImage::Resize(int width, int height, bool recalculateLevels) {
 }
 
 void ClearTexturesBuffers() {
+    std::lock_guard<std::mutex> lock(imageMutex);
     s_decodeBuffer.resize(0);
     s_etc2Buffer.resize(0);
     s_textureBuffer.resize(0);

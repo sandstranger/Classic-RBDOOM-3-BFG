@@ -506,15 +506,14 @@ void idMenuScreen_Shell_AdvancedGraphics::idMenuDataSource_AdvancedGraphics::Adj
 			};
 #else
 			const int maxSamples = glConfig.maxSupportedSamples;
-			int numValues = 2;
+			int numValues = 1;
 			const int msaaLevels[] = { 2, 4, 8 };
 			for (int lvl : msaaLevels) {
 				if (lvl <= maxSamples) numValues++;
 			}
 			int values[numValues];
 			values[0] = ANTI_ALIASING_NONE;
-			values[1] = ANTI_ALIASING_SMAA_1X;
-			int idx = 2;
+			int idx = 1;
 			for (int lvl : msaaLevels) {
 				if (lvl <= maxSamples) {
 					switch (lvl) {

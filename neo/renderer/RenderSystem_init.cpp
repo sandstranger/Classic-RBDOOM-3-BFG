@@ -931,6 +931,7 @@ void R_ReadTiledPixels( int width, int height, byte* buffer, renderView_t* ref =
 			
 			glReadBuffer( GL_BACK );
 #ifdef ANDROID //karin: glReadPixels only support GL_RGBAxxx on OpenGLES
+#if defined(__aarch64__) || defined(_M_ARM64)
             byte *tmpbuf = (byte *) R_StaticAlloc(w * h * 4);
             glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, tmpbuf);
             const int tmpsize = sysWidth * sysHeight;
@@ -964,6 +965,23 @@ void R_ReadTiledPixels( int width, int height, byte* buffer, renderView_t* ref =
                 }
             }
             R_StaticFree(tmpbuf);
+#else
+            byte *tmpbuf = (byte *) R_StaticAlloc(w * h * 4);
+            glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, tmpbuf);
+            const int tmpsize = sysWidth * sysHeight;
+
+            int rowtmp = w * 4;
+
+            for (int _y = 0; _y < h; _y++) {
+                byte *from = tmpbuf + _y * rowtmp;
+                byte *to = buffer + ((yo + _y) * width + xo) * 3;
+
+                for (int _x = 0; _x < w; _x++) {
+                    memcpy(to + _x * 3, from + _x * 4, 3);
+                }
+            }
+            R_StaticFree(tmpbuf);
+#endif
 #else
 			glReadPixels( 0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, temp );
 

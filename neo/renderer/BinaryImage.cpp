@@ -42,7 +42,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderCommon.h"
 #include "DXT/DXTCodec.h"
 #include "Color/ColorSpace.h"
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64)
 #include <arm_neon.h>
 #include <cstdint>
 #endif
@@ -51,7 +51,7 @@ If you have questions concerning this license or the applicable additional terms
 idCVar image_highQualityCompression( "image_highQualityCompression", "0", CVAR_BOOL, "Use high quality (slow) compression" );
 idCVar r_useHighQualitySky( "r_useHighQualitySky", "0", CVAR_BOOL | CVAR_ARCHIVE, "Use high quality skyboxes" );
 
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64)
 static inline void Decode8Rgb565ToRgba8888_AARCH64( const byte* src, byte* dst )
 {
 	uint8x16_t srcBytes = vld1q_u8( (const uint8_t*)src );
@@ -611,7 +611,7 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile* bFile, ID_TIME_T sourceTimeSt
 			const int pixelCount = img.dataSize / 4;
 			int p = pixelCount;
 
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64)
 			while( p >= 8 )
 			{
 				p -= 8;

@@ -37,10 +37,8 @@ If you have questions concerning this license or the applicable additional terms
 #include "../TextureCache.h"
 
 #endif
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
-
+#if defined(__aarch64__) || defined(_M_ARM64)
 #include "arm_neon.h"
-
 #endif
 
 #pragma hdrstop

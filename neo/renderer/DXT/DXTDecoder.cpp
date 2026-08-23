@@ -34,7 +34,7 @@ Contains the DxtDecoder implementation.
 #pragma hdrstop
 #include "DXTCodec_local.h"
 #include "DXTCodec.h"
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64)
 #include <arm_neon.h>
 #include <cstdint>
 #endif
@@ -43,7 +43,7 @@ Contains the DxtDecoder implementation.
 idDxtDecoder::EmitBlock
 ========================
 */
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64)
 void idDxtDecoder::EmitBlock( byte* outPtr, int x, int y, const byte* colorBlock )
 {
     outPtr += ( y * width + x ) * 4;
@@ -74,7 +74,7 @@ void idDxtDecoder::EmitBlock( byte* outPtr, int x, int y, const byte* colorBlock
 idDxtDecoder::DecodeAlphaValues
 ========================
 */
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64)
 void idDxtDecoder::DecodeAlphaValues( byte* colorBlock, const int offset )
 {
     uint8_t alphas[16] = {0};
@@ -163,7 +163,7 @@ void idDxtDecoder::DecodeAlphaValues( byte* colorBlock, const int offset )
 idDxtDecoder::DecodeColorValues
 ========================
 */
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64)
 void idDxtDecoder::DecodeColorValues( byte* colorBlock, bool noBlack, bool writeAlpha )
 {
     alignas(16) uint8_t colors[16];
@@ -375,7 +375,7 @@ idDxtDecoder::DecompressYCoCgDXT5
 ========================
 */
 
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64)
 void idDxtDecoder::DecompressYCoCgDXT5( const byte* inBuf, byte* outBuf, int _width, int _height )
 {
     DecompressImageDXT5_nVidia7x( inBuf, outBuf, _width, _height );
@@ -475,7 +475,7 @@ void idDxtDecoder::DecompressYCoCgCTX1DXT5A( const byte* inBuf, byte* outBuf, in
 idDxtDecoder::DecodeNormalYValues
 ========================
 */
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64)
 void idDxtDecoder::DecodeNormalYValues( byte* normalBlock, const int offsetY, byte& c0, byte& c1 )
 {
     unsigned short normal0 = ReadUShort();
@@ -600,7 +600,7 @@ void idDxtDecoder::DeriveNormalZValues( byte* normalBlock )
 idDxtDecoder::UnRotateNormals
 ========================
 */
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64)
 void UnRotateNormals( const byte* block, float* normals, byte c0, byte c1 )
 {
     const float angle = -( float( c0 ) / 255.0f ) * idMath::PI;
@@ -763,7 +763,7 @@ void idDxtDecoder::DecompressNormalMapDXT1Renormalize( const byte* inBuf, byte* 
 idDxtDecoder::DecompressNormalMapDXT5Renormalize
 ========================
 */
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64)
 void idDxtDecoder::DecompressNormalMapDXT5Renormalize( const byte* inBuf, byte* outBuf, int _width, int _height )
 {
     byte block[64];
@@ -922,7 +922,7 @@ void BiasScaleNormals( const byte* block, float* normals, const byte c0, const b
 idDxtDecoder::DecompressNormalMapDXT5
 ========================
 */
-#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64)
 void idDxtDecoder::DecompressNormalMapDXT5( const byte* inBuf, byte* outBuf, int _width, int _height ) {
     byte block[64];
     byte c0, c1;

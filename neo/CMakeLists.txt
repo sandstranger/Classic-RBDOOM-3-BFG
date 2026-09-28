@@ -436,7 +436,7 @@ else()
     add_definitions(-DUSE_NEWER_JPEG)
 endif()
 
-if (NOT MSVC OR USE_SDL_WIN32)
+if (NOT MSVC OR USE_SDL_WIN32 AND NOT ANDROID)
 	find_package(SDL3 REQUIRED)
 	include_directories(${SDL3_INCLUDE_DIR})
 	set(SDLx_LIBRARY SDL3::SDL3)

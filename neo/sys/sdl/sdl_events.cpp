@@ -1,4 +1,4 @@
-/*
+﻿/*
 ===========================================================================
 
 Doom 3 GPL Source Code
@@ -30,10 +30,11 @@ If you have questions concerning this license or the applicable additional terms
 ===========================================================================
 */
 
-#include "../../idlib/precompiled.h"
+#include "precompiled.h"
+#pragma hdrstop
 
 // DG: SDL.h somehow needs the following functions, so #undef those silly
-//     "don't use" #defines from Str.h
+//"don't use" #defines from Str.h
 #undef strncmp
 #undef strcasecmp
 #undef vsnprintf
@@ -42,7 +43,11 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "renderer/RenderCommon.h"
 #include "sdl_local.h"
+#ifndef _WIN32
 #include "../posix/posix_public.h"
+#else
+#include "../win32/win_local.h"
+#endif
 #include "../common/localuser.h"
 #include "../../framework/Common.h"
 #include <mutex>
@@ -57,8 +62,9 @@ extern idCVar r_windowHeight;
 extern idCVar com_emergencyexit;
 // DG end
 SDL_Thread* joyThread = nullptr;
-//GK: This function will run as a thread in order to capture when a joystick is connected or disconnected
-void JoystickSamplingThread( void* data );
+//GK: This functions will register any newly connected gamepad and remove any connected one.
+void registerGamePad(SDL_GamepadDeviceEvent event);
+void removeGamePad(SDL_GamepadDeviceEvent event);
 //GK End
 
 const char* kbdNames[] =
@@ -136,7 +142,7 @@ static int numEvents = 0;
 int joyAxis[MAX_JOYSTICKS][6];
 SDL_Joystick* joy = NULL;
 static SDL_Gamepad* gcontroller[MAX_JOYSTICKS] = {NULL}; //GK: Keep the SDL_Controller global in order to free the SDL_Controller when it's get disconnected
-static int registeredControllers = 0;
+static int registeredControllers = -1;
 static bool joyThreadKill = false;
 int SDL_joystick_has_hat = 0;
 bool buttonStates[MAX_JOYSTICKS][K_LAST_KEY];	// For keeping track of button up/down events
@@ -244,7 +250,6 @@ Sys_InitInput
 */
 void Sys_InitInput()
 {
-	int numJoysticks, i;
 	
 	kbd_polls.SetGranularity( 256 );
 	mouse_polls.SetGranularity( 256 );
@@ -258,11 +263,6 @@ void Sys_InitInput()
 	memset( &joystick_polls, 0, sizeof(joystick_polls) );
 	
 	in_keyboard.SetModified();
-#ifndef ANDROID
-	//GK: Insted of initializing only once the joystick run a thread that will allow the dynamic connection/disconnection of it
-	joyThread = SDL_CreateThread((SDL_ThreadFunction)JoystickSamplingThread,"Joystic",NULL);
-#endif
-	//GK:End
 	while(eventHead - eventTail < MAX_QUED_EVENTS) {
 		Sys_GenerateEvents();
 	}
@@ -580,11 +580,17 @@ void SDL_Poll()
 			{
 				int w = ev.window.data1;
 				int h = ev.window.data2;
+#ifdef ANDROID
 				r_windowWidth.SetInteger(w);
 				r_windowHeight.SetInteger(h);
-#if ANDROID
+
 				r_customWidth.SetInteger(w);
 				r_customHeight.SetInteger(h);
+#else
+				if (r_fullscreen.GetInteger() == 0) {
+					r_windowWidth.SetInteger(w);
+					r_windowHeight.SetInteger(h);
+				}
 #endif
 				glConfig.nativeScreenWidth = w;
 				glConfig.nativeScreenHeight = h;
@@ -597,8 +603,10 @@ void SDL_Poll()
 
 				int x = ev.window.data1;
 				int y = ev.window.data2;
-				r_windowX.SetInteger(x);
-				r_windowY.SetInteger(y);
+				if (r_fullscreen.GetInteger() == 0) {
+					r_windowX.SetInteger(x);
+					r_windowY.SetInteger(y);
+				}
 				cmdSystem->BufferCommandText(CMD_EXEC_APPEND, "vid_restart\n");
 				break;
 			}
@@ -644,9 +652,9 @@ void SDL_Poll()
 			// DG: ctrl-g to un-grab mouse - yeah, left ctrl shoots, then just use right ctrl :)
 			if (ev.key.key == SDLK_G && (ev.key.mod & SDL_KMOD_CTRL) > 0)
 			{
-				bool grab = cvarSystem->GetCVarBool("in_nograb");
+				bool grab = SDL_GetWindowMouseGrab(window);
 				grab = !grab;
-				cvarSystem->SetCVarBool("in_nograb", grab);
+				Sys_GrabMouseCursor(grab);
 				continue; // handle next event
 			}
 			// DG end
@@ -654,7 +662,6 @@ void SDL_Poll()
 			// fall through
 		case SDL_EVENT_KEY_UP:
 		{
-			bool isChar;
 
 			// DG: special case for SDL_SCANCODE_GRAVE - the console key under Esc
 			if (ev.key.scancode == SDL_SCANCODE_GRAVE)
@@ -808,10 +815,6 @@ void SDL_Poll()
 		case SDL_EVENT_JOYSTICK_HAT_MOTION:
 		case SDL_EVENT_JOYSTICK_BUTTON_DOWN:
 		case SDL_EVENT_JOYSTICK_BUTTON_UP:
-#ifndef ANDROID
-		case SDL_EVENT_JOYSTICK_ADDED:
-		case SDL_EVENT_JOYSTICK_REMOVED:
-#endif
 		case SDL_EVENT_JOYSTICK_UPDATE_COMPLETE:
 		case SDL_EVENT_GAMEPAD_UPDATE_COMPLETE:
 			// Avoid 'unknown event' spam
@@ -847,27 +850,37 @@ void SDL_Poll()
 		//GK: Steam Deck Hack: For some reason Steam Deck spams these two events
 #ifndef ANDROID
 		case SDL_EVENT_GAMEPAD_ADDED:
+		case SDL_EVENT_JOYSTICK_ADDED: {
+			registerGamePad(ev.gdevice);
+			break;
+		}
+		case SDL_EVENT_GAMEPAD_REMOVED:
+		case SDL_EVENT_JOYSTICK_REMOVED: {
+			removeGamePad(ev.gdevice);
+			break;
+		}
+		//GK: Steam Deck Hack: For some reason Steam Deck spams these two events
 		case SDL_EVENT_GAMEPAD_REMAPPED:
 		case SDL_EVENT_KEYMAP_CHANGED:
 			continue;
 #endif
-			case SDL_EVENT_QUIT:
-				PushConsoleEvent( "quit" );
-				Sys_QueEvent(no_more_events.evType, no_more_events.evValue, no_more_events.evValue2, no_more_events.evPtrLength, no_more_events.evPtr, 0); // don't handle next event, just quit.
-				break;
-			case SDL_EVENT_USER:
-				switch( ev.user.code )
-				{
-					case SE_CONSOLE:
-						Sys_QueEvent(SE_CONSOLE, 0, 0, ( intptr_t )ev.user.data1, ev.user.data2, 0);
-						break;
-					default:
-						common->Warning( "unknown user event %u", ev.user.code );
-				}
-				continue; // just handle next event
-			default:
-				//common->Warning( "unknown event %u", ev.type ); //GK: We don't have to log everything
-				continue; // just handle next event
+		case SDL_EVENT_QUIT:
+			PushConsoleEvent( "quit" );
+			Sys_QueEvent(no_more_events.evType, no_more_events.evValue, no_more_events.evValue2, no_more_events.evPtrLength, no_more_events.evPtr, 0); // don't handle next event, just quit.
+			break;
+		case SDL_EVENT_USER:
+			switch( ev.user.code )
+			{
+				case SE_CONSOLE:
+					Sys_QueEvent(SE_CONSOLE, 0, 0, ( intptr_t )ev.user.data1, ev.user.data2, 0);
+					break;
+				default:
+					common->Warning( "unknown user event %u", ev.user.code );
+			}
+			continue; // just handle next event
+		default:
+			//common->Warning( "unknown event %u", ev.type ); //GK: We don't have to log everything
+			continue; // just handle next event
 		}
 	}
 	Sys_QueEvent(no_more_events.evType, no_more_events.evValue, no_more_events.evValue2, no_more_events.evPtrLength, no_more_events.evPtr, 0);
@@ -921,7 +934,11 @@ Sys_GenerateEvents
 */
 void Sys_GenerateEvents()
 {
+#ifndef _WIN32
 	char* s = Posix_ConsoleInput();
+#else
+	char* s = Sys_ConsoleInput();
+#endif
 	
 	if( s )
 		PushConsoleEvent( s );
@@ -1042,7 +1059,20 @@ void Sys_SetRumble( int device, int low, int hi )
 	//It doesn't affect the game's performance (Remember NO SDL_Delay)
 
 	if (gcontroller[device] != nullptr) {
-		SDL_RumbleGamepad(gcontroller[device], idMath::ClampInt( 0, 65535, low ), idMath::ClampInt( 0, 65535, hi ), 1000);
+		SDL_RumbleGamepad(gcontroller[device], idMath::ClampInt(0, 65535, low), idMath::ClampInt(0, 65535, hi), 1000);
+	}
+}
+
+void Sys_SetRumbleTriggers(int device, int low, int hi)
+{
+	//GK: This is the code for the rumble effect by using the new SDL_RumbleGamepad.
+	//It doesn't affect the game's performance (Remember NO SDL_Delay)
+
+	if (gcontroller[device] != nullptr) {
+		if (!SDL_RumbleGamepadTriggers(gcontroller[device], idMath::ClampInt(0, 65535, low), idMath::ClampInt(0, 65535, hi), 1000)) {
+			//GK: Fallback if the controller doesn't support impulse triggers
+			SDL_RumbleGamepad(gcontroller[device], idMath::ClampInt(0, 65535, low), idMath::ClampInt(0, 65535, hi), 1000);
+		}
 	}
 }
 
@@ -1207,13 +1237,6 @@ bool Sys_hasConnectedController() {
 	return hasConnected;
 }
 
-//GK: This is the controller state detection thread. It can check whenever a controller is connected or not.
-//Most of the console outputs have been disabled since this thread runs from the begining of the game and never stops.
-static int	threadTimeDeltas[256];
-static int	threadPacket[256];
-static int	threadCount;
-static int	defaultAvailable;
-
 #ifdef ANDROID
 static int virtualControllerIndex = -1;
 static std::mutex gamepadMutex;
@@ -1288,134 +1311,8 @@ void ReconnectGamepads() {
 }
 #endif
 
-void JoystickSamplingThread(void* data){
 
-	static int prevTime = 0;
-#if ANDROID
-	static int virtualControllerIndex = -1;
-#endif
-	static uint64 nextCheck[MAX_JOYSTICKS] = { 0 };
-	const uint64 waitTime = 5000;// 000; // poll every 5 seconds to see if a controller was connected
-	while(1){
-		if (joyThreadKill) {
-			for(int i = 0; i < MAX_JOYSTICKS; i++) {
-				if(gcontroller[i]){
-					SDL_CloseGamepad(gcontroller[i]);
-				}
-				gcontroller[i]=NULL;
-			}
-			break;
-		}
-		int	now = Sys_Microseconds();
-		int	delta;
-		if( prevTime == 0 )
-		{
-			delta = 4000;
-		}
-		else
-		{
-			delta = now - prevTime;
-		}
-		prevTime = now;
-		threadTimeDeltas[threadCount & 255] = delta;
-		threadCount++;
-		if(now>=nextCheck[0]){ //GK: Similar to the windows thread
-	SDL_Gamepad* controller = NULL;
-	int inactive = 0;
-	int available = -1;
-	bool alreadyConnected = false;
-	int count = 0;
-	SDL_JoystickID* controllers = SDL_GetGamepads(&count);
-	SDL_free(controllers);
-	controllers = SDL_GetGamepads(&count); //SDL 3 Weird quirk. It needs to query joystick twice in order to work
-	if (count == 0) {
-		reverseControllerMap.clear();
-		count = 4; //GK: Clean time
-	}
-
-#if ANDROID
-	if (virtualControllerIndex == -1) {
-		for (uint32 i = 0; i < count; i++) {
-			if (SDL_IsJoystickVirtual(controllers[i])) {
-				virtualControllerIndex = i;
-				break;
-			}
-		}
-
-		if (virtualControllerIndex != -1) {
-			for (uint32 i = 0; i < count; i++) {
-				if (gcontroller[i]!= nullptr){
-					SDL_CloseGamepad( gcontroller[i] );
-					gcontroller[i] = nullptr;
-				}
-			}
-			gcontroller[0] = SDL_OpenGamepad(controllers[virtualControllerIndex]);
-		}
-
-        if (virtualControllerIndex != -1){
-            SDL_free(controllers);
-            return;
-        }
-	}
-#endif
-
-	for( uint32 i = 0; i < count; i++ )
-	{
-		if( SDL_IsGamepad( controllers[i] ) )
-		{
-			if (!gcontroller[i]) {
-				controller = SDL_OpenGamepad( controllers[i] );
-				if( controller )
-				{
-					if (available < 0) {
-						available = i;
-					}
-					reverseControllerMap.insert(std::make_pair(controllers[i], i));
-					nextCheck[0]=0; //GK: Like the Windows thread constantly checking for the controller state once it's connected
-//					idLib::Printf("Controller Connected: %s\n", SDL_GetGamepadName(controller));
-					gcontroller[i]=controller;					
-				} else {
-//					common->Warning("Error Initializing controller: %s\n", SDL_GetError());
-				}
-			} else {
-				alreadyConnected = true;
-				continue;
-				//common->Printf( "GameController %i name: %s\n", i, SDL_GameControllerName( controller ) );
-				//common->Printf( "GameController %i is mapped as \"%s\".\n", i, SDL_GameControllerMapping( controller ) );
-			}
-		}else{
-			inactive++;
-					if(gcontroller[i]){
-						SDL_CloseGamepad(gcontroller[i]);
-					}
-					gcontroller[i]=NULL;
-					nextCheck[0] = now + waitTime;
-					continue;
-		}
-	}
-	SDL_free(controllers);
-	if (!alreadyConnected) {
-		//GK: Enable controller layout if there is one controller connected
-		registeredControllers = 4-inactive;
-		if (registeredControllers > 0) {
-			if (session->GetSignInManager().GetMasterLocalUser() != NULL) {
-				idLocalUserWin* user = dynamic_cast<idLocalUserWin*>(session->GetSignInManager().GetMasterLocalUser());
-				user->SetInputDevice(available);
-			}
-			else {
-				defaultAvailable = available;
-			}
-		}
-	}
-	/*idLib::joystick = inactive >= 4 ? false : true;*/
-		}else{
-			continue;
-		}
-		SDL_Delay(10);
-	}
-}
-
-#if ANDROID
+#ifdef ANDROID
 extern "C"{
 __attribute__((used)) __attribute__((visibility("default")))
 void onNativeResume() {
@@ -1464,3 +1361,45 @@ bool AndroidLifeCycleEventFilter(void*, SDL_Event* event){
 	return true;
 }
 #endif
+
+void registerGamePad(SDL_GamepadDeviceEvent event) {
+	SDL_Gamepad* controller = NULL;
+	//GK: Avoid duplicate events.
+	if (reverseControllerMap.find(event.which) != reverseControllerMap.end()) {
+		return;
+	}
+	controller = SDL_OpenGamepad( event.which );
+	if( controller )
+	{
+		registeredControllers++;
+		reverseControllerMap.insert(std::make_pair(event.which, registeredControllers));
+		idLib::Printf("Controller Connected: %s\n", SDL_GetGamepadName(controller));
+		gcontroller[registeredControllers] = controller;
+		//GK: Enable controller layout if there is one controller connected
+		if (session->GetSignInManager().GetMasterLocalUser() != NULL) {
+			idLocalUserWin* user = dynamic_cast<idLocalUserWin*>(session->GetSignInManager().GetMasterLocalUser());
+			user->SetInputDevice(registeredControllers);
+		}
+	} else {
+		idLib::Printf("Error Initializing controller: %s\n", SDL_GetError());
+	}
+		
+}
+
+void removeGamePad(SDL_GamepadDeviceEvent event) {
+	//GK: Avoid duplicate events.
+	if (reverseControllerMap.find(event.which) == reverseControllerMap.end()) {
+		return;
+	}
+	registeredControllers--;
+	int index = reverseControllerMap[event.which];
+	reverseControllerMap.erase(event.which);
+	idLib::Printf("Controller Disconnected: %s\n", SDL_GetGamepadName(gcontroller[index]));
+	SDL_CloseGamepad(gcontroller[index]);
+	gcontroller[index]=NULL;
+	if (session->GetSignInManager().GetMasterLocalUser() != NULL) {
+		idLocalUserWin* user = dynamic_cast<idLocalUserWin*>(session->GetSignInManager().GetMasterLocalUser());
+		user->SetInputDevice(-1);
+	}
+	
+}

@@ -75,6 +75,9 @@ option (INSIDE_PACKAGE
 option (IGNORE_IMPORTED_CONFIG 
 					"Ignore IMPORTED_CONFIG" OFF)
 
+option (USE_SDL_WIN32
+					"Use SDL instead of Win32 for Windows" OFF)
+
 if (CMAKE_CL_64)
 	set(CPU_ARCH x64)
 else()
@@ -343,7 +346,9 @@ elseif(MSVC)
 		set(CMAKE_MFC_FLAG 2)
 	endif()
 	
-	
+	if (USE_SDL_WIN32)
+		add_definitions(-DUSE_SDL_WIN32)
+	endif()
 	
 	if (MSVC_VERSION GREATER 1919 AND NOT USE_VULKAN AND NOT ALL_STATIC)
 		add_definitions(-D_ITERATOR_DEBUG_LEVEL=1)
@@ -430,6 +435,13 @@ else()
     include_directories(${JPEG_INCLUDE_DIRS})
     add_definitions(-DUSE_NEWER_JPEG)
 endif()
+
+if (NOT MSVC OR USE_SDL_WIN32)
+	find_package(SDL3 REQUIRED)
+	include_directories(${SDL3_INCLUDE_DIR})
+	set(SDLx_LIBRARY SDL3::SDL3)
+endif()
+
 macro(SET_OPTION option value)
   set(${option} ${value} CACHE INTERNAL "" FORCE)
 endmacro()
@@ -1040,16 +1052,22 @@ endif()
 file(GLOB TIMIDITY_INCLUDES libs/timidity/*.h)
 file(GLOB TIMIDITY_SOURCES libs/timidity/*.cpp)
 
-file(GLOB_RECURSE WIN32_INCLUDES sys/win32/*.h)
+file(GLOB_RECURSE BASE_WIN32_INCLUDES 
+	sys/win32/win_local.h
+	sys/win32/win_nanoafx.h)
+
+file(GLOB_RECURSE WIN32_INCLUDES sys/win32/win_input.h)
 #file(GLOB_RECURSE WIN32_SOURCES sys/win32/*.cpp)
+
+set(BASE_WIN32_SOURCES
+	sys/win32/win_main.cpp
+	sys/win32/win_shared.cpp
+	sys/win32/win_syscon.cpp
+	sys/win32/win_taskkeyhook.cpp)
 
 set(WIN32_SOURCES
 	sys/win32/win_input.cpp
-	sys/win32/win_main.cpp
-	sys/win32/win_shared.cpp
 	sys/win32/win_snd.cpp
-	sys/win32/win_syscon.cpp
-	sys/win32/win_taskkeyhook.cpp
 	sys/win32/win_wndproc.cpp)
 
 if (USE_DXGI)
@@ -1212,6 +1230,8 @@ source_group("Game-D3XP\\Physics" FILES ${GAMED3XP_PHYSICS_SOURCES})
 source_group("Game-D3XP\\Script" FILES ${GAMED3XP_SCRIPT_INCLUDES})
 source_group("Game-D3XP\\Script" FILES ${GAMED3XP_SCRIPT_SOURCES})
 
+source_group("Sys\\Win32" FILES ${BASE_WIN32_INCLUDES})
+source_group("Sys\\Win32" FILES ${BASE_WIN32_SOURCES})
 source_group("Sys\\Win32" FILES ${WIN32_INCLUDES})
 source_group("Sys\\Win32" FILES ${WIN32_SOURCES})
 source_group("Sys\\Win32\\Resources" FILES ${WIN32_RESOURCES})
@@ -1385,7 +1405,7 @@ if(MONOLITH)
 		${GAMED3XP_SCRIPT_INCLUDES})
 		
 	list(APPEND RBDOOM3_SOURCES
-		${GAMED3XP_SOURCES}
+		${GAMED3XP_SOURCES} 
 		${GAMED3XP_AI_SOURCES}
 		${GAMED3XP_ANIM_SOURCES}
 		${GAMED3XP_GAMESYS_SOURCES}
@@ -1647,11 +1667,24 @@ endif()
 
 	list(APPEND RBDOOM3_INCLUDES
 		${SYS_INCLUDES} 
-		${WIN32_INCLUDES})
+		${BASE_WIN32_INCLUDES})
 		
 	list(APPEND RBDOOM3_SOURCES
 		${SYS_SOURCES}
+		${BASE_WIN32_SOURCES})
+
+	if (USE_SDL_WIN32)
+		list(APPEND RBDOOM3_INCLUDES
+			${SDL_INCLUDES})
+		list(APPEND RBDOOM3_SOURCES
+			${SDL_SOURCES} ${SDL_RESOURCES})
+	else()
+		list(APPEND RBDOOM3_INCLUDES 
+		${WIN32_INCLUDES})
+		
+	list(APPEND RBDOOM3_SOURCES
 		${WIN32_SOURCES})
+	endif()
 
 	list(REMOVE_DUPLICATES RBDOOM3_SOURCES)
 	
@@ -1688,6 +1721,7 @@ endif()
 	set_source_files_properties( ${SHADERS} PROPERTIES VS_TOOL_OVERRIDE "None" )
 
 	list(APPEND RBDOOM3_SOURCES ${WIN32_RESOURCES})
+	list(APPEND RBDOOM3_SOURCES DoomBFA.exe.manifest)
 	add_library(external ${LIB_INCLUDES} ${LIB_SOURCES})
 	target_compile_options(external PRIVATE /WX- /W3 /sdl-)
 	add_custom_target(shaders SOURCES ${SHADERS} DEPENDS copy_shaders)
@@ -1705,6 +1739,7 @@ endif()
     )
 	add_executable(DoomBFA WIN32 ${RBDOOM3_INCLUDES} ${RBDOOM3_SOURCES})
 	set_target_properties(DoomBFA PROPERTIES VS_USER_PROPS "${CMAKE_SOURCE_DIR}/PropertySheet.props")
+	set_target_properties(DoomBFA PROPERTIES VS_DPI_AWARE "PerMonitor")
 	#GK: Allow to compile and run the game from VS
 	set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT DoomBFA)
 	set_target_properties(DoomBFA PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "$(Working_directory)")
@@ -1744,6 +1779,9 @@ endif()
 		if (USE_OPENXR)
 			target_link_libraries(DoomBFA openxr-gfxwrapper openxr_loader)
 		endif()
+		if (USE_SDL_WIN32)
+			target_link_libraries(DoomBFA ${SDLx_LIBRARY})
+		endif()
 	
 
 		
@@ -1777,6 +1815,7 @@ else()
 		include_directories(${SDL3_INCLUDE_DIR})
 		set(SDLx_LIBRARY ${SDL3_LIBRARY})
 endif()
+
 		if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 			list(REMOVE_ITEM POSIX_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/sys/posix/platform_linux.cpp)
 		else()

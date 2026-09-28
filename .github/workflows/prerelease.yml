@@ -34,7 +34,10 @@ jobs:
     - uses: actions/checkout@v3
     - name: Get run Id
       id: run_id
-      run: echo "run_id=$(gh run list --workflow 'CMake Mock' --limit 1 --status completed | awk '{print $13}')" >> $GITHUB_OUTPUT
+      #GK: A perfectly (in)sane double run of the command, because it's soooo stable (sarcasm)
+      run: |
+        echo "run_id=$(gh run list --workflow 'CMake Mock' --status success |  awk 'NR==1{print $13|"sort -nrk15 "}')"
+        echo "run_id=$(gh run list --workflow 'CMake Mock' --status success |  awk 'NR==1{print $13|"sort -nrk15 "}')" >> $GITHUB_OUTPUT
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Get log messages
@@ -143,14 +146,14 @@ jobs:
         commands: |
           mv ./build/retwithdebugsymbols/* .
           mv ./build/vcpkg_installed/x64-windows-static-md/share/* ./third-party-licenses
-    - name: Upload x86 Windows Production Artifact
-      uses: ./.github/actions/package_formatter
-      with:
-        artifact_name: windows-${{env.VERSION}}-${{env.BUILD_TYPE}}-x86
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        access_token: ${{ secrets.GITHUB_TOKEN }}
-        second_token: ${{ secrets.GH_PAT }}
-        run-id: ${{ steps.run_id.outputs.run_id }}
-        commands: |
-          mv ./build/${{env.BUILD_TYPE}}/* .
-          mv ./build/vcpkg_installed/x86-windows-static-md/share/* ./third-party-licenses
+#    - name: Upload x86 Windows Production Artifact
+#      uses: ./.github/actions/package_formatter
+#      with:
+#        artifact_name: windows-${{env.VERSION}}-${{env.BUILD_TYPE}}-x86
+#        upload_url: ${{ steps.create_release.outputs.upload_url }}
+#        access_token: ${{ secrets.GITHUB_TOKEN }}
+#        second_token: ${{ secrets.GH_PAT }}
+#        run-id: ${{ steps.run_id.outputs.run_id }}
+#        commands: |
+#          mv ./build/${{env.BUILD_TYPE}}/* .
+#          mv ./build/vcpkg_installed/x86-windows-static-md/share/* ./third-party-licenses

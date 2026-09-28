@@ -363,8 +363,12 @@ A_WeaponReady
 	if (player->readyweapon == wp_chainsaw
 		&& psp->state == &::g->states[S_SAW])
 	{
-		if (globalNetworking || (player == &::g->players[::g->consoleplayer]))
-			S_StartSound (player->mo, sfx_sawidl);
+		if (globalNetworking || (player == &::g->players[::g->consoleplayer])) {
+			S_StartSound(player->mo, sfx_sawidl);
+			if (!::g->demoplayback) {
+				DoomLib::SetRumbleTrigger(0.2f, 100, 0.05f, 250);
+			}
+		}
 	}
 
 	// check for change
@@ -567,7 +571,9 @@ A_Punch
 		slope = -(((::g->mouseposy) << FRACBITS) / (::g->SCREENHEIGHT - (127 * (::g->GLOBAL_IMAGE_SCALER/ 3.0f))));
 	}
 	P_LineAttack (player->mo, angle, player->mo->info->meleeRange, slope, damage);
-
+	if (!::g->demoplayback) {
+		DoomLib::SetRumbleTrigger(0.3f, 50, 0.6f, 100);
+	}
 	// turn to face target
 	if (::g->linetarget)
 	{
@@ -605,7 +611,9 @@ A_Saw
 		slope = -(((::g->mouseposy) << FRACBITS) / (::g->SCREENHEIGHT - (127 * (::g->GLOBAL_IMAGE_SCALER/ 3.0f))));
 	}
 	P_LineAttack (player->mo, angle, player->mo->info->meleeRange+1, slope, damage);
-
+	if (!::g->demoplayback) {
+		DoomLib::SetRumbleTrigger(1.0f, 100, 0.9f, 250);
+	}
 	if (!::g->linetarget)
 	{
 		if (globalNetworking || (player == &::g->players[::g->consoleplayer]))
@@ -648,6 +656,9 @@ A_FireMissile
 	if( (player->cheats & CF_INFAMMO) == false ) {
 		player->ammo[weaponinfo[player->readyweapon].ammo] -= weaponinfo[player->readyweapon].clipAmmo;
 	}
+	if (!::g->demoplayback) {
+		DoomLib::SetRumbleTrigger(1.0f, 500, 0.9f, 750);
+	}
 	P_SpawnPlayerMissile (player->mo, MT_ROCKET);
 
 	if( ::g->plyr == player ) {
@@ -667,7 +678,9 @@ A_FireBFG
 	if( (player->cheats & CF_INFAMMO) == false ) {
 		player->ammo[weaponinfo[player->readyweapon].ammo] -= weaponinfo[player->readyweapon].clipAmmo;
 	}
-
+	if (!::g->demoplayback) {
+		DoomLib::SetRumbleTrigger(1.0f, 750, 1.0f, 750);
+	}
 	P_SpawnPlayerMissile (player->mo, MT_BFG);
 	if (!player->inBFGStates) {
 		player->inBFGStates = true;
@@ -694,7 +707,9 @@ A_FirePlasma
 	P_SetPsprite (player,
 		ps_flash,
 		(weaponinfo[player->readyweapon].flashstate+(P_Random ()&1)) );
-
+	if (!::g->demoplayback) {
+		DoomLib::SetRumbleTrigger(0.7f, 25, 0.5f, 75);
+	}
 	P_SpawnPlayerMissile (player->mo, MT_PLASMA);
 
 	if( ::g->plyr == player ) {
@@ -778,7 +793,9 @@ A_FirePistol
 	P_SetPsprite (player,
 		ps_flash,
 		weaponinfo[player->readyweapon].flashstate);
-
+	if (!::g->demoplayback) {
+		DoomLib::SetRumbleTrigger(0.6f, 80, 0.4f, 120);
+	}
 	P_BulletSlope (player->mo);
 	P_GunShot (player->mo, !player->refire);
 
@@ -808,7 +825,9 @@ A_FireShotgun
 	P_SetPsprite (player,
 		ps_flash,
 		weaponinfo[player->readyweapon].flashstate);
-
+	if (!::g->demoplayback) {
+		DoomLib::SetRumbleTrigger(1.0f, 120, 10.9f, 250);
+	}
 	P_BulletSlope (player->mo);
 
 	for (i=0 ; i<7 ; i++)
@@ -844,7 +863,9 @@ A_FireShotgun2
 	P_SetPsprite (player,
 		ps_flash,
 		weaponinfo[player->readyweapon].flashstate);
-
+	if (!::g->demoplayback) {
+		DoomLib::SetRumbleTrigger(2.0f, 220, 20.9f, 350);
+	}
 	P_BulletSlope (player->mo);
 
 	for (i=0 ; i<20 ; i++)
@@ -888,7 +909,9 @@ A_FireCGun
 		weaponinfo[player->readyweapon].flashstate
 		+ psp->state
 		- &::g->states[S_CHAIN1] ));
-
+	if (!::g->demoplayback) {
+		DoomLib::SetRumbleTrigger(1.0f, 100, 0.9f, 250);
+	}
 	P_BulletSlope (player->mo);
 
 	P_GunShot (player->mo, !player->refire);

@@ -199,6 +199,11 @@ namespace DoomLib
 	static float							low;
 	static int								lowDuration;
 
+	static float							highTrigger;
+	static int								highDurationTrigger;
+	static float							lowTrigger;
+	static int								lowDurationTrigger;
+
 	void * (*Z_Malloc)( unsigned size, int tag, void* user ) = NULL;
 	void	(*Z_Free)(void* user) = NULL;
 	void 	(*Z_FreeTag)(int lowtag );
@@ -710,22 +715,38 @@ void DoomLib::RunSound() {
 }
 
 void DoomLib::SetRumble(float high, int highDuration, float low, int lowDuration) {
-	DoomLib::high = high;
-	DoomLib::highDuration = highDuration;
-	DoomLib::low = low;
-	DoomLib::lowDuration = lowDuration;
+	DoomLib::high = (high * 0.5f) * USHRT_MAX;
+	DoomLib::highDuration = Sys_Milliseconds() + std::clamp(highDuration, 0, 1000);
+	DoomLib::low = (low * 0.5f) * USHRT_MAX;
+	DoomLib::lowDuration = Sys_Milliseconds() + std::clamp(lowDuration, 0, 1000);
+}
+
+void DoomLib::SetRumbleTrigger(float high, int highDuration, float low, int lowDuration) {
+	DoomLib::highTrigger = (high * 0.5f) * USHRT_MAX;
+	DoomLib::highDurationTrigger = Sys_Milliseconds() + std::clamp(highDuration, 0, 1000);
+	DoomLib::lowTrigger = (low * 0.5f) * USHRT_MAX;
+	DoomLib::lowDurationTrigger = Sys_Milliseconds() + std::clamp(lowDuration, 0, 1000);
 }
 
 void DoomLib::ApplyRumble() {
 	if (idLib::joystick && in_joystickRumble.GetBool()) {
 		Sys_SetRumble(session->GetSignInManager().GetMasterLocalUser()->GetInputDevice(), low, high);
-		highDuration--;
-		lowDuration--;
-		if (highDuration <= 0) {
+		Sys_SetRumbleTriggers(session->GetSignInManager().GetMasterLocalUser()->GetInputDevice(), lowTrigger, highTrigger);
+		if (Sys_Milliseconds() > highDuration) {
+			highDuration = 0;
 			high = 0;
 		}
-		if (lowDuration <= 0) {
+		if (Sys_Milliseconds() > lowDuration) {
+			lowDuration = 0;
 			low = 0;
+		}
+		if (Sys_Milliseconds() > highDurationTrigger) {
+			highDurationTrigger = 0;
+			highTrigger = 0;
+		}
+		if (Sys_Milliseconds() > lowDurationTrigger) {
+			lowDurationTrigger = 0;
+			lowTrigger = 0;
 		}
 	}
 }

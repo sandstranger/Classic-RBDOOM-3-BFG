@@ -29,7 +29,8 @@ If you have questions concerning this license or the applicable additional terms
 ===========================================================================
 */
 
-#include "../../idlib/precompiled.h"
+#include "precompiled.h"
+#pragma hdrstop
 
 // DG: SDL.h somehow needs the following functions, so #undef those silly
 //     "don't use" #defines from Str.h
@@ -49,7 +50,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "SwappyController.h"
 #endif
 
-idCVar in_nograb( "in_nograb", "0", CVAR_SYSTEM | CVAR_NOCHEAT, "prevents input grabbing" );
+//idCVar in_nograb( "in_nograb", "0", CVAR_SYSTEM | CVAR_NOCHEAT, "prevents input grabbing" );
 
 // RB: FIXME this shit. We need the OpenGL alpha channel for advanced rendering effects
 idCVar r_waylandcompat( "r_waylandcompat", "0", CVAR_SYSTEM | CVAR_NOCHEAT | CVAR_ARCHIVE, "wayland compatible framebuffer" );
@@ -81,7 +82,7 @@ static SDL_GLContext context = NULL;
 
 SDL_Window* window = NULL;
 
-#if ANDROID
+#ifdef ANDROID
 static std::vector<int> supportedRefreshRates;
 
 extern "C"{
@@ -93,6 +94,16 @@ void setRefreshRates(const int* targetRefreshRates, int size) {
 	}
 }
 }
+#endif
+
+#ifdef _WIN32
+/*
+====================
+GLW_WM_CREATE
+====================
+*/
+void GLW_WM_CREATE(HWND hWnd)
+{}
 #endif
 
 /*
@@ -164,8 +175,9 @@ int SDL_GetDisplayFromIndex(int index) {
 		SDL_free(displays);
 		return index;
 	}
-	return displays[index - 1];
+	SDL_DisplayID result = displays[index - 1];
 	SDL_free(displays);
+	return result;
 }
 
 /*
@@ -357,12 +369,13 @@ bool GLimp_Init( glimpParms_t parms )
 		 */
 		
 
+		//GK: Create a dummy window right now in order to initialize SDL_Window, in the end call GLimp_SetScreenParms to apply the expected settings
 		 SDL_PropertiesID props = SDL_CreateProperties();
     	 SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, ENGINE_NAME);
-    	 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, windowPos);
-    	 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, windowPosY);
-    	 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, parms.width);
-    	 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, parms.height);
+    	 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, 250);
+    	 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, 250);
+    	 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, 860);
+    	 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, 600);
     	 // For window flags you should use separate window creation properties,
     	 // but for easier migration from SDL2 you can use the following:
     	 SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, flags);
@@ -496,7 +509,9 @@ bool GLimp_Init( glimpParms_t parms )
 	// DG: disable cursor, we have two cursors in menu (because mouse isn't grabbed in menu)
 	SDL_HideCursor();
 	// DG end
-	SDL_SetWindowMouseGrab(window, false);
+	SDL_SetWindowMouseGrab(window, true);
+	//GK: Properly apply screen parms
+	GLimp_SetScreenParms(parms);
 	return true;
 }
 /*
@@ -567,15 +582,18 @@ static bool SetScreenParmsFullscreen( glimpParms_t parms )
 	SDL_DisplayMode** displayModes = SDL_GetFullscreenDisplayModes(displayIdx, &modeCount);
 	int wDiff = INT32_MAX;
 	int hDiff = INT32_MAX;
+	int rDiff = INT32_MAX;
 	for (int i = 0; i < modeCount; i++) {
 		int nwDiff = abs(displayModes[i]->w - parms.width);
 		int nhDiff = abs(displayModes[i]->h - parms.height);
-		if (nwDiff < wDiff || nhDiff < hDiff) {
+		int nrDiff = abs(displayModes[i]->refresh_rate - parms.displayHz);
+		if (nwDiff < wDiff || nhDiff < hDiff || nrDiff < rDiff) {
 			wDiff = nwDiff;
-			hDiff = hDiff;
+			hDiff = nhDiff;
+			rDiff = nrDiff;
 			m = displayModes[i];
 		}
-		if (wDiff == 0 || hDiff == 0) {
+		if (wDiff == 0 || hDiff == 0 || rDiff == 0) {
 			m = displayModes[i];
 			break;
 		}
@@ -592,7 +610,7 @@ static bool SetScreenParmsFullscreen( glimpParms_t parms )
 	// if we're currently not in fullscreen mode, we need to switch to fullscreen
 	//if( SDL_GetWindowFullscreenMode(window) == NULL)
 	{
-		if( SDL_SetWindowFullscreen( window, true ) < 0 )
+		if( !SDL_SetWindowFullscreen( window, true ) )
 		{
 			common->Warning( "Couldn't switch to fullscreen mode, reason: %s!", SDL_GetError() );
 			return false;
@@ -601,7 +619,7 @@ static bool SetScreenParmsFullscreen( glimpParms_t parms )
 	}
 	
 	// set that displaymode
-	if( SDL_SetWindowFullscreenMode( window, m ) < 0 )
+	if( !SDL_SetWindowFullscreenMode( window, m ) )
 	{
 		common->Warning( "Couldn't set window mode for fullscreen, reason: %s", SDL_GetError() );
 		return false;
@@ -623,17 +641,18 @@ static bool SetScreenParmsWindowed( glimpParms_t parms )
 {
 #ifndef ANDROID
 	// if we're currently in fullscreen mode, we need to disable that
-	if( SDL_GetWindowFlags( window ) & SDL_WINDOW_FULLSCREEN )
+	if( SDL_GetWindowFlags( window ) & SDL_WINDOW_FULLSCREEN)
 	{
-		if( SDL_SetWindowFullscreen( window, false ) < 0 )
+		if( !SDL_SetWindowFullscreen( window, false ) )
 		{
 			common->Warning( "Couldn't switch to windowed mode, reason: %s!", SDL_GetError() );
 			return false;
 		}
+		
 	}
 	SDL_SetWindowSize( window, parms.width, parms.height );
 	SDL_SetWindowPosition( window, parms.x, parms.y );
-	
+	SDL_SetWindowBordered(window, parms.fullScreen == 0);
 	return true;
 #else
 	return false;
@@ -648,12 +667,12 @@ GLimp_SetScreenParms
 bool GLimp_SetScreenParms( glimpParms_t parms )
 {
 #ifndef ANDROID
-	if( parms.fullScreen > 0 || parms.fullScreen < 0 )
+	if( parms.fullScreen > 0 )
 	{
 		if( !SetScreenParmsFullscreen( parms ) )
 			return false;
 	}
-	else if( parms.fullScreen == 0 ) // windowed mode
+	else if( parms.fullScreen <= 0 ) // windowed mode + Borderless mode
 	{
 		if( !SetScreenParmsWindowed( parms ) )
 			return false;
@@ -788,8 +807,8 @@ void GLimp_GrabInput( int flags )
 	if( flags & GRAB_SETSTATE )
 		grabbed = grab;
 		
-	if( in_nograb.GetBool() )
-		grab = false;
+	/*if( in_nograb.GetBool() )
+		grab = false;*/
 		
 	if( !window )
 	{
@@ -830,33 +849,6 @@ public:
 	}
 };
 
-// RB: resolutions supported by XreaL
-static void FillStaticVidModes( idList<vidMode_t>& modeList )
-{
-	modeList.AddUnique( vidMode_t( 320,   240, 60 ) );
-	modeList.AddUnique( vidMode_t( 400,   300, 60 ) );
-	modeList.AddUnique( vidMode_t( 512,   384, 60 ) );
-	modeList.AddUnique( vidMode_t( 640,   480, 60 ) );
-	modeList.AddUnique( vidMode_t( 800,   600, 60 ) );
-	modeList.AddUnique( vidMode_t( 960,   720, 60 ) );
-	modeList.AddUnique( vidMode_t( 1024,  768, 60 ) );
-	modeList.AddUnique( vidMode_t( 1152,  864, 60 ) );
-	modeList.AddUnique( vidMode_t( 1280,  720, 60 ) );
-	modeList.AddUnique( vidMode_t( 1280,  768, 60 ) );
-	modeList.AddUnique( vidMode_t( 1280,  800, 60 ) );
-	modeList.AddUnique( vidMode_t( 1280, 1024, 60 ) );
-	modeList.AddUnique( vidMode_t( 1366,  768, 60 ) );
-	modeList.AddUnique( vidMode_t( 1440,  900, 60 ) );
-	modeList.AddUnique( vidMode_t( 1680, 1050, 60 ) );
-	modeList.AddUnique( vidMode_t( 1600, 1200, 60 ) );
-	modeList.AddUnique( vidMode_t( 1920, 1080, 60 ) );
-	modeList.AddUnique( vidMode_t( 1920, 1200, 60 ) );
-	modeList.AddUnique( vidMode_t( 2048, 1536, 60 ) );
-	modeList.AddUnique( vidMode_t( 2560, 1600, 60 ) );
-	
-	modeList.SortWithTemplate( idSort_VidMode() );
-}
-
 /*
 ====================
 R_GetModeListForDisplay
@@ -872,7 +864,7 @@ bool R_GetModeListForDisplay( const unsigned requestedDisplayNum, idList<vidMode
 	int count = 0;
 	SDL_DisplayID* displays = SDL_GetDisplays(&count);
 	// DG: SDL2 implementation
-	if (displays == 0 || displayIndex > count)
+	if (displays == 0 || displayIndex > (unsigned)count)
 	{
 		// requested invalid displaynum
 		SDL_free(displays);
@@ -930,7 +922,7 @@ bool R_GetRefreshListForDisplay(const unsigned requestedDisplayNum, idList<int>&
 	SDL_DisplayID* displays = SDL_GetDisplays(&count);
 	// DG: SDL2 implementation
 
-	if (displays == 0 || displayIndex >= count)
+	if (displays == 0 || displayIndex >= (unsigned)count)
 	{
 		// requested invalid displaynum
 		SDL_free(displays);

@@ -52,6 +52,7 @@ If you have questions concerning this license or the applicable additional terms
 // flashstate, muzzle flash
 //
 weaponinfo_t	weaponinfo[NUMWEAPONS];
+weaponimpulse_t	weaponimpulse[NUMWEAPONS];
 void initWeapons() {
 	weaponinfo_t	tweaponinfo[NUMWEAPONS] =
 	{
@@ -156,6 +157,36 @@ void initWeapons() {
 		},
 	};
 	memcpy(weaponinfo, tweaponinfo, sizeof(tweaponinfo));
+	weaponimpulse_t	tweaponimpulse[NUMWEAPONS] =
+	{{
+		0.0f, 0, 0.0f, 0, 0.0f, 0, 0.0f, 0
+	},
+	{
+		0.0f, 0, 0.0f, 0, 0.0f, 0, 0.0f, 0
+	},
+	{
+		0.0f, 0, 0.0f, 0, 0.0f, 0, 0.0f, 0
+	},
+	{
+		0.0f, 0, 0.0f, 0, 0.0f, 0, 0.0f, 0
+	},
+	{
+		0.0f, 0, 0.0f, 0, 0.0f, 0, 0.0f, 0
+	},
+	{
+		0.0f, 0, 0.0f, 0, 0.0f, 0, 0.0f, 0
+	},
+	{
+		0.0f, 0, 0.0f, 0, 0.0f, 0, 0.0f, 0
+	},
+	{
+		0.0f, 0, 0.0f, 0, 0.0f, 0, 0.0f, 0
+	},
+	{
+		0.0f, 0, 0.0f, 0, 0.0f, 0, 0.0f, 0
+	}
+	};
+	memcpy(weaponimpulse, tweaponimpulse, sizeof(tweaponimpulse));
 }
 
 

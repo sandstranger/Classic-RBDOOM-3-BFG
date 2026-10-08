@@ -23,6 +23,7 @@ Contains the windows implementation of the network session
 #include "../sys_lobby_backend_direct.h"
 #include "../sys_voicechat.h"
 #include "achievements.h"
+#include "../sys_dedicated_server_search.h"
 //#include "win_local.h"
 
 /*
@@ -193,7 +194,7 @@ idSessionLocalWin::idSessionLocalWin()
 	saveGameManager		= new( TAG_SAVEGAMES ) idSaveGameManager();
 	voiceChat			= new( TAG_SYSTEM ) idVoiceChatMgrWin();
 	lobbyToSessionCB	= new( TAG_SYSTEM ) idLobbyToSessionCBLocal( this );
-	
+	dedicatedServerSearch = new(TAG_NETWORKING) idDedicatedServerSearch();
 	canJoinLocalHost	= false;
 	
 	lobbyBackends.Zero();
@@ -345,6 +346,7 @@ idSessionLocalWin::ListServers
 */
 void idSessionLocalWin::ListServers( const idCallback& callback )
 {
+	dedicatedServerSearch->StartSearch(callback);
 	ListServersCommon();
 }
 
@@ -355,6 +357,7 @@ idSessionLocalWin::CancelListServers
 */
 void idSessionLocalWin::CancelListServers()
 {
+	dedicatedServerSearch->Clear();
 }
 
 /*
@@ -364,7 +367,7 @@ idSessionLocalWin::NumServers
 */
 int idSessionLocalWin::NumServers() const
 {
-	return 0;
+	return dedicatedServerSearch->NumServers();
 }
 
 /*
@@ -374,7 +377,7 @@ idSessionLocalWin::ServerInfo
 */
 const serverInfo_t* idSessionLocalWin::ServerInfo( int i ) const
 {
-	return NULL;
+	return dedicatedServerSearch->DescribeServerAtIndex(i);
 }
 
 /*
@@ -384,6 +387,17 @@ idSessionLocalWin::ConnectToServer
 */
 void idSessionLocalWin::ConnectToServer( int i )
 {
+	Cancel();
+	
+	if( signInManager->GetMasterLocalUser() == NULL )
+	{
+		signInManager->RegisterLocalUser( 0 );
+	}
+	
+	lobbyConnectInfo_t serverAddr;
+	dedicatedServerSearch->GetAddrAtIndex(serverAddr.netAddr, i);
+
+	ConnectAndMoveToLobby(GetPartyLobby(), serverAddr, false);
 }
 
 /*
@@ -492,6 +506,7 @@ idSessionLocalWin::HandleServerQueryRequest
 void idSessionLocalWin::HandleServerQueryRequest( lobbyAddress_t& remoteAddr, idBitMsg& msg, int msgType )
 {
 	NET_VERBOSE_PRINT( "HandleServerQueryRequest from %s\n", remoteAddr.ToString() );
+	HandleDedicatedServerQueryRequest(remoteAddr, msg, msgType);
 }
 
 /*
@@ -502,7 +517,7 @@ idSessionLocalWin::HandleServerQueryAck
 void idSessionLocalWin::HandleServerQueryAck( lobbyAddress_t& remoteAddr, idBitMsg& msg )
 {
 	NET_VERBOSE_PRINT( "HandleServerQueryAck from %s\n", remoteAddr.ToString() );
-	
+	HandleDedicatedServerQueryAck(remoteAddr, msg);
 }
 
 /*
@@ -568,6 +583,16 @@ idSessionLocalWin::EnumerateDownloadableContent
 */
 void idSessionLocalWin::EnumerateDownloadableContent()
 {
+	if (::op) {
+		int dlcs = ::op->openDLC()->CountDLCs();
+		for (int i = 0; i < dlcs; i++) {
+			OpenContent opDlc = ::op->openDLC()->GetDLCByIndex(i);
+			contentData_t dlc = {};
+			dlc.dlcID = atoi(opDlc.id);
+			dlc.displayName = idStr(opDlc.name);
+			downloadedContent.Insert(dlc);
+		}
+	}
 }
 
 /*

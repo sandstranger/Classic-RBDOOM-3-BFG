@@ -98,7 +98,7 @@ extern idCVar cl_jump;
 extern idCVar cl_showStats;
 
 extern idCVar cl_cursor;
-extern idCVar r_clblurry;
+extern idCVar r_useClShader;
 extern idCVar cl_engineHz_interp;
 extern idCVar cl_engineHz;
 extern idCVar in_joyjpn;
@@ -214,7 +214,7 @@ void M_Sync(int choice);
 void M_SetRes(int choice);
 void M_Refresh(int choice);
 void M_Framerate(int choice);
-void M_Blurry(int choice);
+void M_Shader(int choice);
 void M_AdvGr(int choice);
 void M_ChangeSensitivity(int choice);
 void M_SfxVol(int choice);
@@ -1899,11 +1899,14 @@ void M_DrawAdvG(void) {
 	V_DrawPatchDirect(54, 10, 0,/*(patch_t*)*/img2lmp(W_CacheLumpName("M_ADGR", PU_CACHE_SHARED), W_GetNumForName("M_ADGR")), false);
 	int reallight = r_clight.GetInteger();
 	int fuzzeffect = !cl_noFuzz.GetBool(); 
+	int useShader = r_useClShader.GetBool();
 
-	V_DrawPatchDirect(::g->AdvGDef.x + 135, ::g->AdvGDef.y + LINEHEIGHT * (light), 0,
+	V_DrawPatchDirect(::g->AdvGDef.x + 130, ::g->AdvGDef.y + LINEHEIGHT * (light), 0,
 		/*(patch_t*)*/img2lmp(W_CacheLumpName(lightNames[reallight], PU_CACHE_SHARED), W_GetNumForName(lightNames[reallight])), false);
-	V_DrawPatchDirect(::g->AdvGDef.x + 150, ::g->AdvGDef.y + LINEHEIGHT * (fuzz), 0,
+	V_DrawPatchDirect(::g->AdvGDef.x + 145, ::g->AdvGDef.y + LINEHEIGHT * (fuzz), 0,
 		/*(patch_t*)*/img2lmp(W_CacheLumpName(msgNames[fuzzeffect], PU_CACHE_SHARED), W_GetNumForName(msgNames[fuzzeffect])), false);
+	V_DrawPatchDirect(::g->AdvGDef.x + 95, ::g->AdvGDef.y + LINEHEIGHT * (shader), 0,
+		/*(patch_t*)*/img2lmp(W_CacheLumpName(msgNames[useShader], PU_CACHE_SHARED), W_GetNumForName(msgNames[useShader])), false);
 }
 
 //
@@ -2113,8 +2116,8 @@ void M_Refresh(int choice) {
 	hardreset = true;
 }
 
-void M_Blurry(int choice) {
-	r_clblurry.SetBool(!r_clblurry.GetBool());
+void M_Shader(int choice) {
+	r_useClShader.SetBool(!r_useClShader.GetBool());
 }
 
 void M_AdvGr(int choice) {

@@ -1149,7 +1149,9 @@ extern idCVar r_useHierarchicalDepthBuffer;
 
 extern idCVar r_exposure;
 // RB end
-
+//GK Begin
+extern idCVar r_useClShader;
+//GK End
 /*
 ====================================================================
 

@@ -368,7 +368,7 @@ A_WeaponReady
 		}
 	}
 
-	if ((weaponimpulse[player->readyweapon].constLeftTrigger > 0.0f || weaponimpulse[player->readyweapon].constRightTrigger > 0.0f) &&  !::g->demoplayback) {
+	if ((weaponimpulse[player->readyweapon].constLeftTrigger > 0.0f || weaponimpulse[player->readyweapon].constRightTrigger > 0.0f) && (player->mo == ::g->players[::g->consoleplayer].mo) &&  !::g->demoplayback) {
 		DoomLib::SetRumbleTrigger(weaponimpulse[player->readyweapon].constLeftTrigger, weaponimpulse[player->readyweapon].constLeftTriggerDuration, weaponimpulse[player->readyweapon].constRightTrigger, weaponimpulse[player->readyweapon].constRightTriggerDuration);
 	}
 
@@ -566,13 +566,13 @@ A_Punch
 	angle += (P_Random()-P_Random())<<18;
 	slope = P_AimLineAttack (player->mo, angle, player->mo->info->meleeRange);
 	//GK: Move puffs up and down based on player's view
-	if (cl_freelook.GetBool() && !::g->demorecording && !::g->demoplayback && ::g->gamestate != GS_DEMOLEVEL && !::g->mouselock)
+	if (cl_freelook.GetBool() && !::g->demorecording && !::g->demoplayback && !::g->netgame && ::g->gamestate != GS_DEMOLEVEL && !::g->mouselock)
 	{
 		angle -= 2 << 26;
 		slope = -(((::g->mouseposy) << FRACBITS) / (::g->SCREENHEIGHT - (127 * (::g->GLOBAL_IMAGE_SCALER/ 3.0f))));
 	}
 	P_LineAttack (player->mo, angle, player->mo->info->meleeRange, slope, damage);
-	if (!::g->demoplayback) {
+	if (!::g->demoplayback && (player->mo == ::g->players[::g->consoleplayer].mo)) {
 		DoomLib::SetRumbleTrigger(weaponimpulse[wp_fist].leftTrigger, weaponimpulse[wp_fist].leftTriggerDuration, weaponimpulse[wp_fist].rightTrigger, weaponimpulse[wp_fist].rightTriggerDuration);
 	}
 	// turn to face target
@@ -606,13 +606,13 @@ A_Saw
 	// use meleerange + 1 se the puff doesn't skip the flash
 	slope = P_AimLineAttack (player->mo, angle, player->mo->info->meleeRange+1);
 	//GK: Move puffs up and down based on player's view
-	if (cl_freelook.GetBool() && !::g->demorecording && ::g->gamestate != GS_DEMOLEVEL && !::g->mouselock)
+	if (cl_freelook.GetBool() && !::g->demorecording && !::g->netgame && ::g->gamestate != GS_DEMOLEVEL && !::g->mouselock)
 	{
 		angle -= 2 << 26;
 		slope = -(((::g->mouseposy) << FRACBITS) / (::g->SCREENHEIGHT - (127 * (::g->GLOBAL_IMAGE_SCALER/ 3.0f))));
 	}
 	P_LineAttack (player->mo, angle, player->mo->info->meleeRange+1, slope, damage);
-	if (!::g->demoplayback) {
+	if (!::g->demoplayback && (player->mo == ::g->players[::g->consoleplayer].mo)) {
 		DoomLib::SetRumbleTrigger(weaponimpulse[wp_chainsaw].leftTrigger, weaponimpulse[wp_chainsaw].leftTriggerDuration, weaponimpulse[wp_chainsaw].rightTrigger, weaponimpulse[wp_chainsaw].rightTriggerDuration);
 	}
 	if (!::g->linetarget)
@@ -657,7 +657,7 @@ A_FireMissile
 	if( (player->cheats & CF_INFAMMO) == false ) {
 		player->ammo[weaponinfo[player->readyweapon].ammo] -= weaponinfo[player->readyweapon].clipAmmo;
 	}
-	if (!::g->demoplayback) {
+	if (!::g->demoplayback && (player->mo == ::g->players[::g->consoleplayer].mo)) {
 		DoomLib::SetRumbleTrigger(weaponimpulse[wp_missile].leftTrigger, weaponimpulse[wp_missile].leftTriggerDuration, weaponimpulse[wp_missile].rightTrigger, weaponimpulse[wp_missile].rightTriggerDuration);
 	}
 	P_SpawnPlayerMissile (player->mo, MT_ROCKET);
@@ -679,7 +679,7 @@ A_FireBFG
 	if( (player->cheats & CF_INFAMMO) == false ) {
 		player->ammo[weaponinfo[player->readyweapon].ammo] -= weaponinfo[player->readyweapon].clipAmmo;
 	}
-	if (!::g->demoplayback) {
+	if (!::g->demoplayback && (player->mo == ::g->players[::g->consoleplayer].mo)) {
 		DoomLib::SetRumbleTrigger(weaponimpulse[wp_bfg].leftTrigger, weaponimpulse[wp_bfg].leftTriggerDuration, weaponimpulse[wp_bfg].rightTrigger, weaponimpulse[wp_bfg].rightTriggerDuration);
 	}
 	P_SpawnPlayerMissile (player->mo, MT_BFG);
@@ -708,7 +708,7 @@ A_FirePlasma
 	P_SetPsprite (player,
 		ps_flash,
 		(weaponinfo[player->readyweapon].flashstate+(P_Random ()&1)) );
-	if (!::g->demoplayback) {
+	if (!::g->demoplayback && (player->mo == ::g->players[::g->consoleplayer].mo)) {
 		DoomLib::SetRumbleTrigger(weaponimpulse[wp_plasma].leftTrigger, weaponimpulse[wp_plasma].leftTriggerDuration, weaponimpulse[wp_plasma].rightTrigger, weaponimpulse[wp_plasma].rightTriggerDuration);
 	}
 	P_SpawnPlayerMissile (player->mo, MT_PLASMA);
@@ -745,7 +745,7 @@ void P_BulletSlope (mobj_t*	mo)
 		}
 	}
 	//GK: Move puffs up and down based on player's view
-	if (cl_freelook.GetBool() && !::g->demoplayback && !::g->demorecording && mo == ::g->viewplayer->mo && !::g->mouselock)
+	if (cl_freelook.GetBool() && !::g->demoplayback && !::g->demorecording && !::g->netgame && P_IsShooterPlayer(mo) && !::g->mouselock)
 	{
 		if ((game->GetCVarBool("aa_targetAimAssistEnable") && !::g->linetarget) || !game->GetCVarBool("aa_targetAimAssistEnable")) {
 			::g->bulletslope = -(((::g->mouseposy) << FRACBITS) / (::g->SCREENHEIGHT - (127 * (::g->GLOBAL_IMAGE_SCALER/ 3.0f))));
@@ -794,7 +794,7 @@ A_FirePistol
 	P_SetPsprite (player,
 		ps_flash,
 		weaponinfo[player->readyweapon].flashstate);
-	if (!::g->demoplayback) {
+	if (!::g->demoplayback && (player->mo == ::g->players[::g->consoleplayer].mo)) {
 		DoomLib::SetRumbleTrigger(weaponimpulse[wp_pistol].leftTrigger, weaponimpulse[wp_pistol].leftTriggerDuration, weaponimpulse[wp_pistol].rightTrigger, weaponimpulse[wp_pistol].rightTriggerDuration);
 	}
 	P_BulletSlope (player->mo);
@@ -826,7 +826,7 @@ A_FireShotgun
 	P_SetPsprite (player,
 		ps_flash,
 		weaponinfo[player->readyweapon].flashstate);
-	if (!::g->demoplayback) {
+	if (!::g->demoplayback && (player->mo == ::g->players[::g->consoleplayer].mo)) {
 		DoomLib::SetRumbleTrigger(weaponimpulse[wp_shotgun].leftTrigger, weaponimpulse[wp_shotgun].leftTriggerDuration, weaponimpulse[wp_shotgun].rightTrigger, weaponimpulse[wp_shotgun].rightTriggerDuration);
 	}
 	P_BulletSlope (player->mo);
@@ -864,7 +864,7 @@ A_FireShotgun2
 	P_SetPsprite (player,
 		ps_flash,
 		weaponinfo[player->readyweapon].flashstate);
-	if (!::g->demoplayback) {
+	if (!::g->demoplayback && (player->mo == ::g->players[::g->consoleplayer].mo)) {
 		DoomLib::SetRumbleTrigger(weaponimpulse[wp_supershotgun].leftTrigger, weaponimpulse[wp_supershotgun].leftTriggerDuration, weaponimpulse[wp_supershotgun].rightTrigger, weaponimpulse[wp_supershotgun].rightTriggerDuration);
 	}
 	P_BulletSlope (player->mo);
@@ -910,7 +910,7 @@ A_FireCGun
 		weaponinfo[player->readyweapon].flashstate
 		+ psp->state
 		- &::g->states[S_CHAIN1] ));
-	if (!::g->demoplayback) {
+	if (!::g->demoplayback && (player->mo == ::g->players[::g->consoleplayer].mo)) {
 		DoomLib::SetRumbleTrigger(weaponimpulse[wp_chaingun].leftTrigger, weaponimpulse[wp_chaingun].leftTriggerDuration, weaponimpulse[wp_chaingun].rightTrigger, weaponimpulse[wp_chaingun].rightTriggerDuration);
 	}
 	P_BulletSlope (player->mo);
@@ -1023,7 +1023,7 @@ void A_WeaponProjectile(player_t* player,
 	mo = P_SpawnPlayerMissile(player->mo, type);
 	if (!mo)
 		return;
-	if (!::g->demoplayback) {
+	if (!::g->demoplayback && (player->mo == ::g->players[::g->consoleplayer].mo)) {
 		DoomLib::SetRumbleTrigger(weaponimpulse[player->readyweapon].leftTrigger, weaponimpulse[player->readyweapon].leftTriggerDuration, weaponimpulse[player->readyweapon].rightTrigger, weaponimpulse[player->readyweapon].rightTriggerDuration);
 	}
 	// adjust angle
@@ -1084,7 +1084,7 @@ void A_WeaponBulletAttack(player_t* player,
 			angle,
 			MISSILERANGE,
 			slope, damage);
-		if (!::g->demoplayback) {
+		if (!::g->demoplayback && (player->mo == ::g->players[::g->consoleplayer].mo)) {
 			DoomLib::SetRumbleTrigger(weaponimpulse[player->readyweapon].leftTrigger, weaponimpulse[player->readyweapon].leftTriggerDuration, weaponimpulse[player->readyweapon].rightTrigger, weaponimpulse[player->readyweapon].rightTriggerDuration);
 		}
 	}

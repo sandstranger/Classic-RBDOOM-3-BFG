@@ -101,7 +101,7 @@ idCVar r_useSRGB( "r_useSRGB", "1", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE,
 idCVar r_maxAnisotropicFiltering( "r_maxAnisotropicFiltering", "2", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "limit aniso filtering" );
 idCVar r_useTrilinearFiltering( "r_useTrilinearFiltering", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "Extra quality filtering" );
 // RB: not used anymore
-idCVar r_lodBias( "r_lodBias", "0.5", CVAR_RENDERER | CVAR_ARCHIVE, "UNUSED: image lod bias" );
+idCVar r_lodBias( "r_lodBias", "0.5", CVAR_RENDERER | CVAR_ARCHIVE, "image lod bias" );
 // RB end
 
 idCVar r_useStateCaching( "r_useStateCaching", "1", CVAR_RENDERER | CVAR_BOOL, "avoid redundant state changes in GL_*() calls" );
@@ -1920,8 +1920,8 @@ void GfxInfo_f( const idCmdArgs& args )
 	common->Printf( "GL_MAX_TEXTURE_IMAGE_UNITS_ARB: %d\n", glConfig.maxTextureImageUnits );
 	
 	// print all the display adapters, monitors, and video modes
-	//void DumpAllDisplayDevices();
-	//DumpAllDisplayDevices();
+	void DumpAllDisplayDevices();
+	DumpAllDisplayDevices();
 	
 	common->Printf( "\nPIXELFORMAT: color(%d-bits) Z(%d-bit) stencil(%d-bits)\n", glConfig.colorBits, glConfig.depthBits, glConfig.stencilBits );
 	common->Printf( "MODE: %d, %d x %d %s hz:", r_vidMode.GetInteger(), renderSystem->GetWidth(), renderSystem->GetHeight(), fsstrings[r_fullscreen.GetBool()] );

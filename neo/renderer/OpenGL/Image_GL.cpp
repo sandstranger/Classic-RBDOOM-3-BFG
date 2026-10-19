@@ -960,27 +960,31 @@ void idImage::SetTexParametersLegacy() {
         glTexParameteri(target, GL_TEXTURE_SWIZZLE_A, GL_ALPHA);
     }
 
-    switch (filter) {
-        case TF_DEFAULT:
-            if (r_useTrilinearFiltering.GetBool()) {
-                glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-            } else {
-                glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST);
-            }
-            glTexParameterf(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            break;
-        case TF_LINEAR:
-            glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameterf(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            break;
-        case TF_NEAREST:
-        case TF_NEAREST_MIPMAP:
-            glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameterf(target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            break;
-        default:
-            common->FatalError("%s: bad texture filter %d", GetName(), filter);
-    }
+	switch (filter)
+	{
+	case TF_DEFAULT:
+		if (r_useTrilinearFiltering.GetBool())
+		{
+			glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+		}
+		else
+		{
+			glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST);
+		}
+			glTexParameterf(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		break;
+	case TF_LINEAR:
+		glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameterf(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		break;
+	case TF_NEAREST:
+	case TF_NEAREST_MIPMAP:
+		glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameterf(target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		break;
+	default:
+		common->FatalError("%s: bad texture filter %d", GetName(), filter);
+	}
 
     if (glConfig.anisotropicFilterAvailable) {
 
@@ -1135,7 +1139,6 @@ void idImage::SetTextureParameters() {
 GLES 3.0+ supports swizzle.
 We emulate legacy formats (L8A8, ALPHA, LUM, INT) using RGBA swizzle.
 */
-
     if (opts.colorFormat == CFM_GREEN_ALPHA) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_ONE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_ONE);
@@ -1233,11 +1236,11 @@ GLES only supports glTexParameteri (no DSA, no glTextureParameterf)
             {
                 aniso = 0;
             }
-            glTextureParameterf(texnum, (glConfig.glVersion == 4.6) ? GL_TEXTURE_MAX_ANISOTROPY : GL_TEXTURE_MAX_ANISOTROPY_EXT, aniso);
+            glTextureParameterf(texnum, (glConfig.glVersion > 4.5) ? GL_TEXTURE_MAX_ANISOTROPY : GL_TEXTURE_MAX_ANISOTROPY_EXT, aniso);
         }
         else
         {
-            glTextureParameterf(texnum, (glConfig.glVersion == 4.6) ? GL_TEXTURE_MAX_ANISOTROPY : GL_TEXTURE_MAX_ANISOTROPY_EXT, 1);
+            glTextureParameterf(texnum, (glConfig.glVersion > 4.5) ? GL_TEXTURE_MAX_ANISOTROPY : GL_TEXTURE_MAX_ANISOTROPY_EXT, 1);
         }
 #else
         if (glConfig.anisotropicFilterAvailable) {

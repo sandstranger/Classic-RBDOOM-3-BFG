@@ -167,7 +167,7 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 		void* cachedGLSLBuffer = NULL;
 		const int cachedGLSLLength = fileSystem->ReadFile( outFileGLSL.c_str(), &cachedGLSLBuffer );
 		regenerateTextureLodBiasShader = cachedGLSLLength <= 0 || cachedGLSLBuffer == NULL ||
-			strstr( ( const char* )cachedGLSLBuffer, "uTextureLodBias" ) == NULL;
+			strstr( ( const char* )cachedGLSLBuffer, "tex2DwithLodBias" ) == NULL;
 		if( cachedGLSLBuffer != NULL )
 		{
 			Mem_Free( cachedGLSLBuffer );

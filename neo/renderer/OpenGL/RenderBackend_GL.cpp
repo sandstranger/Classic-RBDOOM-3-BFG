@@ -377,7 +377,11 @@ static void R_CheckPortableExtensions()
 #endif
 	if( glConfig.anisotropicFilterAvailable )
 	{
+#ifndef ANDROID
 		glGetFloatv((glConfig.glVersion > 4.5) ? GL_MAX_TEXTURE_MAX_ANISOTROPY : GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &glConfig.maxTextureAnisotropy );
+#else
+		glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &glConfig.maxTextureAnisotropy );
+#endif
 		common->Printf( "   maxTextureAnisotropy: %f\n", glConfig.maxTextureAnisotropy );
 	}
 	else

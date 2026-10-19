@@ -629,7 +629,14 @@ void idRenderProgManager::CommitUniforms( uint64 stateBits )
 
 	if( prog.textureLodBiasLocation != -1 )
 	{
-		float textureLodBias = idMath::ClampFloat( -1.0f, 1.0f, r_lodBias.GetFloat() );
+		// Shader-based LOD bias can select mip levels where alpha-blended sprite
+		// textures contain dark/transparent texels. Keep blended materials (including
+		// smoke and particle effects) at their original sampling LOD.
+		const bool usesBlending =
+			( stateBits & GLS_SRCBLEND_BITS ) != GLS_SRCBLEND_ONE ||
+			( stateBits & GLS_DSTBLEND_BITS ) != GLS_DSTBLEND_ZERO;
+		float textureLodBias = usesBlending ? 0.0f :
+			idMath::ClampFloat( -1.0f, 1.0f, r_lodBias.GetFloat() );
 		if( prog.name.Cmp( "gui" ) == 0 )
 		{
 			textureLodBias = 0.0f;

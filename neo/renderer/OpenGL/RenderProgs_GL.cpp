@@ -629,13 +629,18 @@ void idRenderProgManager::CommitUniforms( uint64 stateBits )
 
 	if( prog.textureLodBiasLocation != -1 )
 	{
-		// Shader-based LOD bias can select mip levels where alpha-blended sprite
-		// textures contain dark/transparent texels. Keep blended materials (including
-		// smoke and particle effects) at their original sampling LOD.
+		// Biasing alpha-tested sprite textures can turn particle cutouts into
+		// opaque black blobs. Do not change mip selection for blended draws,
+		// alpha-tested draws, or draws with depth writes disabled.
 		const bool usesBlending =
 			( stateBits & GLS_SRCBLEND_BITS ) != GLS_SRCBLEND_ONE ||
 			( stateBits & GLS_DSTBLEND_BITS ) != GLS_DSTBLEND_ZERO;
-		float textureLodBias = usesBlending ? 0.0f :
+		const bool usesAlphaTest = uniforms[ RENDERPARM_ALPHA_TEST ].x > 0.0f;
+		const bool disablesDepthWrite = ( stateBits & GLS_DEPTHMASK ) != 0;
+		const bool isTextureColorShader = prog.name.Cmp( "texture_color" ) == 0;
+		const bool disableTextureLodBias =
+			usesBlending || usesAlphaTest || disablesDepthWrite || isTextureColorShader;
+		float textureLodBias = disableTextureLodBias ? 0.0f :
 			idMath::ClampFloat( -1.0f, 1.0f, r_lodBias.GetFloat() );
 		if( prog.name.Cmp( "gui" ) == 0 )
 		{

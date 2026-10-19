@@ -880,6 +880,7 @@ const char* fragmentInsert_GLSL_ES_3_00 =
                 "vec4 texCUBEbias( samplerCube sampler, vec3 texcoord ) { return texture( sampler, texcoord, uTextureLodBias ); }\n"
                 "vec4 texCUBEbias( samplerCubeShadow sampler, vec4 texcoord ) { return vec4( texture( sampler, texcoord, uTextureLodBias ) ); }\n"
                 "vec4 tex2Dprojbias( sampler2D sampler, vec3 texcoord ) { return textureProj( sampler, texcoord, uTextureLodBias ); }\n"
+                "vec4 tex2Dprojbias( sampler2D sampler, vec4 texcoord ) { return textureProj( sampler, texcoord, uTextureLodBias ); }\n"
                 "vec4 tex2Dprojbias( sampler2DShadow sampler, vec4 texcoord ) { return vec4( textureProj( sampler, texcoord, uTextureLodBias ) ); }\n"
                 "vec4 tex3Dprojbias( sampler3D sampler, vec4 texcoord ) { return textureProj( sampler, texcoord, uTextureLodBias ); }\n"
                 "\n"

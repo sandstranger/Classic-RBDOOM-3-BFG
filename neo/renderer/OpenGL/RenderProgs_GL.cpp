@@ -160,10 +160,24 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	ID_TIME_T glslTimeStamp;
 	int glslFileLength = fileSystem->ReadFile( outFileGLSL.c_str(), NULL, &glslTimeStamp );
 
+	bool regenerateTextureLodBiasShader = false;
+	if( glConfig.driverType == GLDRV_OPENGL_MESA &&
+		shader.stage == SHADER_STAGE_FRAGMENT && glslFileLength > 0 )
+	{
+		void* cachedGLSLBuffer = NULL;
+		const int cachedGLSLLength = fileSystem->ReadFile( outFileGLSL.c_str(), &cachedGLSLBuffer );
+		regenerateTextureLodBiasShader = cachedGLSLLength <= 0 || cachedGLSLBuffer == NULL ||
+			strstr( ( const char* )cachedGLSLBuffer, "uTextureLodBias" ) == NULL;
+		if( cachedGLSLBuffer != NULL )
+		{
+			Mem_Free( cachedGLSLBuffer );
+		}
+	}
+
 	// if the glsl file doesn't exist or we have a newer HLSL file we need to recreate the glsl file.
 	idStr programGLSL;
 	idStr programUniforms;
-	if( ( glslFileLength <= 0 ) || ( hlslTimeStamp != FILE_NOT_FOUND_TIMESTAMP && hlslTimeStamp > glslTimeStamp ) || r_alwaysExportGLSL.GetBool() || glConfig.forceGLSLGeneration )
+	if( ( glslFileLength <= 0 ) || ( hlslTimeStamp != FILE_NOT_FOUND_TIMESTAMP && hlslTimeStamp > glslTimeStamp ) || r_alwaysExportGLSL.GetBool() || glConfig.forceGLSLGeneration || regenerateTextureLodBiasShader )
 	{
 		const char* hlslFileBuffer = NULL;
 		int len = 0;
@@ -393,6 +407,8 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
 
     if ( loaded ) {
         prog.progId = program;
+        prog.textureLodBiasLocation = glGetUniformLocation( program, "uTextureLodBias" );
+        prog.appliedTextureLodBias = 99999.0f;
         prog.vertexShaderIndex = vertexShaderIndex;
         prog.fragmentShaderIndex = fragmentShaderIndex;
 
@@ -544,6 +560,8 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
     programName.StripFileExtension();
     prog.name = programName;
     prog.progId = program;
+    prog.textureLodBiasLocation = glGetUniformLocation( program, "uTextureLodBias" );
+    prog.appliedTextureLodBias = 99999.0f;
     prog.fragmentShaderIndex = fragmentShaderIndex;
     prog.vertexShaderIndex = vertexShaderIndex;
 
@@ -565,7 +583,7 @@ idRenderProgManager::CommitUnforms
 void idRenderProgManager::CommitUniforms( uint64 stateBits )
 {
 	const int progID = current;
-	const renderProg_t& prog = renderProgs[progID];
+	renderProg_t& prog = renderProgs[progID];
 
 	//GL_CheckErrors();
 
@@ -607,6 +625,21 @@ void idRenderProgManager::CommitUniforms( uint64 stateBits )
 	if( prog.fragmentShaderIndex >= 0 )
 	{
 		commitarray( localVectors, shaders[ prog.fragmentShaderIndex ] );
+	}
+
+	if( prog.textureLodBiasLocation != -1 )
+	{
+		float textureLodBias = idMath::ClampFloat( -1.0f, 1.0f, r_lodBias.GetFloat() );
+		if( prog.name.Cmp( "gui" ) == 0 )
+		{
+			textureLodBias = 0.0f;
+		}
+
+		if( prog.appliedTextureLodBias != textureLodBias )
+		{
+			glUniform1f( prog.textureLodBiasLocation, textureLodBias );
+			prog.appliedTextureLodBias = textureLodBias;
+		}
 	}
 
 	//GL_CheckErrors();

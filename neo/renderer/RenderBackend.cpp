@@ -1130,18 +1130,36 @@ static void R_FillGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t
 	R_GlobalPointToLocal( surf->space->modelMatrix, viewOrigin, localViewOrigin.ToVec3() );
 	memcpy( instance.localViewOrigin, localViewOrigin.ToFloatPtr(), sizeof( instance.localViewOrigin ) );
 }
-static int R_BuildGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs, int firstIndex, const idVec3& viewOrigin, gpuInstanceData_t* instances )
+static const int GPU_INSTANCE_BATCH_SCAN_AHEAD = 256;
+static int R_BuildGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs, int firstIndex, const idVec3& viewOrigin, bool* consumed, gpuInstanceData_t* instances )
 {
 	if( glConfig.glVersion < 3.2f || firstIndex < 0 || firstIndex >= numDrawSurfs ) return 1;
 	const drawSurf_t* first = drawSurfs[firstIndex];
 	if( !R_GPUInstanceable( first ) ) return 1;
 	R_FillGPUInstanceData( instances[0], first, viewOrigin );
 	int count = 1;
-	for( int i = firstIndex + 1; i < numDrawSurfs && count < MAX_GPU_INSTANCES_PER_DRAW; ++i )
+
+	// Repeated geometry is rarely adjacent in the draw-surface list. Search a
+	// bounded window, only regrouping opaque surfaces with the exact same sort.
+	const int requestedEnd = firstIndex + GPU_INSTANCE_BATCH_SCAN_AHEAD + 1;
+	const int scanEnd = requestedEnd < numDrawSurfs ? requestedEnd : numDrawSurfs;
+	for( int i = firstIndex + 1; i < scanEnd && count < MAX_GPU_INSTANCES_PER_DRAW; ++i )
 	{
+		if( consumed[i] )
+		{
+			continue;
+		}
 		const drawSurf_t* candidate = drawSurfs[i];
-		if( !R_CanBatchGPUInstances( first, candidate ) ) break;
+		if( candidate == NULL || candidate->sort != first->sort )
+		{
+			continue;
+		}
+		if( !R_CanBatchGPUInstances( first, candidate ) )
+		{
+			continue;
+		}
 		R_FillGPUInstanceData( instances[count], candidate, viewOrigin );
+		consumed[i] = true;
 		++count;
 	}
 	return count;
@@ -1160,6 +1178,11 @@ void idRenderBackend::FillDepthBufferFast( drawSurf_t** drawSurfs, int numDrawSu
 	{
 		return;
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	bool* gpuInstanceConsumed = (bool*)_alloca( numDrawSurfs * sizeof(bool) );
+	memset( gpuInstanceConsumed, 0, numDrawSurfs * sizeof(bool) );
+#endif
 	
 	renderLog.OpenMainBlock( MRB_FILL_DEPTH_BUFFER );
 	renderLog.OpenBlock( "RB_FillDepthBufferFast" );
@@ -1192,6 +1215,12 @@ void idRenderBackend::FillDepthBufferFast( drawSurf_t** drawSurfs, int numDrawSu
 	// continue checking past the subview surfaces
 	for( ; surfNum < numDrawSurfs; surfNum++ )
 	{
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( gpuInstanceConsumed[surfNum] )
+		{
+			continue;
+		}
+#endif
 		const drawSurf_t* surf = drawSurfs[ surfNum ];
 		const idMaterial* shader = surf->material;
 		
@@ -1215,8 +1244,8 @@ void idRenderBackend::FillDepthBufferFast( drawSurf_t** drawSurfs, int numDrawSu
 		int gpuInstanceCount = 1;
 		if( glConfig.glVersion >= 3.2f )
 		{
-			gpuInstanceCount = R_BuildGPUInstanceBatch( (const drawSurf_t* const*)drawSurfs, numDrawSurfs, surfNum, viewDef->renderView.vieworg, gpuInstances );
-			if( gpuInstanceCount > 1 ) { gpuInstanceData = gpuInstances; surfNum += gpuInstanceCount - 1; }
+			gpuInstanceCount = R_BuildGPUInstanceBatch( (const drawSurf_t* const*)drawSurfs, numDrawSurfs, surfNum, viewDef->renderView.vieworg, gpuInstanceConsumed, gpuInstances );
+			if( gpuInstanceCount > 1 ) { gpuInstanceData = gpuInstances; }
 		}
 #endif
 		// set polygon offset?
@@ -2025,6 +2054,11 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 	{
 		return;
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	bool* gpuInstanceConsumed = (bool*)_alloca( numDrawSurfs * sizeof(bool) );
+	memset( gpuInstanceConsumed, 0, numDrawSurfs * sizeof(bool) );
+#endif
 	
 	const bool hdrIsActive = ( r_useHDR.GetBool() && globalFramebuffers.hdrFBO != NULL && globalFramebuffers.hdrFBO->IsBound() );
 	
@@ -2083,6 +2117,12 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 	
 	for( int i = 0; i < numDrawSurfs; i++ )
 	{
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( gpuInstanceConsumed[i] )
+		{
+			continue;
+		}
+#endif
 		const drawSurf_t* drawSurf = drawSurfs[i];
 		const idMaterial* surfaceMaterial = drawSurf->material;
 		
@@ -2117,8 +2157,8 @@ const gpuInstanceData_t* gpuInstanceData = NULL;
 		gpuInstanceData_t gpuInstances[MAX_GPU_INSTANCES_PER_DRAW];
 		if( glConfig.glVersion >= 3.2f )
 		{
-			gpuInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i, viewDef->renderView.vieworg, gpuInstances );
-			if( gpuInstanceCount > 1 ) { gpuInstanceData = gpuInstances; i += gpuInstanceCount - 1; }
+			gpuInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i, viewDef->renderView.vieworg, gpuInstanceConsumed, gpuInstances );
+			if( gpuInstanceCount > 1 ) { gpuInstanceData = gpuInstances; }
 		}
 #endif
 		

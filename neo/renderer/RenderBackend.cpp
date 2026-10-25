@@ -874,13 +874,16 @@ static bool R_GPUInstanceable( const drawSurf_t* surf, bool allowPerforated = fa
 		&& surf->numIndexes > 0 && surf->jointCache == 0
 		&& ( surf->material->Coverage() == MC_OPAQUE
 			|| ( allowPerforated && surf->material->Coverage() == MC_PERFORATED ) )
-		&& surf->material->Deform() == DFRM_NONE;
+		&& surf->material->Deform() == DFRM_NONE
+		&& surf->material->GetSort() != SS_SUBVIEW;
 }
 static bool R_CanBatchGPUInstances( const drawSurf_t* first, const drawSurf_t* candidate,
 		bool requireSameSort = true, bool allowPerforated = false )
 {
 	if( !R_GPUInstanceable( first, allowPerforated ) || !R_GPUInstanceable( candidate, allowPerforated )
 		|| ( requireSameSort && first->sort != candidate->sort )
+		|| first->extraGLState != candidate->extraGLState
+		|| !first->scissorRect.Equals( candidate->scissorRect )
 		|| first->ambientCache != candidate->ambientCache || first->indexCache != candidate->indexCache
 		|| first->numIndexes != candidate->numIndexes || first->material != candidate->material )
 	{

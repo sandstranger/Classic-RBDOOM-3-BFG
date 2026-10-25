@@ -62,10 +62,10 @@ attribInfo_t attribsPC[] =
                 { "float4",		"color2",		"COLOR1",		"in_Color2",			PC_ATTRIB_INDEX_COLOR2,			AT_VS_IN,		VERTEX_MASK_COLOR2 },
 
 
-                { "float4", "instanceMVPX", "INSTANCE_MVP_X", "in_InstanceMVPX", 6, AT_VS_IN, 0 },
-                { "float4", "instanceMVPY", "INSTANCE_MVP_Y", "in_InstanceMVPY", 7, AT_VS_IN, 0 },
-                { "float4", "instanceMVPZ", "INSTANCE_MVP_Z", "in_InstanceMVPZ", 8, AT_VS_IN, 0 },
-                { "float4", "instanceMVPW", "INSTANCE_MVP_W", "in_InstanceMVPW", 9, AT_VS_IN, 0 },
+                { "float4", "instanceMVPX", "INSTANCE_MVP_X", "in_InstanceMVPX", 1, AT_VS_IN, 0 },
+                { "float4", "instanceMVPY", "INSTANCE_MVP_Y", "in_InstanceMVPY", 5, AT_VS_IN, 0 },
+                { "float4", "instanceMVPZ", "INSTANCE_MVP_Z", "in_InstanceMVPZ", 6, AT_VS_IN, 0 },
+                { "float4", "instanceMVPW", "INSTANCE_MVP_W", "in_InstanceMVPW", 7, AT_VS_IN, 0 },
                 { "float4", "instanceModelViewX", "INSTANCE_MODELVIEW_X", "in_InstanceModelViewX", 10, AT_VS_IN, 0 },
                 { "float4", "instanceModelViewY", "INSTANCE_MODELVIEW_Y", "in_InstanceModelViewY", 11, AT_VS_IN, 0 },
                 { "float4", "instanceModelViewZ", "INSTANCE_MODELVIEW_Z", "in_InstanceModelViewZ", 12, AT_VS_IN, 0 },

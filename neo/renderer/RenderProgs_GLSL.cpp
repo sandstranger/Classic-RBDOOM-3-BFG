@@ -71,6 +71,7 @@ attribInfo_t attribsPC[] =
                 { "float4", "instanceModelViewZ", "INSTANCE_MODELVIEW_Z", "in_InstanceModelViewZ", 12, AT_VS_IN, 0 },
                 { "float4", "instanceModelViewW", "INSTANCE_MODELVIEW_W", "in_InstanceModelViewW", 13, AT_VS_IN, 0 },
                 { "float4", "instanceLocalViewOrigin", "INSTANCE_LOCAL_VIEW_ORIGIN", "in_InstanceLocalViewOrigin", 14, AT_VS_IN, 0 },
+                { "float4", "instanceLocalLightOrigin", "INSTANCE_LOCAL_LIGHT_ORIGIN", "in_InstanceLocalLightOrigin", 15, AT_VS_IN, 0 },
                 { "float4",		"position",		"POSITION",		"gl_Position",			0,	AT_VS_OUT | AT_VS_OUT_RESERVED,		0 },
                 { "float",		"clip0",		"CLP0",			"gl_ClipDistance[0]",	0,	AT_VS_OUT,		0 },
                 { "float",		"clip1",		"CLP1",			"gl_ClipDistance[1]",	0,	AT_VS_OUT,		0 },

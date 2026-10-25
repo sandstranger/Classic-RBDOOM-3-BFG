@@ -1089,6 +1089,7 @@ on the 360.
 =====================
 */
 #if defined(ANDROID) && !defined(USE_VULKAN)
+static idCVar r_gpuInstancingDebug( "r_gpuInstancingDebug", "0", CVAR_BOOL, "Log GPU instancing batch statistics" );
 static const int MAX_GPU_INSTANCES_PER_DRAW = 64;
 static bool R_GPUInstanceable( const drawSurf_t* surf )
 {
@@ -1182,6 +1183,8 @@ void idRenderBackend::FillDepthBufferFast( drawSurf_t** drawSurfs, int numDrawSu
 #if defined(ANDROID) && !defined(USE_VULKAN)
 	bool* gpuInstanceConsumed = (bool*)_alloca( numDrawSurfs * sizeof(bool) );
 	memset( gpuInstanceConsumed, 0, numDrawSurfs * sizeof(bool) );
+	int gpuInstanceBatchCount = 0;
+	int gpuInstanceDrawCallsSaved = 0;
 #endif
 	
 	renderLog.OpenMainBlock( MRB_FILL_DEPTH_BUFFER );
@@ -1245,7 +1248,12 @@ void idRenderBackend::FillDepthBufferFast( drawSurf_t** drawSurfs, int numDrawSu
 		if( glConfig.glVersion >= 3.2f )
 		{
 			gpuInstanceCount = R_BuildGPUInstanceBatch( (const drawSurf_t* const*)drawSurfs, numDrawSurfs, surfNum, viewDef->renderView.vieworg, gpuInstanceConsumed, gpuInstances );
-			if( gpuInstanceCount > 1 ) { gpuInstanceData = gpuInstances; }
+			if( gpuInstanceCount > 1 )
+			{
+				gpuInstanceData = gpuInstances;
+				++gpuInstanceBatchCount;
+				gpuInstanceDrawCallsSaved += gpuInstanceCount - 1;
+			}
 		}
 #endif
 		// set polygon offset?
@@ -1290,6 +1298,13 @@ void idRenderBackend::FillDepthBufferFast( drawSurf_t** drawSurfs, int numDrawSu
 	{
 		FillDepthBufferGeneric( perforatedSurfaces, numPerforatedSurfaces );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( r_gpuInstancingDebug.GetBool() )
+	{
+		idLib::Printf( "GPU instancing depth pass: %d batches, %d draw calls saved\n", gpuInstanceBatchCount, gpuInstanceDrawCallsSaved );
+	}
+#endif
 	
 	renderLog.CloseBlock();
 	renderLog.CloseMainBlock();
@@ -2058,6 +2073,8 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 #if defined(ANDROID) && !defined(USE_VULKAN)
 	bool* gpuInstanceConsumed = (bool*)_alloca( numDrawSurfs * sizeof(bool) );
 	memset( gpuInstanceConsumed, 0, numDrawSurfs * sizeof(bool) );
+	int gpuInstanceBatchCount = 0;
+	int gpuInstanceDrawCallsSaved = 0;
 #endif
 	
 	const bool hdrIsActive = ( r_useHDR.GetBool() && globalFramebuffers.hdrFBO != NULL && globalFramebuffers.hdrFBO->IsBound() );
@@ -2158,7 +2175,12 @@ const gpuInstanceData_t* gpuInstanceData = NULL;
 		if( glConfig.glVersion >= 3.2f )
 		{
 			gpuInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i, viewDef->renderView.vieworg, gpuInstanceConsumed, gpuInstances );
-			if( gpuInstanceCount > 1 ) { gpuInstanceData = gpuInstances; }
+			if( gpuInstanceCount > 1 )
+			{
+				gpuInstanceData = gpuInstances;
+				++gpuInstanceBatchCount;
+				gpuInstanceDrawCallsSaved += gpuInstanceCount - 1;
+			}
 		}
 #endif
 		
@@ -2495,6 +2517,12 @@ const gpuInstanceData_t* gpuInstanceData = NULL;
 		}
 	}
 	
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( r_gpuInstancingDebug.GetBool() )
+	{
+		idLib::Printf( "GPU instancing ambient pass: %d batches, %d draw calls saved\n", gpuInstanceBatchCount, gpuInstanceDrawCallsSaved );
+	}
+#endif
 	renderProgManager.Unbind();
 }
 

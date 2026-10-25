@@ -1527,6 +1527,113 @@ int idRenderModelStatic::NearestJoint( int surfaceNum, int a, int b, int c ) con
 //=====================================================================
 
 
+
+void idRenderModelStatic::ApplyStaticBatching( bool rebuildDerived )
+{
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( !r_staticBatching.GetBool() || fastLoad || surfaces.Num() == 0 )
+	{
+		return;
+	}
+
+	// Binary .bproc maps contain surfaces that have already passed through
+	// FinishSurfaces(). Only world-area geometry is eligible on this path.
+	if( rebuildDerived && !isStaticWorldModel )
+	{
+		return;
+	}
+
+	const bool report = r_staticBatchingDebug.GetBool() && ( rebuildDerived || isStaticWorldModel );
+	if( report )
+	{
+		common->Printf( "Static batching evaluating: %s (%d surfaces)\n", name.c_str(), surfaces.Num() );
+	}
+
+	if( surfaces.Num() < 2 )
+	{
+		if( report )
+		{
+			common->Printf( "Static batching skipped: %s (%d surfaces, nothing to merge)\n", name.c_str(), surfaces.Num() );
+		}
+		return;
+	}
+
+	bool rebuildAllDerived = false;
+	bool rebuildMergedDerived = false;
+
+	uint64_t sourceHash = 0;
+	const bool sourceCanBeCached = R_StaticBatchComputeSourceHash( name.c_str(), surfaces, sourceHash );
+	idStr cachePath;
+	const bool cachePathReady = sourceCanBeCached && R_StaticBatchGetCachePath( sourceHash, cachePath );
+	idList<modelSurface_t, TAG_MODEL> cachedSurfaces;
+	bool cacheHit = false;
+
+	if( cachePathReady )
+	{
+		cacheHit = R_StaticBatchLoadCache( cachePath.c_str(), sourceHash, cachedSurfaces );
+	}
+
+	if( cacheHit )
+	{
+		rebuildAllDerived = true;
+		const int oldSurfaceCount = surfaces.Num();
+		R_StaticBatchFreeSurfaces( surfaces );
+		for( int i = 0; i < cachedSurfaces.Num(); ++i )
+		{
+			surfaces.Append( cachedSurfaces[i] );
+		}
+		cachedSurfaces.SetNum( 0 );
+
+		if( r_staticBatchingDebug.GetBool() )
+		{
+			common->Printf( "Static batching cache hit: %s (%d -> %d surfaces)\n", name.c_str(), oldSurfaceCount, surfaces.Num() );
+		}
+	}
+	else
+	{
+		const int oldSurfaceCount = surfaces.Num();
+		const int mergedCount = R_StaticBatchMergeSurfaces( surfaces );
+		rebuildMergedDerived = mergedCount > 0;
+		if( mergedCount > 0 )
+		{
+			bool saved = false;
+			if( cachePathReady )
+			{
+				saved = R_StaticBatchSaveCache( cachePath.c_str(), sourceHash, surfaces );
+			}
+			if( r_staticBatchingDebug.GetBool() )
+			{
+				common->Printf( "Static batching generated: %s (%d -> %d surfaces), cache %s\n",
+					name.c_str(), oldSurfaceCount, surfaces.Num(), saved ? "saved" : "unavailable" );
+			}
+		}
+		else if( r_staticBatchingDebug.GetBool() )
+		{
+			common->Printf( "Static batching skipped: %s (%d surfaces, no compatible merges)\n",
+				name.c_str(), oldSurfaceCount );
+		}
+	}
+	if( rebuildDerived && ( rebuildAllDerived || rebuildMergedDerived ) )
+	{
+		for( int i = 0; i < surfaces.Num(); ++i )
+		{
+			srfTriangles_t* tri = surfaces[i].geometry;
+			if( tri == NULL )
+			{
+				continue;
+			}
+
+			// Cache payloads and newly merged triangles only contain vertices
+			// and indexes. Rebuild silhouette, tangent and bound data for them.
+			if( rebuildAllDerived || tri->silIndexes == NULL )
+			{
+				R_CleanupTriangles( tri, tri->generateNormals, true, surfaces[i].shader->UseUnsmoothedTangents() );
+			}
+		}
+	}
+#endif
+}
+
 /*
 ================
 idRenderModelStatic::FinishSurfaces
@@ -1557,13 +1664,6 @@ void idRenderModelStatic::FinishSurfaces()
 	int			i;
 	int			totalVerts, totalIndexes;
 
-#if defined(ANDROID) && !defined(USE_VULKAN)
-	if( r_staticBatchingDebug.GetBool() && !fastLoad && surfaces.Num() > 0 )
-	{
-		common->Printf( "Static batching evaluating: %s (%d surfaces)\n", name.c_str(), surfaces.Num() );
-	}
-#endif
-	
 	hasDrawingSurfaces = false;
 	hasInteractingSurfaces = false;
 	hasShadowCastingSurfaces = false;
@@ -1618,61 +1718,8 @@ void idRenderModelStatic::FinishSurfaces()
 	}
 	
 
-#if defined(ANDROID) && !defined(USE_VULKAN)
-	if( r_staticBatching.GetBool() && !fastLoad && surfaces.Num() > 1 )
-	{
-		uint64_t sourceHash = 0;
-		const bool sourceCanBeCached = R_StaticBatchComputeSourceHash( name.c_str(), surfaces, sourceHash );
-		idStr cachePath;
-		const bool cachePathReady = sourceCanBeCached && R_StaticBatchGetCachePath( sourceHash, cachePath );
-		idList<modelSurface_t, TAG_MODEL> cachedSurfaces;
-		bool cacheHit = false;
+	ApplyStaticBatching( false );
 
-		if( cachePathReady )
-		{
-			cacheHit = R_StaticBatchLoadCache( cachePath.c_str(), sourceHash, cachedSurfaces );
-		}
-
-		if( cacheHit )
-		{
-			const int oldSurfaceCount = surfaces.Num();
-			R_StaticBatchFreeSurfaces( surfaces );
-			for( int i = 0; i < cachedSurfaces.Num(); ++i )
-			{
-				surfaces.Append( cachedSurfaces[i] );
-			}
-			cachedSurfaces.SetNum( 0 );
-
-			if( r_staticBatchingDebug.GetBool() )
-			{
-				common->Printf( "Static batching cache hit: %s (%d -> %d surfaces)\n", name.c_str(), oldSurfaceCount, surfaces.Num() );
-			}
-		}
-		else
-		{
-			const int oldSurfaceCount = surfaces.Num();
-			const int mergedCount = R_StaticBatchMergeSurfaces( surfaces );
-			if( mergedCount > 0 )
-			{
-				bool saved = false;
-				if( cachePathReady )
-				{
-					saved = R_StaticBatchSaveCache( cachePath.c_str(), sourceHash, surfaces );
-				}
-				if( r_staticBatchingDebug.GetBool() )
-				{
-					common->Printf( "Static batching generated: %s (%d -> %d surfaces), cache %s\n",
-						name.c_str(), oldSurfaceCount, surfaces.Num(), saved ? "saved" : "unavailable" );
-				}
-			}
-			else if( r_staticBatchingDebug.GetBool() )
-			{
-				common->Printf( "Static batching skipped: %s (%d surfaces, no compatible merges)\n",
-					name.c_str(), oldSurfaceCount );
-			}
-		}
-	}
-#endif
 
 	numOriginalSurfaces = surfaces.Num();
 

@@ -129,6 +129,17 @@ idRenderModel* idRenderWorldLocal::ReadBinaryModel( idFile* fileIn )
 	model->InitEmpty( name );
 	if( model->LoadBinaryModel( fileIn, mapTimeStamp ) )
 	{
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		const modelSurface_t* firstSurface = model->NumSurfaces() > 0 ? model->Surface( 0 ) : NULL;
+		if( model->IsStaticWorldModel() && firstSurface != NULL &&
+			firstSurface->geometry != NULL && firstSurface->geometry->verts != NULL &&
+			firstSurface->geometry->indexes != NULL )
+		{
+			// The generated .bproc path skips FinishSurfaces(), so batch the
+			// already-loaded static world-area surfaces here.
+			model->ApplyStaticBatching( true );
+		}
+#endif
 		return model;
 	}
 	return NULL;

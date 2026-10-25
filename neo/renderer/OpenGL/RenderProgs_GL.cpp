@@ -58,6 +58,9 @@ void idRenderProgManager::BindProgram( int index )
 		return;
 	}
 
+	#if defined(ANDROID) && !defined(USE_VULKAN)
+	tr.backend.FlushMultiDrawBatch();
+	#endif
 	current = index;
 
 	RENDERLOG_PRINTF( "Binding GLSL Program %s\n", renderProgs[ index ].name.c_str() );
@@ -71,6 +74,9 @@ idRenderProgManager::Unbind
 */
 void idRenderProgManager::Unbind()
 {
+	#if defined(ANDROID) && !defined(USE_VULKAN)
+	tr.backend.FlushMultiDrawBatch();
+	#endif
 	current = -1;
 
 	glUseProgram( 0 );

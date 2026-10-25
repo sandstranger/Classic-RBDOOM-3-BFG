@@ -318,7 +318,9 @@ void idImage::Bind() {
 
 
     if (!IsLoaded()) {
-
+#if defined(ANDROID) && !defined(USE_VULKAN)
+        tr.backend.FlushMultiDrawBatch();
+#endif
         ActuallyLoadImage(true);
     }
 
@@ -336,6 +338,9 @@ void idImage::Bind() {
         currentMap = tmu->current2DMap;
     }
     if (currentMap != texnum) {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+        tr.backend.FlushMultiDrawBatch();
+#endif
 
 #if !defined(USE_GLES2) && !defined(USE_GLES3) && !ANDROID
         if( glConfig.directStateAccess )

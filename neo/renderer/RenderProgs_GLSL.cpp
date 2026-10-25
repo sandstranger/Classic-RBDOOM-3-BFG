@@ -2085,6 +2085,12 @@ idRenderProgManager::SetUniformValue
 */
 void idRenderProgManager::SetUniformValue( const renderParm_t rp, const float* value )
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    if (memcmp(uniforms[rp].ToFloatPtr(), value, 4 * sizeof(float)) != 0)
+    {
+        tr.backend.FlushMultiDrawBatch();
+    }
+#endif
     for( int i = 0; i < 4; i++ )
     {
         uniforms[rp][i] = value[i];
@@ -2099,5 +2105,8 @@ idRenderProgManager::ZeroUniforms
 */
 void idRenderProgManager::ZeroUniforms()
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    tr.backend.FlushMultiDrawBatch();
+#endif
     memset( uniforms.Ptr(), 0, uniforms.Allocated() );
 }

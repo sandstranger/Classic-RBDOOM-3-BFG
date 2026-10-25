@@ -60,6 +60,12 @@ idCVar stereoRender_warpParmZ( "stereoRender_warpParmZ", "0", CVAR_RENDERER | CV
 idCVar stereoRender_warpParmW( "stereoRender_warpParmW", "0", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "development parm" );
 idCVar stereoRender_warpTargetFraction( "stereoRender_warpTargetFraction", "1.0", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "fraction of half-width the through-lens view covers" );
 idCVar r_useOpenGLDSA("r_useOpenGLDSA", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "Enable/Disable OpenGL DSA. -1 = Enable based on system detection, 0 = Force to Disable, 1 = Force to Enable", -1, 1);
+#if defined(ANDROID) && !defined(USE_VULKAN)
+idCVar r_useMultiDrawIndirect("r_useMultiDrawIndirect", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL,
+    "Batch compatible GLES indexed draws with GL_EXT_multi_draw_indirect");
+idCVar r_showMultiDrawIndirectStats("r_showMultiDrawIndirectStats", "0", CVAR_RENDERER | CVAR_BOOL,
+    "Print GLES multi-draw-indirect batching statistics each frame");
+#endif
 
 //#ifdef _DEBUG
 //idCVar r_showSwapBuffers("r_showSwapBuffers", "1", CVAR_BOOL, "Show timings from GL_BlockingSwapBuffers");
@@ -82,6 +88,25 @@ glContext_t glcontext;
 static int		swapIndex;		// 0 or 1 into renderSync
 static GLsync	renderSync[2];
 static uintptr_t currentVertOffset = ~0;
+#if defined(ANDROID) && !defined(USE_VULKAN)
+struct drawElementsIndirectCommand_t
+{
+    GLuint count;
+    GLuint instanceCount;
+    GLuint firstIndex;
+    GLint baseVertex;
+    GLuint baseInstance;
+};
+static std::vector<drawElementsIndirectCommand_t> g_multiDrawCommands;
+static GLuint g_multiDrawIndirectBuffer = 0;
+static GLuint g_multiDrawVertexBuffer = 0;
+static GLuint g_multiDrawIndexBuffer = 0;
+static bool g_multiDrawIndirectAvailable = false;
+static int g_multiDrawIndirectBatchCount = 0;
+static int g_multiDrawIndirectDrawCallsSaved = 0;
+static int g_multiDrawIndirectSubmittedCommands = 0;
+static const size_t MAX_GLES_MDI_BATCH_COMMANDS = 256;
+#endif
 static bool gEnableGLSynchronization = false;
 
 #if ANDROID
@@ -416,6 +441,13 @@ static void R_CheckPortableExtensions()
     glConfig.uniformBufferAvailable = true;
     glConfig.gpuSkinningAvailable = true;
     glConfig.fragmentProgramAvailable = true;
+#if !defined(USE_VULKAN)
+    // GLAD defines generated symbols even for extensions the active driver lacks.
+    g_multiDrawIndirectAvailable = GLAD_GL_EXT_multi_draw_indirect != 0
+        && glMultiDrawElementsIndirectEXT != NULL
+        && glConfig.drawElementsBaseVertexAvailable;
+    R_PrintExtensionStatus(g_multiDrawIndirectAvailable, "GL_EXT_multi_draw_indirect");
+#endif
 #endif
 
 	// GL_ARB_seamless_cube_map
@@ -787,15 +819,73 @@ void idRenderBackend::Shutdown()
 {
 	cmdBufferPool.Shutdown();
 #if defined(ANDROID) && !defined(USE_VULKAN)
-	if (gpuInstanceBuffer != 0)
-	{
-		GLuint buffer = (GLuint)gpuInstanceBuffer;
-		glDeleteBuffers(1, &buffer);
-		gpuInstanceBuffer = 0;
-	}
+    FlushMultiDrawBatch();
+    if (gpuInstanceBuffer != 0)
+    {
+        GLuint buffer = (GLuint)gpuInstanceBuffer;
+        glDeleteBuffers(1, &buffer);
+        gpuInstanceBuffer = 0;
+    }
+    if (g_multiDrawIndirectBuffer != 0)
+    {
+        glDeleteBuffers(1, &g_multiDrawIndirectBuffer);
+        g_multiDrawIndirectBuffer = 0;
+    }
+    g_multiDrawIndirectAvailable = false;
+    g_multiDrawCommands.clear();
 #endif
 	GLimp_Shutdown();
 }
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+/*
+=============================
+idRenderBackend::FlushMultiDrawBatch
+=============================
+*/
+void idRenderBackend::FlushMultiDrawBatch()
+{
+    const size_t commandCount = g_multiDrawCommands.size();
+    if (commandCount == 0)
+    {
+        return;
+    }
+
+    if (commandCount == 1 || !g_multiDrawIndirectAvailable
+        || glMultiDrawElementsIndirectEXT == NULL)
+    {
+        // A one-command batch is cheaper as a normal draw; retain the safe fallback.
+        for (size_t i = 0; i < commandCount; ++i)
+        {
+            const drawElementsIndirectCommand_t& command = g_multiDrawCommands[i];
+            glDrawElementsBaseVertex(GL_TRIANGLES, (GLsizei)command.count, GL_INDEX_TYPE,
+                (const void*)(uintptr_t)(command.firstIndex * sizeof(triIndex_t)), command.baseVertex);
+        }
+    }
+    else
+    {
+        if (g_multiDrawIndirectBuffer == 0)
+        {
+            glGenBuffers(1, &g_multiDrawIndirectBuffer);
+        }
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, g_multiDrawIndirectBuffer);
+        // Orphan old storage so queued commands don't overwrite data the GPU is reading.
+        glBufferData(GL_DRAW_INDIRECT_BUFFER,
+            (GLsizeiptr)(commandCount * sizeof(drawElementsIndirectCommand_t)),
+            g_multiDrawCommands.data(), GL_STREAM_DRAW);
+        glMultiDrawElementsIndirectEXT(GL_TRIANGLES, GL_INDEX_TYPE, NULL,
+            (GLsizei)commandCount, 0);
+
+        ++g_multiDrawIndirectBatchCount;
+        g_multiDrawIndirectDrawCallsSaved += (int)commandCount - 1;
+        g_multiDrawIndirectSubmittedCommands += (int)commandCount;
+    }
+
+    g_multiDrawCommands.clear();
+    g_multiDrawVertexBuffer = 0;
+    g_multiDrawIndexBuffer = 0;
+}
+#endif
 
 /*
 =============
@@ -808,6 +898,19 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf, const gp
 void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 #endif
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    const bool useInstancing = (instances != NULL && instanceCount > 1);
+    const bool useMultiDraw = g_multiDrawIndirectAvailable
+        && r_useMultiDrawIndirect.GetBool()
+        && isGLES32Version()
+        && !r_singleTriangle.GetBool()
+        && !surf->jointCache
+        && !useInstancing;
+    if (!useMultiDraw)
+    {
+        FlushMultiDrawBatch();
+    }
+#endif
 	// get vertex buffer
 	const vertCacheHandle_t vbHandle = surf->ambientCache;
 	idVertexBuffer* vertexBuffer;
@@ -847,6 +950,15 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 	// RB: 64 bit fixes, changed int to GLintptr
 	const GLintptr indexOffset = ( GLintptr )( ibHandle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
 	// RB end
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    if (useMultiDraw && !g_multiDrawCommands.empty()
+        && (g_multiDrawVertexBuffer != (GLuint)vertexBuffer->GetAPIObject()
+            || g_multiDrawIndexBuffer != (GLuint)indexBuffer->GetAPIObject()
+            || vertexLayout != LAYOUT_DRAW_VERT))
+    {
+        FlushMultiDrawBatch();
+    }
+#endif
 	
 	RENDERLOG_PRINTF( "Binding Buffers: %p:%i %p:%i\n", vertexBuffer, vertOffset, indexBuffer, indexOffset );
 	
@@ -890,7 +1002,16 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 		glBindBufferRange(GL_UNIFORM_BUFFER, 0, ubo, jointBuffer.GetOffset(), jointBuffer.GetSize());
 	}
 
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    // Uniform writes flush before changing values, so unchanged uniforms can be
+    // uploaded once and shared by all commands in the pending batch.
+    if (!(useMultiDraw && !g_multiDrawCommands.empty()))
+    {
+        renderProgManager.CommitUniforms(glStateBits);
+    }
+#else
 	renderProgManager.CommitUniforms(glStateBits);
+#endif
 #ifndef ANDROID
 	if (glConfig.directStateAccess) {		
 		// RB: 64 bit fixes, changed GLuint to GLintptr
@@ -983,7 +1104,6 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 	}
 	// RB end
 #if defined(ANDROID) && !defined(USE_VULKAN)
-	const bool useInstancing = (instances != NULL && instanceCount > 1);
 	const GLuint mvpAttribs[4] = { 1, 5, 6, 7 };
 	const GLuint modelViewAttribs[4] = { 10, 11, 12, 13 };
 	const GLuint instanceAttribs[10] = { 1, 5, 6, 7, 10, 11, 12, 13, 14, 15 };
@@ -1016,6 +1136,29 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 		glVertexAttribPointer(15, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(36 * sizeof(float)));
 		glVertexAttribDivisor(15, 1);
 	}
+    if (useMultiDraw)
+    {
+        drawElementsIndirectCommand_t command;
+        command.count = (GLuint)surf->numIndexes;
+        command.instanceCount = 1;
+        command.firstIndex = (GLuint)(indexOffset / sizeof(triIndex_t));
+        command.baseVertex = (GLint)(vertOffset / sizeof(idDrawVert));
+        // EXT_base_instance is optional, so the reserved field must remain zero.
+        command.baseInstance = 0;
+        g_multiDrawCommands.push_back(command);
+        if (g_multiDrawCommands.size() == 1)
+        {
+            g_multiDrawVertexBuffer = (GLuint)vertexBuffer->GetAPIObject();
+            g_multiDrawIndexBuffer = (GLuint)indexBuffer->GetAPIObject();
+        }
+        pc.c_drawElements++;
+        pc.c_drawIndexes += surf->numIndexes;
+        if (g_multiDrawCommands.size() >= MAX_GLES_MDI_BATCH_COMMANDS)
+        {
+            FlushMultiDrawBatch();
+        }
+        return;
+    }
 	if (useInstancing)
 	{
 		glDrawElementsInstancedBaseVertex(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
@@ -1074,6 +1217,12 @@ idRenderBackend::GL_StartFrame
 */
 void idRenderBackend::GL_StartFrame()
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+    g_multiDrawIndirectBatchCount = 0;
+    g_multiDrawIndirectDrawCallsSaved = 0;
+    g_multiDrawIndirectSubmittedCommands = 0;
+#endif
 	if (gEnableGLSynchronization && glConfig.syncAvailable && glIsSync(renderSync[swapIndex]))
 	{
 		const auto glSync = renderSync[swapIndex];
@@ -1106,6 +1255,17 @@ idRenderBackend::GL_EndFrame
 */
 void idRenderBackend::GL_EndFrame()
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+    if (r_showMultiDrawIndirectStats.GetBool())
+    {
+        idLib::Printf("GLES MDI: available=%d, batches=%d, submitted draws=%d, draw calls saved=%d\n",
+            g_multiDrawIndirectAvailable ? 1 : 0,
+            g_multiDrawIndirectBatchCount,
+            g_multiDrawIndirectSubmittedCommands,
+            g_multiDrawIndirectDrawCallsSaved);
+    }
+#endif
 	// Fix for the steam overlay not showing up while in game without Shell/Debug/Console/Menu also rendering
 	glColorMask( 1, 1, 1, 1 );
 	
@@ -1122,6 +1282,9 @@ may touch, including the editor.
 */
 void idRenderBackend::GL_SetDefaultState()
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+#endif
 	RENDERLOG_PRINTF( "--- GL_SetDefaultState ---\n" );
 
 #ifndef ANDROID
@@ -1219,6 +1382,9 @@ void idRenderBackend::GL_State( uint64 stateBits, bool forceGlState )
 	{
 		return;
 	}
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+#endif
 	
 	//
 	// culling
@@ -1605,6 +1771,9 @@ idRenderBackend::GL_Scissor
 */
 void idRenderBackend::GL_Scissor( int x /* left*/, int y /* bottom */, int w, int h )
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+#endif
 	glScissor( x, y, w, h );
 }
 
@@ -1615,6 +1784,9 @@ idRenderBackend::GL_Viewport
 */
 void idRenderBackend::GL_Viewport( int x /* left */, int y /* bottom */, int w, int h )
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+#endif
 	glViewport( x, y, w, h );
 }
 
@@ -1625,6 +1797,12 @@ idRenderBackend::GL_PolygonOffset
 */
 void idRenderBackend::GL_PolygonOffset( float scale, float bias )
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    if (polyOfsScale != scale || polyOfsBias != bias)
+    {
+        FlushMultiDrawBatch();
+    }
+#endif
 	polyOfsScale = scale;
 	polyOfsBias = bias;
 	
@@ -1681,6 +1859,9 @@ idRenderBackend::GL_Clear
 */
 void idRenderBackend::GL_Clear( bool color, bool depth, bool stencil, byte stencilValue, float r, float g, float b, float a, bool clearHDR )
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+#endif
 	int clearFlags = 0;
 	if( color )
 	{
@@ -1899,6 +2080,9 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass )
 #endif
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+#endif
 	// get vertex buffer
 	const vertCacheHandle_t vbHandle = drawSurf->shadowCache;
 	idVertexBuffer* vertexBuffer;

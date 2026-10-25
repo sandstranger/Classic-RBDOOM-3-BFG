@@ -260,6 +260,10 @@ public:
 	
 	void				Init();
 	void				Shutdown();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    // Submit pending MDI commands before any draw state changes.
+    void            FlushMultiDrawBatch();
+#endif
 	
 	void				ExecuteBackEndCommands( const emptyCommand_t* cmds );
 	void				StereoRenderExecuteBackEndCommands( const emptyCommand_t* const allCmds );

@@ -648,6 +648,9 @@ void Framebuffer::Bind()
 
     if (currentBoundFramebuffer != this)
     {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+        tr.backend.FlushMultiDrawBatch();
+#endif
         glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer);
         currentBoundFramebuffer = this;
     }
@@ -664,6 +667,9 @@ void Framebuffer::Unbind()
 
     if (currentBoundFramebuffer != nullptr)
     {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+        tr.backend.FlushMultiDrawBatch();
+#endif
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
         currentBoundFramebuffer = nullptr;

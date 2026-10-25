@@ -276,7 +276,12 @@ private:
 #else
 	void				DrawElementsWithCounters( const drawSurf_t* surf );
 #endif
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void				DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass,
+					const gpuInstanceData_t* instances = NULL, int instanceCount = 1 );
+#else
 	void				DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass );
+#endif
 	
 	void				SetColorMappings();
 	void				ResizeImages();

@@ -1892,7 +1892,12 @@ extern idCVar r_useStencilShadowPreload;
 idRenderBackend::DrawStencilShadowPass
 ==================
 */
+#if defined(ANDROID) && !defined(USE_VULKAN)
+void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass,
+		const gpuInstanceData_t* instances, int instanceCount )
+#else
 void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass )
+#endif
 {
 	// get vertex buffer
 	const vertCacheHandle_t vbHandle = drawSurf->shadowCache;
@@ -2098,6 +2103,34 @@ if (!isGLES32Version()) {
 	}
 	// RB end
 	
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	const bool useInstancing = instances != NULL && instanceCount > 1 && !drawSurf->jointCache;
+	const GLuint mvpAttribs[4] = { 1, 5, 6, 7 };
+	const GLuint lightOriginAttrib = 15;
+	if( useInstancing )
+	{
+		if( gpuInstanceBuffer == 0 )
+		{
+			GLuint buffer = 0;
+			glGenBuffers( 1, &buffer );
+			gpuInstanceBuffer = buffer;
+		}
+		glBindBuffer( GL_ARRAY_BUFFER, (GLuint)gpuInstanceBuffer );
+		glBufferData( GL_ARRAY_BUFFER, sizeof( gpuInstanceData_t ) * instanceCount, instances, GL_STREAM_DRAW );
+		const GLsizei stride = sizeof( gpuInstanceData_t );
+		for( int row = 0; row < 4; ++row )
+		{
+			const GLuint attrib = mvpAttribs[row];
+			glEnableVertexAttribArray( attrib );
+			glVertexAttribPointer( attrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)( row * 4 * sizeof( float ) ) );
+			glVertexAttribDivisor( attrib, 1 );
+		}
+		glEnableVertexAttribArray( lightOriginAttrib );
+		glVertexAttribPointer( lightOriginAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)( 36 * sizeof( float ) ) );
+		glVertexAttribDivisor( lightOriginAttrib, 1 );
+	}
+#endif
+
 	renderProgManager.CommitUniforms( glStateBits );
 	
 	if( drawSurf->jointCache )
@@ -2115,15 +2148,24 @@ if (!isGLES32Version()) {
 	}
 	else
 	{
-        if (!isGLES32Version()) {
-            glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-                           GL_INDEX_TYPE, (triIndex_t *) indexOffset);
-        } else {
-            glDrawElementsBaseVertex(GL_TRIANGLES,
-                                     r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-                                     GL_INDEX_TYPE, (triIndex_t *) indexOffset,
-                                     vertOffset / sizeof(idShadowVert));
-        }
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( useInstancing )
+		{
+			glDrawElementsInstancedBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+					GL_INDEX_TYPE, (triIndex_t*)indexOffset, instanceCount, vertOffset / sizeof( idShadowVert ) );
+		}
+		else
+#endif
+		if( !isGLES32Version() )
+		{
+			glDrawElements( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+					GL_INDEX_TYPE, (triIndex_t*)indexOffset );
+		}
+		else
+		{
+			glDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+				GL_INDEX_TYPE, (triIndex_t*)indexOffset, vertOffset / sizeof( idShadowVert ) );
+		}
 	}
 	
 	// RB: added stats
@@ -2151,15 +2193,24 @@ if (!isGLES32Version()) {
 		}
 		else
 		{
-        if (!isGLES32Version()) {
-            glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-                   GL_INDEX_TYPE, (triIndex_t *) indexOffset);
-        }
-        else {
-            glDrawElementsBaseVertex(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-                             GL_INDEX_TYPE, (triIndex_t *) indexOffset,
-                             vertOffset / sizeof(idShadowVert));
-        }
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( useInstancing )
+		{
+			glDrawElementsInstancedBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+					GL_INDEX_TYPE, (triIndex_t*)indexOffset, instanceCount, vertOffset / sizeof( idShadowVert ) );
+		}
+		else
+#endif
+		if( !isGLES32Version() )
+		{
+			glDrawElements( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+				GL_INDEX_TYPE, (triIndex_t*)indexOffset );
+		}
+		else
+		{
+			glDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+				GL_INDEX_TYPE, (triIndex_t*)indexOffset, vertOffset / sizeof( idShadowVert ) );
+		}
     }
 		
 		// RB: added stats
@@ -2167,6 +2218,19 @@ if (!isGLES32Version()) {
 		pc.c_shadowIndexes += drawSurf->numIndexes;
 		// RB end
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( useInstancing )
+	{
+		for( int row = 0; row < 4; ++row )
+		{
+			glVertexAttribDivisor( mvpAttribs[row], 0 );
+			glDisableVertexAttribArray( mvpAttribs[row] );
+		}
+		glVertexAttribDivisor( lightOriginAttrib, 0 );
+		glDisableVertexAttribArray( lightOriginAttrib );
+	}
+#endif
 }
 
 /*

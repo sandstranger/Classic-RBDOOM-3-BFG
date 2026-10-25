@@ -479,6 +479,13 @@ public:
 		// RB end
 	}
 	
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_ShadowInstanced()
+	{
+		BindShader_Builtin( BUILTIN_SHADOW_INSTANCED );
+	}
+#endif
+
 	void	BindShader_ShadowSkinned()
 	{
 		// RB: no FFP fragment rendering anymore
@@ -785,6 +792,9 @@ private:
 		BUILTIN_DEPTH_INSTANCED,
 #endif
 		BUILTIN_SHADOW,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_SHADOW_INSTANCED,
+#endif
 		BUILTIN_SHADOW_SKINNED,
 		BUILTIN_SHADOW_DEBUG,
 		BUILTIN_SHADOW_DEBUG_SKINNED,

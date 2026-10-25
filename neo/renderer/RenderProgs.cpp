@@ -176,6 +176,9 @@ void idRenderProgManager::Init()
 #endif
 		
 		{ BUILTIN_SHADOW, "shadow.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_SHADOW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		{ BUILTIN_SHADOW_INSTANCED, "shadow.vfp", "_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_SHADOW_VERT },
+#endif
 		{ BUILTIN_SHADOW_SKINNED, "shadow_skinned.vfp", "", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_SHADOW_VERT_SKINNED },
 		
 		{ BUILTIN_SHADOW_DEBUG, "shadowDebug.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },

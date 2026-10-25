@@ -1022,6 +1022,48 @@ static int R_BuildShadowGPUInstanceBatch( const drawSurf_t* const* drawSurfs, in
 	return count;
 }
 
+static bool R_CanBatchStencilShadowInstances( const drawSurf_t* first, const drawSurf_t* candidate )
+{
+	return first != NULL && candidate != NULL && first->space != NULL && candidate->space != NULL
+		&& first->shadowCache != 0 && candidate->shadowCache == first->shadowCache
+		&& candidate->indexCache == first->indexCache && candidate->numIndexes == first->numIndexes
+		&& candidate->jointCache == 0 && first->jointCache == 0
+		&& first->shadowVolumeState == SHADOWVOLUME_DONE && candidate->shadowVolumeState == SHADOWVOLUME_DONE
+		&& candidate->renderZFail == first->renderZFail
+		&& candidate->scissorRect.Equals( first->scissorRect )
+		&& candidate->scissorRect.zmin == first->scissorRect.zmin
+		&& candidate->scissorRect.zmax == first->scissorRect.zmax;
+}
+
+static int R_BuildStencilShadowGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs,
+		int firstIndex, const idVec3& viewOrigin, const idVec3& globalLightOrigin,
+		bool* consumed, gpuInstanceData_t* instances )
+{
+	if( glConfig.glVersion < 3.2f || firstIndex < 0 || firstIndex >= numDrawSurfs ) return 1;
+	const drawSurf_t* first = drawSurfs[firstIndex];
+	if( first == NULL || first->space == NULL || first->jointCache != 0 || first->shadowCache == 0
+		|| first->numIndexes <= 0 || first->shadowVolumeState != SHADOWVOLUME_DONE ) return 1;
+	R_FillGPUInstanceData( instances[0], first, viewOrigin );
+	idVec4 localLightOrigin( 0.0f );
+	R_GlobalPointToLocal( first->space->modelMatrix, globalLightOrigin, localLightOrigin.ToVec3() );
+	memcpy( instances[0].localLightOrigin, localLightOrigin.ToFloatPtr(), sizeof( instances[0].localLightOrigin ) );
+	int count = 1;
+	const int requestedEnd = firstIndex + GPU_INSTANCE_BATCH_SCAN_AHEAD + 1;
+	const int scanEnd = requestedEnd < numDrawSurfs ? requestedEnd : numDrawSurfs;
+	for( int i = firstIndex + 1; i < scanEnd && count < MAX_GPU_INSTANCES_PER_DRAW; ++i )
+	{
+		if( consumed[i] || !R_CanBatchStencilShadowInstances( first, drawSurfs[i] ) ) continue;
+		const drawSurf_t* candidate = drawSurfs[i];
+		R_FillGPUInstanceData( instances[count], candidate, viewOrigin );
+		idVec4 instanceLocalLightOrigin( 0.0f );
+		R_GlobalPointToLocal( candidate->space->modelMatrix, globalLightOrigin, instanceLocalLightOrigin.ToVec3() );
+		memcpy( instances[count].localLightOrigin, instanceLocalLightOrigin.ToFloatPtr(), sizeof( instances[count].localLightOrigin ) );
+		consumed[i] = true;
+		++count;
+	}
+	return count;
+}
+
 static void R_FillInteractionGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t* surf,
 		const idVec3& viewOrigin, const idVec3& globalLightOrigin, const idPlane globalLightProject[4],
 		const float* lightTextureMatrix, bool hasLightTextureMatrix )
@@ -3018,9 +3060,26 @@ void idRenderBackend::StencilShadowPass( const drawSurf_t* drawSurfs, const view
 		
 	// process the chain of shadows with the current rendering state
 	currentSpace = NULL;
-	
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	int numStencilShadowSurfs = 0;
+	for( const drawSurf_t* scan = drawSurfs; scan != NULL; scan = scan->nextOnLight ) ++numStencilShadowSurfs;
+	const int stencilShadowAllocCount = numStencilShadowSurfs > 0 ? numStencilShadowSurfs : 1;
+	const drawSurf_t** stencilShadowSurfs = (const drawSurf_t**)_alloca( stencilShadowAllocCount * sizeof( const drawSurf_t* ) );
+	bool* stencilShadowConsumed = (bool*)_alloca( stencilShadowAllocCount * sizeof( bool ) );
+	int stencilShadowArrayIndex = 0;
+	for( const drawSurf_t* scan = drawSurfs; scan != NULL; scan = scan->nextOnLight ) stencilShadowSurfs[stencilShadowArrayIndex++] = scan;
+	memset( stencilShadowConsumed, 0, stencilShadowAllocCount * sizeof( bool ) );
+	int stencilShadowBatchCount = 0;
+	int stencilShadowDrawCallsSaved = 0;
+	for( int stencilShadowIndex = 0; stencilShadowIndex < numStencilShadowSurfs; ++stencilShadowIndex )
+	{
+		if( stencilShadowConsumed[stencilShadowIndex] ) continue;
+		const drawSurf_t* drawSurf = stencilShadowSurfs[stencilShadowIndex];
+#else
 	for( const drawSurf_t* drawSurf = drawSurfs; drawSurf != NULL; drawSurf = drawSurf->nextOnLight )
 	{
+#endif
 		if( drawSurf->scissorRect.IsEmpty() )
 		{
 			continue;	// !@# FIXME: find out why this is sometimes being hit!
@@ -3046,6 +3105,24 @@ void idRenderBackend::StencilShadowPass( const drawSurf_t* drawSurfs, const view
 		{
 			continue;	// a job may have created an empty shadow volume
 		}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		gpuInstanceData_t stencilShadowInstances[MAX_GPU_INSTANCES_PER_DRAW];
+		const gpuInstanceData_t* stencilShadowInstanceData = NULL;
+		int stencilShadowInstanceCount = 1;
+		if( glConfig.glVersion >= 3.2f && r_showShadows.GetInteger() == 0 && !drawSurf->jointCache )
+		{
+			stencilShadowInstanceCount = R_BuildStencilShadowGPUInstanceBatch( stencilShadowSurfs,
+					numStencilShadowSurfs, stencilShadowIndex, viewDef->renderView.vieworg,
+					vLight->globalLightOrigin, stencilShadowConsumed, stencilShadowInstances );
+			if( stencilShadowInstanceCount > 1 )
+			{
+				stencilShadowInstanceData = stencilShadowInstances;
+				++stencilShadowBatchCount;
+				stencilShadowDrawCallsSaved += stencilShadowInstanceCount - 1;
+			}
+		}
+#endif
 		
 		if( !currentScissor.Equals( drawSurf->scissorRect ) && r_useScissor.GetBool() )
 		{
@@ -3137,8 +3214,28 @@ void idRenderBackend::StencilShadowPass( const drawSurf_t* drawSurfs, const view
 		}
 #endif
 		
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( stencilShadowInstanceCount > 1 )
+		{
+			renderProgManager.BindShader_ShadowInstanced();
+			DrawStencilShadowPass( drawSurf, renderZPass, stencilShadowInstanceData, stencilShadowInstanceCount );
+		}
+		else
+		{
+			DrawStencilShadowPass( drawSurf, renderZPass );
+		}
+#else
 		DrawStencilShadowPass( drawSurf, renderZPass );
+#endif
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( r_gpuInstancingDebug.GetBool() && stencilShadowBatchCount > 0 )
+	{
+		idLib::Printf( "GPU instancing stencil-shadow pass: %d batches, %d draw calls saved\n",
+				stencilShadowBatchCount, stencilShadowDrawCallsSaved );
+	}
+#endif
 	
 	// cleanup the shadow specific rendering state
 	

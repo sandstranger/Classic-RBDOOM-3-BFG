@@ -1754,34 +1754,21 @@ void R_BuildWorldStaticBatches( idList<idRenderModel*, TAG_MODEL>& localModels, 
 			continue;
 		}
 
-		idList<modelSurface_t, TAG_MODEL> sourceCopies;
+		// Hash the existing CPU meshes first. On a cache hit, do not duplicate or merge them.
+		idList<modelSurface_t, TAG_MODEL> hashSurfaces;
 		for( int i = 0; i < sources.Num(); ++i )
 		{
 			if( sources[i].groupIndex != groupIndex )
 			{
 				continue;
 			}
-
-			const modelSurface_t& original = sources[i].model->surfaces[sources[i].surfaceIndex];
-			const srfTriangles_t* originalTri = original.geometry;
-			srfTriangles_t* copyTri = R_AllocStaticTriSurf();
-			copyTri->numVerts = originalTri->numVerts;
-			copyTri->numIndexes = originalTri->numIndexes;
-			copyTri->generateNormals = originalTri->generateNormals;
-			R_AllocStaticTriSurfVerts( copyTri, copyTri->numVerts );
-			R_AllocStaticTriSurfIndexes( copyTri, copyTri->numIndexes );
-			memcpy( copyTri->verts, originalTri->verts, (size_t)copyTri->numVerts * sizeof( idDrawVert ) );
-			memcpy( copyTri->indexes, originalTri->indexes, (size_t)copyTri->numIndexes * sizeof( triIndex_t ) );
-
-			modelSurface_t copiedSurface = original;
-			copiedSurface.id = sources[i].surfaceIndex; // stable ID; BSP proc surface IDs are not always initialized
-			copiedSurface.geometry = copyTri;
-			sourceCopies.Append( copiedSurface );
+			modelSurface_t hashSurface = sources[i].model->surfaces[sources[i].surfaceIndex];
+			hashSurface.id = sources[i].surfaceIndex; // stable ID; BSP proc surface IDs are not always initialized
+			hashSurfaces.Append( hashSurface );
 		}
 
-		if( sourceCopies.Num() != group.sourceCount )
+		if( hashSurfaces.Num() != group.sourceCount )
 		{
-			R_StaticBatchFreeSurfaces( sourceCopies );
 			continue;
 		}
 
@@ -1791,7 +1778,7 @@ void R_BuildWorldStaticBatches( idList<idRenderModel*, TAG_MODEL>& localModels, 
 			group.key.generateNormals ? 1 : 0, groupIndex );
 
 		uint64_t sourceHash = 0;
-		const bool canHash = R_StaticBatchComputeSourceHash( batchKey.c_str(), sourceCopies, sourceHash );
+		const bool canHash = R_StaticBatchComputeSourceHash( batchKey.c_str(), hashSurfaces, sourceHash );
 		idStr cachePath;
 		const bool cachePathReady = canHash && R_StaticBatchGetCachePath( sourceHash, cachePath );
 		idList<modelSurface_t, TAG_MODEL> batchSurfaces;
@@ -1804,11 +1791,42 @@ void R_BuildWorldStaticBatches( idList<idRenderModel*, TAG_MODEL>& localModels, 
 		bool cacheSaved = false;
 		if( cacheHit )
 		{
-			R_StaticBatchFreeSurfaces( sourceCopies );
 			++cacheHits;
 		}
 		else
 		{
+			// Cache miss: now allocate independent geometry that the merge helper can own.
+			idList<modelSurface_t, TAG_MODEL> sourceCopies;
+			for( int i = 0; i < sources.Num(); ++i )
+			{
+				if( sources[i].groupIndex != groupIndex )
+				{
+					continue;
+				}
+
+				const modelSurface_t& original = sources[i].model->surfaces[sources[i].surfaceIndex];
+				const srfTriangles_t* originalTri = original.geometry;
+				srfTriangles_t* copyTri = R_AllocStaticTriSurf();
+				copyTri->numVerts = originalTri->numVerts;
+				copyTri->numIndexes = originalTri->numIndexes;
+				copyTri->generateNormals = originalTri->generateNormals;
+				R_AllocStaticTriSurfVerts( copyTri, copyTri->numVerts );
+				R_AllocStaticTriSurfIndexes( copyTri, copyTri->numIndexes );
+				memcpy( copyTri->verts, originalTri->verts, (size_t)copyTri->numVerts * sizeof( idDrawVert ) );
+				memcpy( copyTri->indexes, originalTri->indexes, (size_t)copyTri->numIndexes * sizeof( triIndex_t ) );
+
+				modelSurface_t copiedSurface = original;
+				copiedSurface.id = sources[i].surfaceIndex;
+				copiedSurface.geometry = copyTri;
+				sourceCopies.Append( copiedSurface );
+			}
+
+			if( sourceCopies.Num() != group.sourceCount )
+			{
+				R_StaticBatchFreeSurfaces( sourceCopies );
+				continue;
+			}
+
 			const int mergedCount = R_StaticBatchMergeSurfaces( sourceCopies );
 			if( mergedCount <= 0 || sourceCopies.Num() != 1 )
 			{

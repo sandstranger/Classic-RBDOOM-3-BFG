@@ -327,4 +327,7 @@ public:
 	};
 };
 
+// Build cached world-space static batches from BSP area models.
+void R_BuildWorldStaticBatches( idList<idRenderModel*, TAG_MODEL>& localModels, const char* mapName, idList<idRenderModel*, TAG_MODEL>& outBatches );
+
 #endif /* !__MODEL_H__ */

@@ -1050,6 +1050,18 @@ static void R_FillInteractionGPUInstanceData( gpuInstanceData_t& instance, const
 	}
 }
 
+
+static void R_FillTexGenGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t* surf,
+		const idVec3& viewOrigin, const idPlane globalPlanes[4] )
+{
+	R_FillGPUInstanceData( instance, surf, viewOrigin );
+	idPlane localPlanes[4];
+	for( int planeIndex = 0; planeIndex < 4; ++planeIndex )
+	{
+		R_GlobalPlaneToLocal( surf->space->modelMatrix, globalPlanes[planeIndex], localPlanes[planeIndex] );
+		memcpy( &instance.modelView[planeIndex * 4], localPlanes[planeIndex].ToFloatPtr(), 4 * sizeof( float ) );
+	}
+}
 static bool R_GPUShaderPassMaterialInstanceable( const idMaterial* material )
 {
 	if( material == NULL || material->GetSort() >= SS_POST_PROCESS
@@ -4587,15 +4599,63 @@ idRenderBackend::T_BlendLight
 void idRenderBackend::T_BlendLight( const drawSurf_t* drawSurfs, const viewLight_t* vLight )
 {
 	currentSpace = NULL;
-	
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	int numBlendSurfs = 0;
+	for( const drawSurf_t* scan = drawSurfs; scan != NULL; scan = scan->nextOnLight )
+	{
+		++numBlendSurfs;
+	}
+	const int blendAllocCount = numBlendSurfs > 0 ? numBlendSurfs : 1;
+	const drawSurf_t** blendBatchSurfs = (const drawSurf_t**)_alloca( blendAllocCount * sizeof( const drawSurf_t* ) );
+	bool* blendConsumed = (bool*)_alloca( blendAllocCount * sizeof( bool ) );
+	int blendArrayIndex = 0;
+	for( const drawSurf_t* scan = drawSurfs; scan != NULL; scan = scan->nextOnLight )
+	{
+		blendBatchSurfs[blendArrayIndex++] = scan;
+	}
+	memset( blendConsumed, 0, blendAllocCount * sizeof( bool ) );
+	int blendBatchCount = 0;
+	int blendDrawCallsSaved = 0;
+	for( int blendIndex = 0; blendIndex < numBlendSurfs; ++blendIndex )
+	{
+		if( blendConsumed[blendIndex] )
+		{
+			continue;
+		}
+		const drawSurf_t* drawSurf = blendBatchSurfs[blendIndex];
+		gpuInstanceData_t blendInstances[MAX_GPU_INSTANCES_PER_DRAW];
+		const drawSurf_t* blendInstanceSurfs[MAX_GPU_INSTANCES_PER_DRAW];
+		const gpuInstanceData_t* blendInstanceData = NULL;
+		int blendInstanceCount = 1;
+#else
 	for( const drawSurf_t* drawSurf = drawSurfs; drawSurf != NULL; drawSurf = drawSurf->nextOnLight )
 	{
+#endif
 		if( drawSurf->scissorRect.IsEmpty() )
 		{
 			continue;	// !@# FIXME: find out why this is sometimes being hit!
 			// temporarily jump over the scissor and draw so the gl error callback doesn't get hit
 		}
 		
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( glConfig.glVersion >= 3.2f && !drawSurf->jointCache )
+		{
+			blendInstanceCount = R_BuildGPUInstanceBatch( blendBatchSurfs, numBlendSurfs, blendIndex,
+					viewDef->renderView.vieworg, blendConsumed, blendInstances, true, blendInstanceSurfs );
+			if( blendInstanceCount > 1 )
+			{
+				for( int instanceIndex = 0; instanceIndex < blendInstanceCount; ++instanceIndex )
+				{
+					R_FillTexGenGPUInstanceData( blendInstances[instanceIndex], blendInstanceSurfs[instanceIndex],
+							viewDef->renderView.vieworg, vLight->lightProject );
+				}
+				blendInstanceData = blendInstances;
+				++blendBatchCount;
+				blendDrawCallsSaved += blendInstanceCount - 1;
+			}
+		}
+#endif
 		if( !currentScissor.Equals( drawSurf->scissorRect ) && r_useScissor.GetBool() )
 		{
 			// change the scissor
@@ -4627,8 +4687,29 @@ void idRenderBackend::T_BlendLight( const drawSurf_t* drawSurfs, const viewLight
 			currentSpace = drawSurf->space;
 		}
 		
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( blendInstanceCount > 1 )
+		{
+			renderProgManager.BindShader_BlendLightInstanced();
+			DrawElementsWithCounters( drawSurf, blendInstanceData, blendInstanceCount );
+		}
+		else
+		{
+			renderProgManager.BindShader_BlendLight();
+			DrawElementsWithCounters( drawSurf );
+		}
+#else
 		DrawElementsWithCounters( drawSurf );
+#endif
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( r_gpuInstancingDebug.GetBool() && blendBatchCount > 0 )
+	{
+		idLib::Printf( "GPU instancing blend-light pass: %d batches, %d draw calls saved\n",
+				blendBatchCount, blendDrawCallsSaved );
+	}
+#endif
 }
 
 /*
@@ -4716,15 +4797,63 @@ idRenderBackend::T_BasicFog
 void idRenderBackend::T_BasicFog( const drawSurf_t* drawSurfs, const idPlane fogPlanes[4], const idRenderMatrix* inverseBaseLightProject )
 {
 	currentSpace = NULL;
-	
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	int numFogSurfs = 0;
+	for( const drawSurf_t* scan = drawSurfs; scan != NULL; scan = scan->nextOnLight )
+	{
+		++numFogSurfs;
+	}
+	const int fogAllocCount = numFogSurfs > 0 ? numFogSurfs : 1;
+	const drawSurf_t** fogBatchSurfs = (const drawSurf_t**)_alloca( fogAllocCount * sizeof( const drawSurf_t* ) );
+	bool* fogConsumed = (bool*)_alloca( fogAllocCount * sizeof( bool ) );
+	int fogArrayIndex = 0;
+	for( const drawSurf_t* scan = drawSurfs; scan != NULL; scan = scan->nextOnLight )
+	{
+		fogBatchSurfs[fogArrayIndex++] = scan;
+	}
+	memset( fogConsumed, 0, fogAllocCount * sizeof( bool ) );
+	int fogBatchCount = 0;
+	int fogDrawCallsSaved = 0;
+	for( int fogIndex = 0; fogIndex < numFogSurfs; ++fogIndex )
+	{
+		if( fogConsumed[fogIndex] )
+		{
+			continue;
+		}
+		const drawSurf_t* drawSurf = fogBatchSurfs[fogIndex];
+		gpuInstanceData_t fogInstances[MAX_GPU_INSTANCES_PER_DRAW];
+		const drawSurf_t* fogInstanceSurfs[MAX_GPU_INSTANCES_PER_DRAW];
+		const gpuInstanceData_t* fogInstanceData = NULL;
+		int fogInstanceCount = 1;
+#else
 	for( const drawSurf_t* drawSurf = drawSurfs; drawSurf != NULL; drawSurf = drawSurf->nextOnLight )
 	{
+#endif
 		if( drawSurf->scissorRect.IsEmpty() )
 		{
 			continue;	// !@# FIXME: find out why this is sometimes being hit!
 			// temporarily jump over the scissor and draw so the gl error callback doesn't get hit
 		}
 		
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( inverseBaseLightProject == NULL && glConfig.glVersion >= 3.2f && !drawSurf->jointCache )
+		{
+			fogInstanceCount = R_BuildGPUInstanceBatch( fogBatchSurfs, numFogSurfs, fogIndex,
+					viewDef->renderView.vieworg, fogConsumed, fogInstances, true, fogInstanceSurfs );
+			if( fogInstanceCount > 1 )
+			{
+				for( int instanceIndex = 0; instanceIndex < fogInstanceCount; ++instanceIndex )
+				{
+					R_FillTexGenGPUInstanceData( fogInstances[instanceIndex], fogInstanceSurfs[instanceIndex],
+							viewDef->renderView.vieworg, fogPlanes );
+				}
+				fogInstanceData = fogInstances;
+				++fogBatchCount;
+				fogDrawCallsSaved += fogInstanceCount - 1;
+			}
+		}
+#endif
 		if( !currentScissor.Equals( drawSurf->scissorRect ) && r_useScissor.GetBool() )
 		{
 			// change the scissor
@@ -4772,11 +4901,32 @@ void idRenderBackend::T_BasicFog( const drawSurf_t* drawSurfs, const idPlane fog
 		}
 		else
 		{
-			renderProgManager.BindShader_Fog();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+			if( fogInstanceCount > 1 )
+			{
+				renderProgManager.BindShader_FogInstanced();
+			}
+			else
+#endif
+			{
+				renderProgManager.BindShader_Fog();
+			}
 		}
 		
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		DrawElementsWithCounters( drawSurf, fogInstanceData, fogInstanceCount );
+#else
 		DrawElementsWithCounters( drawSurf );
+#endif
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( r_gpuInstancingDebug.GetBool() && fogBatchCount > 0 )
+	{
+		idLib::Printf( "GPU instancing fog pass: %d batches, %d draw calls saved\n",
+				fogBatchCount, fogDrawCallsSaved );
+	}
+#endif
 }
 
 /*

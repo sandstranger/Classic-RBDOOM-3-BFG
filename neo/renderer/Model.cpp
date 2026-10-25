@@ -60,6 +60,7 @@ static const uint32_t STATIC_BATCH_CACHE_MAGIC = 0x53424348; // SBCH
 static const uint32_t STATIC_BATCH_CACHE_VERSION = 1;
 static const int STATIC_BATCH_CELL_SIZE = 512;
 static const int STATIC_BATCH_MAX_VERTS = 60000;
+static const int STATIC_BATCH_MAX_SOURCE_SURFACES = 64;
 static const uint32_t STATIC_BATCH_MAX_SURFACES = 65536;
 static const uint32_t STATIC_BATCH_MAX_MATERIAL_NAME = 1023;
 
@@ -87,6 +88,7 @@ struct staticBatchGroupKey_t
 	int cellX;
 	int cellY;
 	int cellZ;
+	int sourceSurfaces;
 	bool canMerge;
 	bool generateNormals;
 };
@@ -118,8 +120,10 @@ static bool R_StaticBatchComputeSourceHash( const char* modelName, const idList<
 	R_StaticBatchHashBytes( hash, modelName, strlen( modelName ) + 1 );
 	const uint32_t cacheCellSize = STATIC_BATCH_CELL_SIZE;
 	const uint32_t cacheMaxVerts = STATIC_BATCH_MAX_VERTS;
+	const uint32_t cacheMaxSourceSurfaces = STATIC_BATCH_MAX_SOURCE_SURFACES;
 	R_StaticBatchHashValue( hash, cacheCellSize );
 	R_StaticBatchHashValue( hash, cacheMaxVerts );
+	R_StaticBatchHashValue( hash, cacheMaxSourceSurfaces );
 	const uint32_t surfaceCount = (uint32_t)surfaces.Num();
 	R_StaticBatchHashValue( hash, surfaceCount );
 
@@ -364,7 +368,9 @@ static bool R_StaticBatchSaveCache( const char* path, uint64_t sourceHash, const
 static bool R_StaticBatchGetCell( const modelSurface_t& surface, staticBatchGroupKey_t& key )
 {
 	const srfTriangles_t* tri = surface.geometry;
-	if( surface.shader == NULL || tri == NULL || tri->verts == NULL || tri->numVerts <= 0 ||
+	if( surface.shader == NULL || tri == NULL || tri->verts == NULL || tri->indexes == NULL ||
+		tri->numVerts <= 0 || tri->numIndexes <= 0 ||
+		!surface.shader->IsDrawn() ||
 		surface.shader->Coverage() != MC_OPAQUE ||
 		surface.shader->Deform() != DFRM_NONE ||
 		surface.shader->IsDiscrete() )
@@ -402,6 +408,7 @@ static int R_StaticBatchMergeSurfaces( idList<modelSurface_t, TAG_MODEL>& surfac
 		staticBatchGroupKey_t key;
 		memset( &key, 0, sizeof( key ) );
 		R_StaticBatchGetCell( surface, key );
+		key.sourceSurfaces = 1;
 
 		bool merged = false;
 		if( key.canMerge && surface.geometry->indexes != NULL && surface.geometry->numIndexes > 0 &&
@@ -410,6 +417,7 @@ static int R_StaticBatchMergeSurfaces( idList<modelSurface_t, TAG_MODEL>& surfac
 			for( int j = 0; j < mergedSurfaces.Num(); ++j )
 			{
 				if( !groupKeys[j].canMerge ||
+					groupKeys[j].sourceSurfaces >= STATIC_BATCH_MAX_SOURCE_SURFACES ||
 					mergedSurfaces[j].shader != surface.shader ||
 					groupKeys[j].cellX != key.cellX || groupKeys[j].cellY != key.cellY || groupKeys[j].cellZ != key.cellZ ||
 					groupKeys[j].generateNormals != key.generateNormals )
@@ -418,7 +426,9 @@ static int R_StaticBatchMergeSurfaces( idList<modelSurface_t, TAG_MODEL>& surfac
 				}
 
 				srfTriangles_t* target = mergedSurfaces[j].geometry;
-				if( target == NULL || target->numVerts + surface.geometry->numVerts > STATIC_BATCH_MAX_VERTS )
+				if( target == NULL ||
+					target->numVerts + surface.geometry->numVerts > STATIC_BATCH_MAX_VERTS ||
+					target->numIndexes + surface.geometry->numIndexes > 1200000 )
 				{
 					continue;
 				}
@@ -432,6 +442,7 @@ static int R_StaticBatchMergeSurfaces( idList<modelSurface_t, TAG_MODEL>& surfac
 				R_FreeStaticTriSurf( target );
 				R_FreeStaticTriSurf( surface.geometry );
 				mergedSurfaces[j].geometry = combined;
+				++groupKeys[j].sourceSurfaces;
 				merged = true;
 				++mergedCount;
 				break;

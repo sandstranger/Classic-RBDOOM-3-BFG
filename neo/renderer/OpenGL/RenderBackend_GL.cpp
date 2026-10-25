@@ -786,12 +786,14 @@ void idRenderBackend::Init()
 void idRenderBackend::Shutdown()
 {
 	cmdBufferPool.Shutdown();
+#if defined(ANDROID) && !defined(USE_VULKAN)
 	if (gpuInstanceBuffer != 0)
 	{
 		GLuint buffer = (GLuint)gpuInstanceBuffer;
 		glDeleteBuffers(1, &buffer);
 		gpuInstanceBuffer = 0;
 	}
+#endif
 	GLimp_Shutdown();
 }
 
@@ -800,7 +802,11 @@ void idRenderBackend::Shutdown()
 idRenderBackend::DrawElementsWithCounters
 =============
 */
+#if defined(ANDROID) && !defined(USE_VULKAN)
 void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf, const gpuInstanceData_t* instances, int instanceCount )
+#else
+void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
+#endif
 {
 	// get vertex buffer
 	const vertCacheHandle_t vbHandle = surf->ambientCache;
@@ -976,7 +982,8 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf, const gp
         }
 	}
 	// RB end
-const bool useInstancing = (instances != NULL && instanceCount > 1);
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	const bool useInstancing = (instances != NULL && instanceCount > 1);
 	if (useInstancing)
 	{
 		if (gpuInstanceBuffer == 0)
@@ -1026,9 +1033,22 @@ const bool useInstancing = (instances != NULL && instanceCount > 1);
 		}
 		glBindBuffer(GL_ARRAY_BUFFER, (GLuint)vertexBuffer->GetAPIObject());
 	}
-	// RB: added stats
 	pc.c_drawElements++;
 	pc.c_drawIndexes += surf->numIndexes * (useInstancing ? instanceCount : 1);
+#else
+	if (!isGLES32Version())
+	{
+		glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
+			GL_INDEX_TYPE, (triIndex_t*)indexOffset);
+	}
+	else
+	{
+		glDrawElementsBaseVertex(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
+			GL_INDEX_TYPE, (triIndex_t*)indexOffset, vertOffset / sizeof(idDrawVert));
+	}
+	pc.c_drawElements++;
+	pc.c_drawIndexes += surf->numIndexes;
+#endif
 }
 
 

@@ -2160,7 +2160,7 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 					idRenderMatrix viewMatrix;
 					if( idRenderMatrix::Inverse( modelMatrix, inverseModelMatrix ) )
 					{
-						idRenderMatrix::Multiply( inverseModelMatrix, modelViewMatrix, viewMatrix );
+						idRenderMatrix::Multiply( modelViewMatrix, inverseModelMatrix, viewMatrix );
 						SetVertexParms( RENDERPARM_MODELVIEWMATRIX_X, viewMatrix[0], 4 );
 					}
 					else

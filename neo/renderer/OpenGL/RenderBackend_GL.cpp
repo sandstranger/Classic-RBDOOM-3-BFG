@@ -984,6 +984,9 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 	// RB end
 #if defined(ANDROID) && !defined(USE_VULKAN)
 	const bool useInstancing = (instances != NULL && instanceCount > 1);
+	const GLuint mvpAttribs[4] = { 1, 5, 6, 7 };
+	const GLuint modelViewAttribs[4] = { 10, 11, 12, 13 };
+	const GLuint instanceAttribs[9] = { 1, 5, 6, 7, 10, 11, 12, 13, 14 };
 	if (useInstancing)
 	{
 		if (gpuInstanceBuffer == 0)
@@ -997,8 +1000,8 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 		const GLsizei stride = sizeof(gpuInstanceData_t);
 		for (int row = 0; row < 4; ++row)
 		{
-			const GLuint mvpAttrib = 6 + row;
-			const GLuint modelViewAttrib = 10 + row;
+			const GLuint mvpAttrib = mvpAttribs[row];
+			const GLuint modelViewAttrib = modelViewAttribs[row];
 			glEnableVertexAttribArray(mvpAttrib);
 			glVertexAttribPointer(mvpAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(row * 4 * sizeof(float)));
 			glVertexAttribDivisor(mvpAttrib, 1);
@@ -1026,8 +1029,9 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 	}
 	if (useInstancing)
 	{
-		for (GLuint attrib = 6; attrib <= 14; ++attrib)
+		for (int i = 0; i < 9; ++i)
 		{
+			const GLuint attrib = instanceAttribs[i];
 			glVertexAttribDivisor(attrib, 0);
 			glDisableVertexAttribArray(attrib);
 		}

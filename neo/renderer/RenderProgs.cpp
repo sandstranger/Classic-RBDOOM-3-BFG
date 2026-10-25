@@ -177,7 +177,13 @@ void idRenderProgManager::Init()
 		{ BUILTIN_SHADOW_DEBUG_SKINNED, "shadowDebug_skinned.vfp", "", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		
 		{ BUILTIN_BLENDLIGHT, "blendlight.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		{ BUILTIN_BLENDLIGHT_INSTANCED, "blendlight.vfp", "_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#endif
 		{ BUILTIN_FOG, "fog.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		{ BUILTIN_FOG_INSTANCED, "fog.vfp", "_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#endif
 		{ BUILTIN_FOG_SKINNED, "fog_skinned.vfp", "", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_SKYBOX, "skybox.vfp", "",  0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_WOBBLESKY, "wobblesky.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },

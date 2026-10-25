@@ -3060,6 +3060,10 @@ void idRenderBackend::StencilShadowPass( const drawSurf_t* drawSurfs, const view
 		
 	// process the chain of shadows with the current rendering state
 	currentSpace = NULL;
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    // Cache stencil mode for this draw list so same-state surfaces can batch.
+    int previousStencilShadowMode = -1;
+#endif
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
 	int numStencilShadowSurfs = 0;
@@ -3194,24 +3198,49 @@ void idRenderBackend::StencilShadowPass( const drawSurf_t* drawSurfs, const view
 		
 		
 #if !defined(USE_VULKAN)
-		if( renderZPass )
-		{
-			// Z-pass
-			glStencilOpSeparate( GL_FRONT, GL_KEEP, GL_KEEP, GL_INCR );
-			glStencilOpSeparate( GL_BACK, GL_KEEP, GL_KEEP, GL_DECR );
-		}
-		else if( r_useStencilShadowPreload.GetBool() )
-		{
-			// preload + Z-pass
-			glStencilOpSeparate( GL_FRONT, GL_KEEP, GL_DECR, GL_DECR );
-			glStencilOpSeparate( GL_BACK, GL_KEEP, GL_INCR, GL_INCR );
-		}
-		else
-		{
-			// Z-fail
-			glStencilOpSeparate(GL_FRONT, GL_KEEP, GL_DECR, GL_KEEP);
-			glStencilOpSeparate(GL_BACK, GL_KEEP, GL_INCR, GL_KEEP);
-		}
+#if defined(ANDROID) && !defined(USE_VULKAN)
+        const bool usePreload = !renderZPass && r_useStencilShadowPreload.GetBool();
+        const int stencilShadowMode = usePreload ? 1 : (renderZPass ? 0 : 2);
+        if (usePreload || stencilShadowMode != previousStencilShadowMode)
+        {
+            // Finish earlier draws before changing stencil operations.
+            tr.backend.FlushMultiDrawBatch();
+            if (renderZPass)
+            {
+                glStencilOpSeparate(GL_FRONT, GL_KEEP, GL_KEEP, GL_INCR);
+                glStencilOpSeparate(GL_BACK, GL_KEEP, GL_KEEP, GL_DECR);
+            }
+            else if (usePreload)
+            {
+                glStencilOpSeparate(GL_FRONT, GL_KEEP, GL_DECR, GL_DECR);
+                glStencilOpSeparate(GL_BACK, GL_KEEP, GL_INCR, GL_INCR);
+            }
+            else
+            {
+                glStencilOpSeparate(GL_FRONT, GL_KEEP, GL_DECR, GL_KEEP);
+                glStencilOpSeparate(GL_BACK, GL_KEEP, GL_INCR, GL_KEEP);
+            }
+            // The preload draw rewrites the stencil ops internally; reapply
+            // them for every preload surface rather than caching that mode.
+            previousStencilShadowMode = usePreload ? -1 : stencilShadowMode;
+        }
+#else
+        if (renderZPass)
+        {
+            glStencilOpSeparate(GL_FRONT, GL_KEEP, GL_KEEP, GL_INCR);
+            glStencilOpSeparate(GL_BACK, GL_KEEP, GL_KEEP, GL_DECR);
+        }
+        else if (r_useStencilShadowPreload.GetBool())
+        {
+            glStencilOpSeparate(GL_FRONT, GL_KEEP, GL_DECR, GL_DECR);
+            glStencilOpSeparate(GL_BACK, GL_KEEP, GL_INCR, GL_INCR);
+        }
+        else
+        {
+            glStencilOpSeparate(GL_FRONT, GL_KEEP, GL_DECR, GL_KEEP);
+            glStencilOpSeparate(GL_BACK, GL_KEEP, GL_INCR, GL_KEEP);
+        }
+#endif
 #endif
 		
 #if defined(ANDROID) && !defined(USE_VULKAN)
@@ -3230,6 +3259,8 @@ void idRenderBackend::StencilShadowPass( const drawSurf_t* drawSurfs, const view
 	}
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
+    // Finish queued shadows before the caller restores the stencil state.
+    tr.backend.FlushMultiDrawBatch();
 	if( r_gpuInstancingDebug.GetBool() && stencilShadowBatchCount > 0 )
 	{
 		idLib::Printf( "GPU instancing stencil-shadow pass: %d batches, %d draw calls saved\n",

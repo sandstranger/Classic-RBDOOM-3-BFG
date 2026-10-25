@@ -142,12 +142,14 @@ static bool R_StaticBatchComputeSourceHash( const char* modelName, const idList<
 		const uint32_t coverage = (uint32_t)surface.shader->Coverage();
 		const int32_t deform = (int32_t)surface.shader->Deform();
 		const uint32_t discrete = surface.shader->IsDiscrete() ? 1u : 0u;
+		const uint32_t drawn = surface.shader->IsDrawn() ? 1u : 0u;
 		const uint32_t backSides = surface.shader->ShouldCreateBackSides() ? 1u : 0u;
 		const uint32_t castsShadow = surface.shader->SurfaceCastsShadow() ? 1u : 0u;
 		const uint32_t receivesLighting = surface.shader->ReceivesLighting() ? 1u : 0u;
 		R_StaticBatchHashValue( hash, coverage );
 		R_StaticBatchHashValue( hash, deform );
 		R_StaticBatchHashValue( hash, discrete );
+		R_StaticBatchHashValue( hash, drawn );
 		R_StaticBatchHashValue( hash, backSides );
 		R_StaticBatchHashValue( hash, castsShadow );
 		R_StaticBatchHashValue( hash, receivesLighting );

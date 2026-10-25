@@ -986,7 +986,7 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 	const bool useInstancing = (instances != NULL && instanceCount > 1);
 	const GLuint mvpAttribs[4] = { 1, 5, 6, 7 };
 	const GLuint modelViewAttribs[4] = { 10, 11, 12, 13 };
-	const GLuint instanceAttribs[9] = { 1, 5, 6, 7, 10, 11, 12, 13, 14 };
+	const GLuint instanceAttribs[10] = { 1, 5, 6, 7, 10, 11, 12, 13, 14, 15 };
 	if (useInstancing)
 	{
 		if (gpuInstanceBuffer == 0)
@@ -1012,6 +1012,9 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 		glEnableVertexAttribArray(14);
 		glVertexAttribPointer(14, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(32 * sizeof(float)));
 		glVertexAttribDivisor(14, 1);
+		glEnableVertexAttribArray(15);
+		glVertexAttribPointer(15, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(36 * sizeof(float)));
+		glVertexAttribDivisor(15, 1);
 	}
 	if (useInstancing)
 	{

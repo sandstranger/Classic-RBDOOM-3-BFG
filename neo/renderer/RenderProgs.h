@@ -354,6 +354,13 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_INTERACTION );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_InteractionInstanced()
+	{
+		BindShader_Builtin( BUILTIN_INTERACTION_INSTANCED );
+	}
+#endif
 	
 	void	BindShader_InteractionSkinned()
 	{
@@ -364,6 +371,13 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_INTERACTION_AMBIENT );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_InteractionAmbientInstanced()
+	{
+		BindShader_Builtin( BUILTIN_INTERACTION_AMBIENT_INSTANCED );
+	}
+#endif
 	
 	void	BindShader_InteractionAmbientSkinned()
 	{
@@ -707,8 +721,14 @@ private:
 		BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED,
 		BUILTIN_TEXTURE_TEXGEN_VERTEXCOLOR,
 		BUILTIN_INTERACTION,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_INTERACTION_INSTANCED,
+#endif
 		BUILTIN_INTERACTION_SKINNED,
 		BUILTIN_INTERACTION_AMBIENT,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_INTERACTION_AMBIENT_INSTANCED,
+#endif
 		BUILTIN_INTERACTION_AMBIENT_SKINNED,
 		// RB begin
 		BUILTIN_INTERACTION_SHADOW_MAPPING_SPOT,

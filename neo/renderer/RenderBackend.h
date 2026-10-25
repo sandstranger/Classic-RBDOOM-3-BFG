@@ -126,6 +126,7 @@ struct gpuInstanceData_t
 	float mvp[16];
 	float modelView[16];
 	float localViewOrigin[4];
+	float localLightOrigin[4];
 };
 
 void RB_SetMVP( const idRenderMatrix& mvp );

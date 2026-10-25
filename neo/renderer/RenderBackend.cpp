@@ -1093,7 +1093,7 @@ static const int MAX_GPU_INSTANCES_PER_DRAW = 64;
 static bool R_GPUInstanceable( const drawSurf_t* surf )
 {
 	return surf != NULL && surf->space != NULL && surf->material != NULL
-		&& surf->shaderRegisters != NULL && surf->frontEndGeo != NULL
+		&& surf->shaderRegisters != NULL
 		&& surf->ambientCache != 0 && surf->indexCache != 0
 		&& surf->numIndexes > 0 && surf->jointCache == 0
 		&& surf->material->Coverage() == MC_OPAQUE && surf->material->Deform() == DFRM_NONE;
@@ -1101,7 +1101,6 @@ static bool R_GPUInstanceable( const drawSurf_t* surf )
 static bool R_CanBatchGPUInstances( const drawSurf_t* first, const drawSurf_t* candidate )
 {
 	if( !R_GPUInstanceable( first ) || !R_GPUInstanceable( candidate )
-		|| first->frontEndGeo != candidate->frontEndGeo
 		|| first->ambientCache != candidate->ambientCache || first->indexCache != candidate->indexCache
 		|| first->numIndexes != candidate->numIndexes || first->material != candidate->material )
 	{

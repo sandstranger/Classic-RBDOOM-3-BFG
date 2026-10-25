@@ -116,6 +116,10 @@ static bool R_StaticBatchComputeSourceHash( const char* modelName, const idList<
 	}
 
 	R_StaticBatchHashBytes( hash, modelName, strlen( modelName ) + 1 );
+	const uint32_t cacheCellSize = STATIC_BATCH_CELL_SIZE;
+	const uint32_t cacheMaxVerts = STATIC_BATCH_MAX_VERTS;
+	R_StaticBatchHashValue( hash, cacheCellSize );
+	R_StaticBatchHashValue( hash, cacheMaxVerts );
 	const uint32_t surfaceCount = (uint32_t)surfaces.Num();
 	R_StaticBatchHashValue( hash, surfaceCount );
 
@@ -1621,25 +1625,29 @@ void idRenderModelStatic::FinishSurfaces()
 
 			if( r_staticBatchingDebug.GetBool() )
 			{
-				common->Printf( "Static batching cache hit: %s (%d -> %d surfaces)\\n", name.c_str(), oldSurfaceCount, surfaces.Num() );
+				common->Printf( "Static batching cache hit: %s (%d -> %d surfaces)\n", name.c_str(), oldSurfaceCount, surfaces.Num() );
 			}
 		}
 		else
 		{
 			const int oldSurfaceCount = surfaces.Num();
 			const int mergedCount = R_StaticBatchMergeSurfaces( surfaces );
-			if( mergedCount > 0 && cachePathReady )
+			if( mergedCount > 0 )
 			{
-				const bool saved = R_StaticBatchSaveCache( cachePath.c_str(), sourceHash, surfaces );
+				bool saved = false;
+				if( cachePathReady )
+				{
+					saved = R_StaticBatchSaveCache( cachePath.c_str(), sourceHash, surfaces );
+				}
 				if( r_staticBatchingDebug.GetBool() )
 				{
-					common->Printf( "Static batching generated: %s (%d -> %d surfaces), cache %s\\n",
-						name.c_str(), oldSurfaceCount, surfaces.Num(), saved ? "saved" : "write failed" );
+					common->Printf( "Static batching generated: %s (%d -> %d surfaces), cache %s\n",
+						name.c_str(), oldSurfaceCount, surfaces.Num(), saved ? "saved" : "unavailable" );
 				}
 			}
 			else if( r_staticBatchingDebug.GetBool() )
 			{
-				common->Printf( "Static batching skipped: %s (%d surfaces, no compatible merges)\\n",
+				common->Printf( "Static batching skipped: %s (%d surfaces, no compatible merges)\n",
 					name.c_str(), oldSurfaceCount );
 			}
 		}

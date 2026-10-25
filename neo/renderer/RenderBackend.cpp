@@ -872,6 +872,7 @@ static bool R_GPUInstanceable( const drawSurf_t* surf, bool allowPerforated = fa
 		&& surf->shaderRegisters != NULL
 		&& surf->ambientCache != 0 && surf->indexCache != 0
 		&& surf->numIndexes > 0 && surf->jointCache == 0
+		&& !surf->space->isGuiSurface
 		&& ( surf->material->Coverage() == MC_OPAQUE
 			|| ( allowPerforated && surf->material->Coverage() == MC_PERFORATED ) )
 		&& surf->material->Deform() == DFRM_NONE
@@ -884,6 +885,8 @@ static bool R_CanBatchGPUInstances( const drawSurf_t* first, const drawSurf_t* c
 		|| ( requireSameSort && first->sort != candidate->sort )
 		|| first->extraGLState != candidate->extraGLState
 		|| !first->scissorRect.Equals( candidate->scissorRect )
+		|| first->space->weaponDepthHack != candidate->space->weaponDepthHack
+		|| first->space->modelDepthHack != candidate->space->modelDepthHack
 		|| first->ambientCache != candidate->ambientCache || first->indexCache != candidate->indexCache
 		|| first->numIndexes != candidate->numIndexes || first->material != candidate->material )
 	{
@@ -914,12 +917,13 @@ static void R_FillGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t
 	memcpy( instance.localViewOrigin, localViewOrigin.ToFloatPtr(), sizeof( instance.localViewOrigin ) );
 }
 static const int GPU_INSTANCE_BATCH_SCAN_AHEAD = 512;
-static int R_BuildGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs, int firstIndex, const idVec3& viewOrigin, bool* consumed, gpuInstanceData_t* instances, bool allowPerforated = false )
+static int R_BuildGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs, int firstIndex, const idVec3& viewOrigin, bool* consumed, gpuInstanceData_t* instances, bool allowPerforated = false, const drawSurf_t** instanceSurfs = NULL )
 {
 	if( glConfig.glVersion < 3.2f || firstIndex < 0 || firstIndex >= numDrawSurfs ) return 1;
 	const drawSurf_t* first = drawSurfs[firstIndex];
 	if( !R_GPUInstanceable( first, allowPerforated ) ) return 1;
 	R_FillGPUInstanceData( instances[0], first, viewOrigin );
+	if( instanceSurfs != NULL ) instanceSurfs[0] = first;
 	int count = 1;
 
 	// Repeated geometry is rarely adjacent in the draw-surface list. Search a
@@ -942,6 +946,7 @@ static int R_BuildGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numD
 			continue;
 		}
 		R_FillGPUInstanceData( instances[count], candidate, viewOrigin );
+		if( instanceSurfs != NULL ) instanceSurfs[count] = candidate;
 		consumed[i] = true;
 		++count;
 	}
@@ -1015,6 +1020,34 @@ static int R_BuildShadowGPUInstanceBatch( const drawSurf_t* const* drawSurfs, in
 		++count;
 	}
 	return count;
+}
+
+static void R_FillInteractionGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t* surf,
+		const idVec3& viewOrigin, const idVec3& globalLightOrigin, const idPlane globalLightProject[4],
+		const float* lightTextureMatrix, bool hasLightTextureMatrix )
+{
+	R_FillGPUInstanceData( instance, surf, viewOrigin );
+
+	idVec4 localLightOrigin( 0.0f );
+	R_GlobalPointToLocal( surf->space->modelMatrix, globalLightOrigin, localLightOrigin.ToVec3() );
+	memcpy( instance.localLightOrigin, localLightOrigin.ToFloatPtr(), sizeof( instance.localLightOrigin ) );
+
+	idPlane localLightProject[4];
+	for( int planeIndex = 0; planeIndex < 4; ++planeIndex )
+	{
+		R_GlobalPlaneToLocal( surf->space->modelMatrix, globalLightProject[planeIndex], localLightProject[planeIndex] );
+	}
+	if( hasLightTextureMatrix )
+	{
+		RB_BakeTextureMatrixIntoTexgen( localLightProject, lightTextureMatrix );
+	}
+
+	// The unshadowed interaction variants reinterpret these 4 vectors as local
+	// light projection planes, not as the model-view matrix.
+	for( int planeIndex = 0; planeIndex < 4; ++planeIndex )
+	{
+		memcpy( &instance.modelView[planeIndex * 4], localLightProject[planeIndex].ToFloatPtr(), 4 * sizeof( float ) );
+	}
 }
 
 #endif
@@ -1722,6 +1755,19 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 	{
 		allSurfaces.Append( complexSurfaces[i] );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	const int gpuInteractionSurfaceCount = allSurfaces.Num();
+	const drawSurf_t** gpuInteractionSurfs = (const drawSurf_t**)_alloca(
+			MAX_INTERACTIONS_PER_LIGHT * sizeof( const drawSurf_t* ) );
+	bool* gpuInteractionConsumed = (bool*)_alloca( MAX_INTERACTIONS_PER_LIGHT * sizeof( bool ) );
+	for( int i = 0; i < gpuInteractionSurfaceCount; ++i )
+	{
+		gpuInteractionSurfs[i] = allSurfaces[i];
+	}
+	int gpuInteractionBatchCount = 0;
+	int gpuInteractionDrawCallsSaved = 0;
+#endif
 	
 	bool lightDepthBoundsDisabled = false;
 	
@@ -1788,6 +1834,10 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 		{
 			continue;
 		}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		memset( gpuInteractionConsumed, 0, gpuInteractionSurfaceCount * sizeof( bool ) );
+#endif
 		
 		const idVec4 lightColor(
 			lightScale * lightRegs[ lightStage->color.registers[0] ],
@@ -1850,7 +1900,40 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 		
 		for( int sortedSurfNum = 0; sortedSurfNum < allSurfaces.Num(); sortedSurfNum++ )
 		{
+#if defined(ANDROID) && !defined(USE_VULKAN)
+			if( gpuInteractionConsumed[sortedSurfNum] )
+			{
+				continue;
+			}
+			gpuInstanceData_t gpuInteractionInstances[MAX_GPU_INSTANCES_PER_DRAW];
+			const drawSurf_t* gpuInteractionInstanceSurfs[MAX_GPU_INSTANCES_PER_DRAW];
+			const gpuInstanceData_t* gpuInteractionInstanceData = NULL;
+			int gpuInteractionInstanceCount = 1;
+#endif
 			const drawSurf_t* const surf = allSurfaces[ sortedSurfNum ];
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+			const bool useShadowMapInteraction = r_useShadowMapping.GetBool() && vLight->globalShadows != NULL;
+			if( glConfig.glVersion >= 3.2f && !surf->jointCache && !useShadowMapInteraction )
+			{
+				gpuInteractionInstanceCount = R_BuildGPUInstanceBatch( gpuInteractionSurfs,
+						gpuInteractionSurfaceCount, sortedSurfNum, viewDef->renderView.vieworg,
+						gpuInteractionConsumed, gpuInteractionInstances, false, gpuInteractionInstanceSurfs );
+				if( gpuInteractionInstanceCount > 1 )
+				{
+					for( int instanceIndex = 0; instanceIndex < gpuInteractionInstanceCount; ++instanceIndex )
+					{
+						R_FillInteractionGPUInstanceData( gpuInteractionInstances[instanceIndex],
+								gpuInteractionInstanceSurfs[instanceIndex], viewDef->renderView.vieworg,
+								vLight->globalLightOrigin, vLight->lightProject,
+								lightTextureMatrix, lightStage->texture.hasMatrix );
+					}
+					gpuInteractionInstanceData = gpuInteractionInstances;
+					++gpuInteractionBatchCount;
+					gpuInteractionDrawCallsSaved += gpuInteractionInstanceCount - 1;
+				}
+			}
+#endif
 			
 			// select the render prog
 			if( lightShader->IsAmbientLight() )
@@ -1861,7 +1944,16 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 				}
 				else
 				{
-					renderProgManager.BindShader_InteractionAmbient();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+					if( gpuInteractionInstanceCount > 1 )
+					{
+						renderProgManager.BindShader_InteractionAmbientInstanced();
+					}
+					else
+#endif
+					{
+						renderProgManager.BindShader_InteractionAmbient();
+					}
 				}
 			}
 			else
@@ -1912,7 +2004,16 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 					}
 					else
 					{
-						renderProgManager.BindShader_Interaction();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+						if( gpuInteractionInstanceCount > 1 )
+						{
+							renderProgManager.BindShader_InteractionInstanced();
+						}
+						else
+#endif
+						{
+							renderProgManager.BindShader_Interaction();
+						}
 					}
 				}
 			}
@@ -2064,7 +2165,11 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 				GL_SelectTexture( INTERACTION_TEXUNIT_BASECOLOR );
 				surfaceShader->GetFastPathDiffuseImage()->Bind();
 				
+#if defined(ANDROID) && !defined(USE_VULKAN)
+				DrawElementsWithCounters( surf, gpuInteractionInstanceData, gpuInteractionInstanceCount );
+#else
 				DrawElementsWithCounters( surf );
+#endif
 				
 				renderLog.CloseBlock();
 				continue;
@@ -2112,7 +2217,11 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 						// draw any previous interaction
 						if( inter.bumpImage != NULL )
 						{
+							#if defined(ANDROID) && !defined(USE_VULKAN)
+							DrawSingleInteraction( &inter, gpuInteractionInstanceData, gpuInteractionInstanceCount );
+							#else
 							DrawSingleInteraction( &inter );
+							#endif
 						}
 						inter.bumpImage = surfaceStage->texture.image;
 						inter.diffuseImage = NULL;
@@ -2130,7 +2239,11 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 						// draw any previous interaction
 						if( inter.diffuseImage != NULL )
 						{
+							#if defined(ANDROID) && !defined(USE_VULKAN)
+							DrawSingleInteraction( &inter, gpuInteractionInstanceData, gpuInteractionInstanceCount );
+							#else
 							DrawSingleInteraction( &inter );
+							#endif
 						}
 						inter.diffuseImage = surfaceStage->texture.image;
 						inter.vertexColor = surfaceStage->vertexColor;
@@ -2148,7 +2261,11 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 						// draw any previous interaction
 						if( inter.specularImage != NULL )
 						{
+							#if defined(ANDROID) && !defined(USE_VULKAN)
+							DrawSingleInteraction( &inter, gpuInteractionInstanceData, gpuInteractionInstanceCount );
+							#else
 							DrawSingleInteraction( &inter );
+							#endif
 						}
 						inter.specularImage = surfaceStage->texture.image;
 						inter.vertexColor = surfaceStage->vertexColor;
@@ -2160,7 +2277,11 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 			}
 			
 			// draw the final interaction
+			#if defined(ANDROID) && !defined(USE_VULKAN)
+			DrawSingleInteraction( &inter, gpuInteractionInstanceData, gpuInteractionInstanceCount );
+			#else
 			DrawSingleInteraction( &inter );
+			#endif
 			
 			renderLog.CloseBlock();
 		}
@@ -2170,6 +2291,14 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 	{
 		GL_DepthBoundsTest( vLight->scissorRect.zmin, vLight->scissorRect.zmax );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( r_gpuInstancingDebug.GetBool() && gpuInteractionBatchCount > 0 )
+	{
+		idLib::Printf( "GPU instancing interaction pass: %d batches, at least %d draw calls saved\n",
+				gpuInteractionBatchCount, gpuInteractionDrawCallsSaved );
+	}
+#endif
 	
 	renderProgManager.Unbind();
 }

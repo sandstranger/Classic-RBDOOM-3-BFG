@@ -327,6 +327,13 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_TEXTURE_VERTEXCOLOR );
 	};
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_TextureVertexColorInstanced()
+	{
+		BindShader_Builtin( BUILTIN_TEXTURE_VERTEXCOLOR_INSTANCED );
+	};
+#endif
 	
 	void	BindShader_TextureVertexColor_sRGB()
 	{
@@ -693,6 +700,9 @@ private:
 		// RB end
 		BUILTIN_TEXTURED,
 		BUILTIN_TEXTURE_VERTEXCOLOR,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_TEXTURE_VERTEXCOLOR_INSTANCED,
+#endif
 		BUILTIN_TEXTURE_VERTEXCOLOR_SRGB,
 		BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED,
 		BUILTIN_TEXTURE_TEXGEN_VERTEXCOLOR,

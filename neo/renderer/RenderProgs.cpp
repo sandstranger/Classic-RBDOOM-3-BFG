@@ -135,6 +135,9 @@ void idRenderProgManager::Init()
 		// RB end
 		{ BUILTIN_TEXTURED, "texture.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_TEXTURE_VERTEXCOLOR, "texture_color.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		{ BUILTIN_TEXTURE_VERTEXCOLOR_INSTANCED, "texture_color.vfp", "_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#endif
 		{ BUILTIN_TEXTURE_VERTEXCOLOR_SRGB, "texture_color.vfp", "_SRGB", IDBIT( USE_SRGB ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED, "texture_color_skinned.vfp", "", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_TEXTURE_TEXGEN_VERTEXCOLOR, "texture_color_texgen.vfp", "",  0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },

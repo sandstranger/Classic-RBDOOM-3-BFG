@@ -863,6 +863,160 @@ DEPTH BUFFER RENDERING
 =========================================================================================
 */
 
+#if defined(ANDROID) && !defined(USE_VULKAN)
+static idCVar r_gpuInstancingDebug( "r_gpuInstancingDebug", "0", CVAR_BOOL, "Log GPU instancing batch statistics" );
+static const int MAX_GPU_INSTANCES_PER_DRAW = 128;
+static bool R_GPUInstanceable( const drawSurf_t* surf, bool allowPerforated = false )
+{
+	return surf != NULL && surf->space != NULL && surf->material != NULL
+		&& surf->shaderRegisters != NULL
+		&& surf->ambientCache != 0 && surf->indexCache != 0
+		&& surf->numIndexes > 0 && surf->jointCache == 0
+		&& ( surf->material->Coverage() == MC_OPAQUE
+			|| ( allowPerforated && surf->material->Coverage() == MC_PERFORATED ) )
+		&& surf->material->Deform() == DFRM_NONE;
+}
+static bool R_CanBatchGPUInstances( const drawSurf_t* first, const drawSurf_t* candidate,
+		bool requireSameSort = true, bool allowPerforated = false )
+{
+	if( !R_GPUInstanceable( first, allowPerforated ) || !R_GPUInstanceable( candidate, allowPerforated )
+		|| ( requireSameSort && first->sort != candidate->sort )
+		|| first->ambientCache != candidate->ambientCache || first->indexCache != candidate->indexCache
+		|| first->numIndexes != candidate->numIndexes || first->material != candidate->material )
+	{
+		return false;
+	}
+
+	// Different entities can have separate register arrays. The batch is safe only
+	// when the resulting material parameters are identical for every instance.
+	const int numRegisters = first->material->GetNumRegisters();
+	for( int i = 0; i < numRegisters; ++i )
+	{
+		if( first->shaderRegisters[i] != candidate->shaderRegisters[i] )
+		{
+			return false;
+		}
+	}
+	return true;
+}
+static void R_FillGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t* surf, const idVec3& viewOrigin )
+{
+	memset( &instance, 0, sizeof( instance ) );
+	memcpy( instance.mvp, surf->space->mvp[0], sizeof( instance.mvp ) );
+	float modelViewMatrixTranspose[16];
+	R_MatrixTranspose( surf->space->modelViewMatrix, modelViewMatrixTranspose );
+	memcpy( instance.modelView, modelViewMatrixTranspose, sizeof( instance.modelView ) );
+	idVec4 localViewOrigin( 1.0f );
+	R_GlobalPointToLocal( surf->space->modelMatrix, viewOrigin, localViewOrigin.ToVec3() );
+	memcpy( instance.localViewOrigin, localViewOrigin.ToFloatPtr(), sizeof( instance.localViewOrigin ) );
+}
+static const int GPU_INSTANCE_BATCH_SCAN_AHEAD = 512;
+static int R_BuildGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs, int firstIndex, const idVec3& viewOrigin, bool* consumed, gpuInstanceData_t* instances, bool allowPerforated = false )
+{
+	if( glConfig.glVersion < 3.2f || firstIndex < 0 || firstIndex >= numDrawSurfs ) return 1;
+	const drawSurf_t* first = drawSurfs[firstIndex];
+	if( !R_GPUInstanceable( first, allowPerforated ) ) return 1;
+	R_FillGPUInstanceData( instances[0], first, viewOrigin );
+	int count = 1;
+
+	// Repeated geometry is rarely adjacent in the draw-surface list. Search a
+	// bounded window and only regroup surfaces with matching material/sort state.
+	const int requestedEnd = firstIndex + GPU_INSTANCE_BATCH_SCAN_AHEAD + 1;
+	const int scanEnd = requestedEnd < numDrawSurfs ? requestedEnd : numDrawSurfs;
+	for( int i = firstIndex + 1; i < scanEnd && count < MAX_GPU_INSTANCES_PER_DRAW; ++i )
+	{
+		if( consumed[i] )
+		{
+			continue;
+		}
+		const drawSurf_t* candidate = drawSurfs[i];
+		if( candidate == NULL )
+		{
+			continue;
+		}
+		if( !R_CanBatchGPUInstances( first, candidate, true, allowPerforated ) )
+		{
+			continue;
+		}
+		R_FillGPUInstanceData( instances[count], candidate, viewOrigin );
+		consumed[i] = true;
+		++count;
+	}
+	return count;
+}
+
+// Shadow maps use a per-light/cascade/face MVP rather than the camera MVP.
+static void R_FillShadowGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t* surf,
+		const idVec3& viewOrigin, const idRenderMatrix& lightViewRenderMatrix,
+		const idRenderMatrix& lightProjectionRenderMatrix, const viewLight_t* vLight, int side )
+{
+	R_FillGPUInstanceData( instance, surf, viewOrigin );
+
+	idRenderMatrix modelRenderMatrix;
+	idRenderMatrix::Transpose( *( idRenderMatrix* )surf->space->modelMatrix, modelRenderMatrix );
+	idRenderMatrix modelToLightRenderMatrix;
+	idRenderMatrix::Multiply( lightViewRenderMatrix, modelRenderMatrix, modelToLightRenderMatrix );
+	idRenderMatrix clipMVP;
+	idRenderMatrix::Multiply( lightProjectionRenderMatrix, modelToLightRenderMatrix, clipMVP );
+
+	if( !vLight->parallel && side < 0 )
+	{
+		idRenderMatrix MVP;
+		idRenderMatrix::Multiply( renderMatrix_windowSpaceToClipSpace, clipMVP, MVP );
+		memcpy( instance.mvp, MVP[0], sizeof( instance.mvp ) );
+	}
+	else
+	{
+		memcpy( instance.mvp, clipMVP[0], sizeof( instance.mvp ) );
+	}
+}
+
+static int R_BuildShadowGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs,
+		int firstIndex, const idVec3& viewOrigin, bool* consumed, gpuInstanceData_t* instances,
+		const idRenderMatrix& lightViewRenderMatrix, const idRenderMatrix& lightProjectionRenderMatrix,
+		const viewLight_t* vLight, int side )
+{
+	if( glConfig.glVersion < 3.2f || firstIndex < 0 || firstIndex >= numDrawSurfs )
+	{
+		return 1;
+	}
+
+	const drawSurf_t* first = drawSurfs[firstIndex];
+	if( !R_GPUInstanceable( first, true ) || first->shadowVolumeState != SHADOWVOLUME_DONE )
+	{
+		return 1;
+	}
+
+	R_FillShadowGPUInstanceData( instances[0], first, viewOrigin,
+			lightViewRenderMatrix, lightProjectionRenderMatrix, vLight, side );
+	int count = 1;
+	const int requestedEnd = firstIndex + GPU_INSTANCE_BATCH_SCAN_AHEAD + 1;
+	const int scanEnd = requestedEnd < numDrawSurfs ? requestedEnd : numDrawSurfs;
+	for( int i = firstIndex + 1; i < scanEnd && count < MAX_GPU_INSTANCES_PER_DRAW; ++i )
+	{
+		if( consumed[i] )
+		{
+			continue;
+		}
+		const drawSurf_t* candidate = drawSurfs[i];
+		// Let surfaces with unfinished async shadow work take their normal iteration.
+		if( candidate == NULL || candidate->shadowVolumeState != SHADOWVOLUME_DONE
+			|| !R_CanBatchGPUInstances( first, candidate, false, true ) )
+		{
+			continue;
+		}
+
+		R_FillShadowGPUInstanceData( instances[count], candidate, viewOrigin,
+				lightViewRenderMatrix, lightProjectionRenderMatrix, vLight, side );
+		consumed[i] = true;
+		++count;
+	}
+	return count;
+}
+
+#endif
+
+
 /*
 ==================
 idRenderBackend::FillDepthBufferGeneric
@@ -870,8 +1024,23 @@ idRenderBackend::FillDepthBufferGeneric
 */
 void idRenderBackend::FillDepthBufferGeneric( const drawSurf_t* const* drawSurfs, int numDrawSurfs )
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	bool* gpuGenericConsumed = (bool*)_alloca( numDrawSurfs * sizeof( bool ) );
+	memset( gpuGenericConsumed, 0, numDrawSurfs * sizeof( bool ) );
+	int gpuGenericBatchCount = 0;
+	int gpuGenericDrawCallsSaved = 0;
+#endif
 	for( int i = 0; i < numDrawSurfs; i++ )
 	{
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( gpuGenericConsumed[i] )
+		{
+			continue;
+		}
+		gpuInstanceData_t gpuGenericInstances[MAX_GPU_INSTANCES_PER_DRAW];
+		const gpuInstanceData_t* gpuGenericInstanceData = NULL;
+		int gpuGenericInstanceCount = 1;
+#endif
 		const drawSurf_t* drawSurf = drawSurfs[i];
 		const idMaterial* shader = drawSurf->material;
 		
@@ -900,6 +1069,19 @@ void idRenderBackend::FillDepthBufferGeneric( const drawSurf_t* const* drawSurfs
 		{
 			continue;
 		}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( glConfig.glVersion >= 3.2f && shader->Coverage() == MC_PERFORATED )
+		{
+			gpuGenericInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i,
+					viewDef->renderView.vieworg, gpuGenericConsumed, gpuGenericInstances, true );
+			if( gpuGenericInstanceCount > 1 )
+			{
+				gpuGenericInstanceData = gpuGenericInstances;
+				++gpuGenericBatchCount;
+			}
+		}
+#endif
 		
 		// change the matrix if needed
 		if( drawSurf->space != currentSpace )
@@ -1001,7 +1183,16 @@ void idRenderBackend::FillDepthBufferGeneric( const drawSurf_t* const* drawSurfs
 				}
 				else
 				{
-					renderProgManager.BindShader_TextureVertexColor();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+					if( gpuGenericInstanceCount > 1 )
+					{
+						renderProgManager.BindShader_TextureVertexColorInstanced();
+					}
+					else
+#endif
+					{
+						renderProgManager.BindShader_TextureVertexColor();
+					}
 				}
 				
 				RB_SetVertexColorParms( SVC_IGNORE );
@@ -1017,7 +1208,15 @@ void idRenderBackend::FillDepthBufferGeneric( const drawSurf_t* const* drawSurfs
 				assert( ( GL_GetCurrentState() & GLS_DEPTHFUNC_BITS ) == GLS_DEPTHFUNC_LESS );
 				
 				// draw it
+#if defined(ANDROID) && !defined(USE_VULKAN)
+				DrawElementsWithCounters( drawSurf, gpuGenericInstanceData, gpuGenericInstanceCount );
+				if( gpuGenericInstanceCount > 1 )
+				{
+					gpuGenericDrawCallsSaved += gpuGenericInstanceCount - 1;
+				}
+#else
 				DrawElementsWithCounters( drawSurf );
+#endif
 				
 				// clean up
 				FinishStageTexturing( pStage, drawSurf );
@@ -1052,7 +1251,16 @@ void idRenderBackend::FillDepthBufferGeneric( const drawSurf_t* const* drawSurfs
 				}
 				else
 				{
-					renderProgManager.BindShader_Depth();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+					if( gpuGenericInstanceCount > 1 )
+					{
+						renderProgManager.BindShader_DepthInstanced();
+					}
+					else
+#endif
+					{
+						renderProgManager.BindShader_Depth();
+					}
 				}
 				GL_State( surfGLState | GLS_ALPHAMASK );
 			}
@@ -1061,12 +1269,27 @@ void idRenderBackend::FillDepthBufferGeneric( const drawSurf_t* const* drawSurfs
 			assert( ( GL_GetCurrentState() & GLS_DEPTHFUNC_BITS ) == GLS_DEPTHFUNC_LESS );
 			
 			// draw it
+#if defined(ANDROID) && !defined(USE_VULKAN)
+			DrawElementsWithCounters( drawSurf, gpuGenericInstanceData, gpuGenericInstanceCount );
+			if( gpuGenericInstanceCount > 1 )
+			{
+				gpuGenericDrawCallsSaved += gpuGenericInstanceCount - 1;
+			}
+#else
 			DrawElementsWithCounters( drawSurf );
+#endif
 		}
 		
 		renderLog.CloseBlock();
 	}
 	
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( r_gpuInstancingDebug.GetBool() && numDrawSurfs > 1 && gpuGenericBatchCount > 0 )
+	{
+		idLib::Printf( "GPU instancing generic depth pass: %d batches, %d draw calls saved\n",
+				gpuGenericBatchCount, gpuGenericDrawCallsSaved );
+	}
+#endif
 	SetFragmentParm( RENDERPARM_ALPHA_TEST, vec4_zero.ToFloatPtr() );
 }
 
@@ -1088,85 +1311,6 @@ If there are no subview surfaces, we could clear to black and use fast-Z renderi
 on the 360.
 =====================
 */
-#if defined(ANDROID) && !defined(USE_VULKAN)
-static idCVar r_gpuInstancingDebug( "r_gpuInstancingDebug", "0", CVAR_BOOL, "Log GPU instancing batch statistics" );
-static const int MAX_GPU_INSTANCES_PER_DRAW = 64;
-static bool R_GPUInstanceable( const drawSurf_t* surf )
-{
-	return surf != NULL && surf->space != NULL && surf->material != NULL
-		&& surf->shaderRegisters != NULL
-		&& surf->ambientCache != 0 && surf->indexCache != 0
-		&& surf->numIndexes > 0 && surf->jointCache == 0
-		&& surf->material->Coverage() == MC_OPAQUE && surf->material->Deform() == DFRM_NONE;
-}
-static bool R_CanBatchGPUInstances( const drawSurf_t* first, const drawSurf_t* candidate )
-{
-	if( !R_GPUInstanceable( first ) || !R_GPUInstanceable( candidate )
-		|| first->ambientCache != candidate->ambientCache || first->indexCache != candidate->indexCache
-		|| first->numIndexes != candidate->numIndexes || first->material != candidate->material )
-	{
-		return false;
-	}
-
-	// Different entities can have separate register arrays. The batch is safe only
-	// when the resulting material parameters are identical for every instance.
-	const int numRegisters = first->material->GetNumRegisters();
-	for( int i = 0; i < numRegisters; ++i )
-	{
-		if( first->shaderRegisters[i] != candidate->shaderRegisters[i] )
-		{
-			return false;
-		}
-	}
-	return true;
-}
-static void R_FillGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t* surf, const idVec3& viewOrigin )
-{
-	memset( &instance, 0, sizeof( instance ) );
-	memcpy( instance.mvp, surf->space->mvp[0], sizeof( instance.mvp ) );
-	float modelViewMatrixTranspose[16];
-	R_MatrixTranspose( surf->space->modelViewMatrix, modelViewMatrixTranspose );
-	memcpy( instance.modelView, modelViewMatrixTranspose, sizeof( instance.modelView ) );
-	idVec4 localViewOrigin( 1.0f );
-	R_GlobalPointToLocal( surf->space->modelMatrix, viewOrigin, localViewOrigin.ToVec3() );
-	memcpy( instance.localViewOrigin, localViewOrigin.ToFloatPtr(), sizeof( instance.localViewOrigin ) );
-}
-static const int GPU_INSTANCE_BATCH_SCAN_AHEAD = 256;
-static int R_BuildGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs, int firstIndex, const idVec3& viewOrigin, bool* consumed, gpuInstanceData_t* instances )
-{
-	if( glConfig.glVersion < 3.2f || firstIndex < 0 || firstIndex >= numDrawSurfs ) return 1;
-	const drawSurf_t* first = drawSurfs[firstIndex];
-	if( !R_GPUInstanceable( first ) ) return 1;
-	R_FillGPUInstanceData( instances[0], first, viewOrigin );
-	int count = 1;
-
-	// Repeated geometry is rarely adjacent in the draw-surface list. Search a
-	// bounded window, only regrouping opaque surfaces with the exact same sort.
-	const int requestedEnd = firstIndex + GPU_INSTANCE_BATCH_SCAN_AHEAD + 1;
-	const int scanEnd = requestedEnd < numDrawSurfs ? requestedEnd : numDrawSurfs;
-	for( int i = firstIndex + 1; i < scanEnd && count < MAX_GPU_INSTANCES_PER_DRAW; ++i )
-	{
-		if( consumed[i] )
-		{
-			continue;
-		}
-		const drawSurf_t* candidate = drawSurfs[i];
-		if( candidate == NULL || candidate->sort != first->sort )
-		{
-			continue;
-		}
-		if( !R_CanBatchGPUInstances( first, candidate ) )
-		{
-			continue;
-		}
-		R_FillGPUInstanceData( instances[count], candidate, viewOrigin );
-		consumed[i] = true;
-		++count;
-	}
-	return count;
-}
-#endif
-
 void idRenderBackend::FillDepthBufferFast( drawSurf_t** drawSurfs, int numDrawSurfs )
 {
 	if( numDrawSurfs == 0 )
@@ -2174,7 +2318,7 @@ const gpuInstanceData_t* gpuInstanceData = NULL;
 		gpuInstanceData_t gpuInstances[MAX_GPU_INSTANCES_PER_DRAW];
 		if( glConfig.glVersion >= 3.2f )
 		{
-			gpuInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i, viewDef->renderView.vieworg, gpuInstanceConsumed, gpuInstances );
+			gpuInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i, viewDef->renderView.vieworg, gpuInstanceConsumed, gpuInstances, surfaceMaterial->Coverage() == MC_PERFORATED );
 			if( gpuInstanceCount > 1 )
 			{
 				gpuInstanceData = gpuInstances;
@@ -3276,8 +3420,33 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 	// process the chain of shadows with the current rendering state
 	currentSpace = NULL;
 
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	int numShadowDrawSurfs = 0;
+	for( const drawSurf_t* scan = drawSurfs; scan != NULL; scan = scan->nextOnLight )
+	{
+		++numShadowDrawSurfs;
+	}
+	const drawSurf_t** shadowDrawSurfs = (const drawSurf_t**)_alloca( numShadowDrawSurfs * sizeof( const drawSurf_t* ) );
+	bool* gpuShadowConsumed = (bool*)_alloca( numShadowDrawSurfs * sizeof( bool ) );
+	int shadowArrayIndex = 0;
+	for( const drawSurf_t* scan = drawSurfs; scan != NULL; scan = scan->nextOnLight )
+	{
+		shadowDrawSurfs[shadowArrayIndex++] = scan;
+	}
+	memset( gpuShadowConsumed, 0, numShadowDrawSurfs * sizeof( bool ) );
+	int gpuShadowBatchCount = 0;
+	int gpuShadowDrawCallsSaved = 0;
+	for( int shadowIndex = 0; shadowIndex < numShadowDrawSurfs; ++shadowIndex )
+	{
+		if( gpuShadowConsumed[shadowIndex] )
+		{
+			continue;
+		}
+		const drawSurf_t* drawSurf = shadowDrawSurfs[shadowIndex];
+#else
 	for( const drawSurf_t* drawSurf = drawSurfs; drawSurf != NULL; drawSurf = drawSurf->nextOnLight )
 	{
+#endif
 
 #if 1
 		// make sure the shadow occluder geometry is done
@@ -3300,6 +3469,23 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 		{
 			continue;	// a job may have created an empty shadow geometry
 		}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		gpuInstanceData_t gpuShadowInstances[MAX_GPU_INSTANCES_PER_DRAW];
+		const gpuInstanceData_t* gpuShadowInstanceData = NULL;
+		int gpuShadowInstanceCount = 1;
+		if( glConfig.glVersion >= 3.2f )
+		{
+			gpuShadowInstanceCount = R_BuildShadowGPUInstanceBatch( shadowDrawSurfs, numShadowDrawSurfs,
+					shadowIndex, viewDef->renderView.vieworg, gpuShadowConsumed, gpuShadowInstances,
+					lightViewRenderMatrix, lightProjectionRenderMatrix, vLight, side );
+			if( gpuShadowInstanceCount > 1 )
+			{
+				gpuShadowInstanceData = gpuShadowInstances;
+				++gpuShadowBatchCount;
+			}
+		}
+#endif
 		
 		if( drawSurf->space != currentSpace )
 		{
@@ -3412,7 +3598,16 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 				}
 				else
 				{
-					renderProgManager.BindShader_TextureVertexColor();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+					if( gpuShadowInstanceCount > 1 )
+					{
+						renderProgManager.BindShader_TextureVertexColorInstanced();
+					}
+					else
+#endif
+					{
+						renderProgManager.BindShader_TextureVertexColor();
+					}
 				}
 				
 				RB_SetVertexColorParms( SVC_IGNORE );
@@ -3428,7 +3623,15 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 				assert( ( GL_GetCurrentState() & GLS_DEPTHFUNC_BITS ) == GLS_DEPTHFUNC_LESS );
 				
 				// draw it
+#if defined(ANDROID) && !defined(USE_VULKAN)
+				DrawElementsWithCounters( drawSurf, gpuShadowInstanceData, gpuShadowInstanceCount );
+				if( gpuShadowInstanceCount > 1 )
+				{
+					gpuShadowDrawCallsSaved += gpuShadowInstanceCount - 1;
+				}
+#else
 				DrawElementsWithCounters( drawSurf );
+#endif
 				
 				// clean up
 				FinishStageTexturing( pStage, drawSurf );
@@ -3450,12 +3653,37 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 			}
 			else
 			{
-				renderProgManager.BindShader_Depth();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+				if( gpuShadowInstanceCount > 1 )
+				{
+					renderProgManager.BindShader_DepthInstanced();
+				}
+				else
+#endif
+				{
+					renderProgManager.BindShader_Depth();
+				}
 			}
 			
+#if defined(ANDROID) && !defined(USE_VULKAN)
+			DrawElementsWithCounters( drawSurf, gpuShadowInstanceData, gpuShadowInstanceCount );
+			if( gpuShadowInstanceCount > 1 )
+			{
+				gpuShadowDrawCallsSaved += gpuShadowInstanceCount - 1;
+			}
+#else
 			DrawElementsWithCounters( drawSurf );
+#endif
 		}
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( r_gpuInstancingDebug.GetBool() && gpuShadowBatchCount > 0 )
+	{
+		idLib::Printf( "GPU instancing shadow-map pass (side %d): %d batches, %d draw calls saved\n",
+				side, gpuShadowBatchCount, gpuShadowDrawCallsSaved );
+	}
+#endif
 	
 	// cleanup the shadow specific rendering state
 	if( r_useHDR.GetBool() /*&& !viewDef->is2Dgui*/ )

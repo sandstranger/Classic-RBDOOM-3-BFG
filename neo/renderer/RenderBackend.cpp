@@ -1050,6 +1050,32 @@ static void R_FillInteractionGPUInstanceData( gpuInstanceData_t& instance, const
 	}
 }
 
+static bool R_GPUShaderPassMaterialInstanceable( const idMaterial* material )
+{
+	if( material == NULL || material->GetSort() >= SS_POST_PROCESS
+		|| ( material->Coverage() != MC_OPAQUE && material->Coverage() != MC_PERFORATED )
+		|| material->Deform() != DFRM_NONE || material->HasSubview() )
+	{
+		return false;
+	}
+	for( int stageIndex = 0; stageIndex < material->GetNumStages(); ++stageIndex )
+	{
+		const shaderStage_t* stage = material->GetStage( stageIndex );
+		if( stage->newStage != NULL || stage->texture.cinematic
+			|| stage->texture.texgen != TG_EXPLICIT
+			|| ( stage->drawStateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) ) != 0 )
+		{
+			return false;
+		}
+		if( r_useClShader.GetBool() && stage->texture.image != NULL
+			&& !idStr::Cmp( stage->texture.image->GetName(), "_doomClassic" ) )
+		{
+			return false;
+		}
+	}
+	return material->GetNumStages() > 0;
+}
+
 #endif
 
 
@@ -4085,10 +4111,26 @@ int idRenderBackend::DrawShaderPasses( const drawSurf_t* const* const drawSurfs,
 	
 	currentSpace = ( const viewEntity_t* )1;	// using NULL makes /analyze think surf->space needs to be checked...
 	float currentGuiStereoOffset = 0.0f;
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	bool* gpuShaderPassConsumed = (bool*)_alloca( numDrawSurfs * sizeof( bool ) );
+	memset( gpuShaderPassConsumed, 0, numDrawSurfs * sizeof( bool ) );
+	int gpuShaderPassBatchCount = 0;
+	int gpuShaderPassDrawCallsSaved = 0;
+#endif
 	
 	int i = 0;
 	for( ; i < numDrawSurfs; i++ )
 	{
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( gpuShaderPassConsumed[i] )
+		{
+			continue;
+		}
+		gpuInstanceData_t gpuShaderPassInstances[MAX_GPU_INSTANCES_PER_DRAW];
+		const gpuInstanceData_t* gpuShaderPassInstanceData = NULL;
+		int gpuShaderPassInstanceCount = 1;
+#endif
 		const drawSurf_t* surf = drawSurfs[i];
 		const idMaterial* shader = surf->material;
 		
@@ -4136,6 +4178,23 @@ int idRenderBackend::DrawShaderPasses( const drawSurf_t* const* const drawSurfs,
 		{
 			continue;
 		}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( glConfig.glVersion >= 3.2f && !viewDef->isXraySubview
+			&& ( surf->extraGLState & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) ) == 0
+			&& R_GPUShaderPassMaterialInstanceable( shader ) )
+		{
+			gpuShaderPassInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i,
+					viewDef->renderView.vieworg, gpuShaderPassConsumed, gpuShaderPassInstances,
+					shader->Coverage() == MC_PERFORATED );
+			if( gpuShaderPassInstanceCount > 1 )
+			{
+				gpuShaderPassInstanceData = gpuShaderPassInstances;
+				++gpuShaderPassBatchCount;
+				gpuShaderPassDrawCallsSaved += gpuShaderPassInstanceCount - 1;
+			}
+		}
+#endif
 		
 		renderLog.OpenBlock( shader->GetName() );
 		
@@ -4466,8 +4525,18 @@ int idRenderBackend::DrawShaderPasses( const drawSurf_t* const* const drawSurfs,
 			
 			PrepareStageTexturing( pStage, surf );
 			
-			// draw it
-			DrawElementsWithCounters( surf );
+			// Draw standard UV stages with the per-instance MVP when possible.
+#if defined(ANDROID) && !defined(USE_VULKAN)
+			if( gpuShaderPassInstanceCount > 1 )
+			{
+				renderProgManager.BindShader_TextureVertexColorInstanced();
+				DrawElementsWithCounters( surf, gpuShaderPassInstanceData, gpuShaderPassInstanceCount );
+			}
+			else
+#endif
+			{
+				DrawElementsWithCounters( surf );
+			}
 			
 			FinishStageTexturing( pStage, surf );
 			
@@ -4489,6 +4558,14 @@ int idRenderBackend::DrawShaderPasses( const drawSurf_t* const* const drawSurfs,
 	GL_State( GLS_DEFAULT );
 	
 	GL_SelectTexture( 0 );
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( r_gpuInstancingDebug.GetBool() && gpuShaderPassBatchCount > 0 )
+	{
+		idLib::Printf( "GPU instancing shader pass: %d batches, %d draw calls saved\n",
+				gpuShaderPassBatchCount, gpuShaderPassDrawCallsSaved );
+	}
+#endif
 	
 	renderLog.CloseBlock();
 	return i;

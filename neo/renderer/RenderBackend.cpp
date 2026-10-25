@@ -1088,6 +1088,52 @@ If there are no subview surfaces, we could clear to black and use fast-Z renderi
 on the 360.
 =====================
 */
+#if defined(ANDROID) && !defined(USE_VULKAN)
+static const int MAX_GPU_INSTANCES_PER_DRAW = 64;
+static bool R_GPUInstanceable( const drawSurf_t* surf )
+{
+	return surf != NULL && surf->space != NULL && surf->material != NULL
+		&& surf->frontEndGeo != NULL && surf->ambientCache != 0 && surf->indexCache != 0
+		&& surf->numIndexes > 0 && surf->jointCache == 0
+		&& surf->material->Coverage() == MC_OPAQUE && surf->material->Deform() == DFRM_NONE;
+}
+static bool R_CanBatchGPUInstances( const drawSurf_t* first, const drawSurf_t* candidate )
+{
+	return R_GPUInstanceable( first ) && R_GPUInstanceable( candidate )
+		&& first->frontEndGeo == candidate->frontEndGeo
+		&& first->ambientCache == candidate->ambientCache && first->indexCache == candidate->indexCache
+		&& first->numIndexes == candidate->numIndexes && first->material == candidate->material
+		&& first->shaderRegisters == candidate->shaderRegisters;
+}
+static void R_FillGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t* surf, const idVec3& viewOrigin )
+{
+	memset( &instance, 0, sizeof( instance ) );
+	memcpy( instance.mvp, surf->space->mvp[0], sizeof( instance.mvp ) );
+	float modelViewMatrixTranspose[16];
+	R_MatrixTranspose( surf->space->modelViewMatrix, modelViewMatrixTranspose );
+	memcpy( instance.modelView, modelViewMatrixTranspose, sizeof( instance.modelView ) );
+	idVec4 localViewOrigin( 1.0f );
+	R_GlobalPointToLocal( surf->space->modelMatrix, viewOrigin, localViewOrigin.ToVec3() );
+	memcpy( instance.localViewOrigin, localViewOrigin.ToFloatPtr(), sizeof( instance.localViewOrigin ) );
+}
+static int R_BuildGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs, int firstIndex, const idVec3& viewOrigin, gpuInstanceData_t* instances )
+{
+	if( glConfig.glVersion < 3.2f || firstIndex < 0 || firstIndex >= numDrawSurfs ) return 1;
+	const drawSurf_t* first = drawSurfs[firstIndex];
+	if( !R_GPUInstanceable( first ) ) return 1;
+	R_FillGPUInstanceData( instances[0], first, viewOrigin );
+	int count = 1;
+	for( int i = firstIndex + 1; i < numDrawSurfs && count < MAX_GPU_INSTANCES_PER_DRAW; ++i )
+	{
+		const drawSurf_t* candidate = drawSurfs[i];
+		if( !R_CanBatchGPUInstances( first, candidate ) ) break;
+		R_FillGPUInstanceData( instances[count], candidate, viewOrigin );
+		++count;
+	}
+	return count;
+}
+#endif
+
 void idRenderBackend::FillDepthBufferFast( drawSurf_t** drawSurfs, int numDrawSurfs )
 {
 	if( numDrawSurfs == 0 )
@@ -1148,6 +1194,17 @@ void idRenderBackend::FillDepthBufferFast( drawSurf_t** drawSurfs, int numDrawSu
 			continue;
 		}
 		
+		// Batch only identical static opaque meshes.
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		gpuInstanceData_t gpuInstances[MAX_GPU_INSTANCES_PER_DRAW];
+		const gpuInstanceData_t* gpuInstanceData = NULL;
+		int gpuInstanceCount = 1;
+		if( glConfig.glVersion >= 3.2f )
+		{
+			gpuInstanceCount = R_BuildGPUInstanceBatch( (const drawSurf_t* const*)drawSurfs, numDrawSurfs, surfNum, viewDef->renderView.vieworg, gpuInstances );
+			if( gpuInstanceCount > 1 ) { gpuInstanceData = gpuInstances; surfNum += gpuInstanceCount - 1; }
+		}
+#endif
 		// set polygon offset?
 		
 		// set mvp matrix
@@ -1165,14 +1222,22 @@ void idRenderBackend::FillDepthBufferFast( drawSurf_t** drawSurfs, int numDrawSu
 		}
 		else
 		{
-			renderProgManager.BindShader_Depth();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+			if( gpuInstanceCount > 1 ) renderProgManager.BindShader_DepthInstanced();
+			else
+#endif
+			{
+				renderProgManager.BindShader_Depth();
+			}
 		}
-		
 		// must render with less-equal for Z-Cull to work properly
 		assert( ( GL_GetCurrentState() & GLS_DEPTHFUNC_BITS ) == GLS_DEPTHFUNC_LESS );
-		
 		// draw it solid
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		DrawElementsWithCounters( surf, gpuInstanceData, gpuInstanceCount );
+#else
 		DrawElementsWithCounters( surf );
+#endif
 		
 		renderLog.CloseBlock();
 	}
@@ -1265,7 +1330,7 @@ void idRenderBackend::SetupInteractionStage( const shaderStage_t* surfaceStage, 
 idRenderBackend::DrawSingleInteraction
 =================
 */
-void idRenderBackend::DrawSingleInteraction( drawInteraction_t* din )
+void idRenderBackend::DrawSingleInteraction( drawInteraction_t* din, const gpuInstanceData_t* instances, int instanceCount )
 {
 	if( din->bumpImage == NULL )
 	{
@@ -1327,7 +1392,13 @@ void idRenderBackend::DrawSingleInteraction( drawInteraction_t* din )
 	GL_SelectTexture( INTERACTION_TEXUNIT_BASECOLOR );
 	din->diffuseImage->Bind();
 	
-	DrawElementsWithCounters( din->surf );
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( instances != NULL && instanceCount > 1 ) DrawElementsWithCounters( din->surf, instances, instanceCount );
+	else
+#endif
+	{
+		DrawElementsWithCounters( din->surf );
+	}
 }
 
 /*
@@ -2026,6 +2097,16 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 		{
 			continue;
 		}
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		gpuInstanceData_t gpuInstances[MAX_GPU_INSTANCES_PER_DRAW];
+		const gpuInstanceData_t* gpuInstanceData = NULL;
+		int gpuInstanceCount = 1;
+		if( glConfig.glVersion >= 3.2f )
+		{
+			gpuInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i, viewDef->renderView.vieworg, gpuInstances );
+			if( gpuInstanceCount > 1 ) { gpuInstanceData = gpuInstances; i += gpuInstanceCount - 1; }
+		}
+#endif
 		
 		//bool isWorldModel = ( drawSurf->space->entityDef->parms.origin == vec3_origin );
 		
@@ -2045,7 +2126,13 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 				}
 				else
 				{
-					renderProgManager.BindShader_SmallGeometryBuffer();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+					if( gpuInstanceCount > 1 ) renderProgManager.BindShader_SmallGeometryBufferInstanced();
+					else
+#endif
+					{
+						renderProgManager.BindShader_SmallGeometryBuffer();
+					}
 				}
 			}
 			else
@@ -2058,7 +2145,13 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 				}
 				else
 				{
-					renderProgManager.BindShader_AmbientLighting();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+					if( gpuInstanceCount > 1 ) renderProgManager.BindShader_AmbientLightingInstanced();
+					else
+#endif
+					{
+						renderProgManager.BindShader_AmbientLighting();
+					}
 				}
 			}
 		}
@@ -2168,7 +2261,11 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 			GL_SelectTexture( INTERACTION_TEXUNIT_BASECOLOR );
 			surfaceMaterial->GetFastPathDiffuseImage()->Bind();
 			
+#if defined(ANDROID) && !defined(USE_VULKAN)
+			DrawElementsWithCounters( drawSurf, gpuInstanceData, gpuInstanceCount );
+#else
 			DrawElementsWithCounters( drawSurf );
+#endif
 			
 			renderLog.CloseBlock();
 			continue;
@@ -2234,7 +2331,7 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 							GL_State(GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL);
 						}
 #endif
-						DrawSingleInteraction( &inter );
+						DrawSingleInteraction( &inter, gpuInstanceData, gpuInstanceCount );
 					}
 					inter.bumpImage = surfaceStage->texture.image;
 					inter.diffuseImage = NULL;
@@ -2266,7 +2363,7 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 							GL_State(GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL);
 						}
 #endif
-						DrawSingleInteraction( &inter );
+						DrawSingleInteraction( &inter, gpuInstanceData, gpuInstanceCount );
 					}
 					
 					inter.diffuseImage = surfaceStage->texture.image;
@@ -2297,7 +2394,7 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 							GL_State(GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL);
 						}
 #endif
-						DrawSingleInteraction( &inter );
+						DrawSingleInteraction( &inter, gpuInstanceData, gpuInstanceCount );
 					}
 					inter.specularImage = surfaceStage->texture.image;
 					inter.vertexColor = surfaceStage->vertexColor;
@@ -2320,7 +2417,7 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 							GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL );
 						}
 #endif
-		DrawSingleInteraction( &inter );
+		DrawSingleInteraction( &inter, gpuInstanceData, gpuInstanceCount );
 		
 		renderLog.CloseBlock();
 	}

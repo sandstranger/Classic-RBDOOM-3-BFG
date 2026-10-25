@@ -786,6 +786,12 @@ void idRenderBackend::Init()
 void idRenderBackend::Shutdown()
 {
 	cmdBufferPool.Shutdown();
+	if (gpuInstanceBuffer != 0)
+	{
+		GLuint buffer = (GLuint)gpuInstanceBuffer;
+		glDeleteBuffers(1, &buffer);
+		gpuInstanceBuffer = 0;
+	}
 	GLimp_Shutdown();
 }
 
@@ -794,7 +800,7 @@ void idRenderBackend::Shutdown()
 idRenderBackend::DrawElementsWithCounters
 =============
 */
-void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
+void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf, const gpuInstanceData_t* instances, int instanceCount )
 {
 	// get vertex buffer
 	const vertCacheHandle_t vbHandle = surf->ambientCache;
@@ -970,20 +976,59 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
         }
 	}
 	// RB end
-if (!isGLES32Version()) {
-    glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes, GL_INDEX_TYPE,
-                   (triIndex_t *) indexOffset);
-} else {
-    glDrawElementsBaseVertex(GL_TRIANGLES,
-                             r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
-                             GL_INDEX_TYPE,
-                             (triIndex_t *) indexOffset,
-                             vertOffset / sizeof(idDrawVert));
-}
-
+const bool useInstancing = (instances != NULL && instanceCount > 1);
+	if (useInstancing)
+	{
+		if (gpuInstanceBuffer == 0)
+		{
+			GLuint buffer = 0;
+			glGenBuffers(1, &buffer);
+			gpuInstanceBuffer = buffer;
+		}
+		glBindBuffer(GL_ARRAY_BUFFER, (GLuint)gpuInstanceBuffer);
+		glBufferData(GL_ARRAY_BUFFER, sizeof(gpuInstanceData_t) * instanceCount, instances, GL_STREAM_DRAW);
+		const GLsizei stride = sizeof(gpuInstanceData_t);
+		for (int row = 0; row < 4; ++row)
+		{
+			const GLuint mvpAttrib = 6 + row;
+			const GLuint modelViewAttrib = 10 + row;
+			glEnableVertexAttribArray(mvpAttrib);
+			glVertexAttribPointer(mvpAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(row * 4 * sizeof(float)));
+			glVertexAttribDivisor(mvpAttrib, 1);
+			glEnableVertexAttribArray(modelViewAttrib);
+			glVertexAttribPointer(modelViewAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(16 * sizeof(float) + row * 4 * sizeof(float)));
+			glVertexAttribDivisor(modelViewAttrib, 1);
+		}
+		glEnableVertexAttribArray(14);
+		glVertexAttribPointer(14, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(32 * sizeof(float)));
+		glVertexAttribDivisor(14, 1);
+	}
+	if (useInstancing)
+	{
+		glDrawElementsInstancedBaseVertex(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
+			GL_INDEX_TYPE, (triIndex_t*)indexOffset, instanceCount, vertOffset / sizeof(idDrawVert));
+	}
+	else if (!isGLES32Version())
+	{
+		glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes, GL_INDEX_TYPE, (triIndex_t*)indexOffset);
+	}
+	else
+	{
+		glDrawElementsBaseVertex(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
+			GL_INDEX_TYPE, (triIndex_t*)indexOffset, vertOffset / sizeof(idDrawVert));
+	}
+	if (useInstancing)
+	{
+		for (GLuint attrib = 6; attrib <= 14; ++attrib)
+		{
+			glVertexAttribDivisor(attrib, 0);
+			glDisableVertexAttribArray(attrib);
+		}
+		glBindBuffer(GL_ARRAY_BUFFER, (GLuint)vertexBuffer->GetAPIObject());
+	}
 	// RB: added stats
 	pc.c_drawElements++;
-	pc.c_drawIndexes += surf->numIndexes;
+	pc.c_drawIndexes += surf->numIndexes * (useInstancing ? instanceCount : 1);
 }
 
 

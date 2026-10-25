@@ -121,6 +121,13 @@ struct debugPolygon_t
 	int			lifeTime;
 };
 
+struct gpuInstanceData_t
+{
+	float mvp[16];
+	float modelView[16];
+	float localViewOrigin[4];
+};
+
 void RB_SetMVP( const idRenderMatrix& mvp );
 void RB_SetVertexColorParms( stageVertexColor_t svc );
 //void RB_GetShaderTextureMatrix( const float* shaderRegisters, const textureStage_t* texture, float matrix[16] );
@@ -263,7 +270,11 @@ public:
 private:
 	void				DrawFlickerBox();
 	
+#if defined(USE_VULKAN)
 	void				DrawElementsWithCounters( const drawSurf_t* surf );
+#else
+	void				DrawElementsWithCounters( const drawSurf_t* surf, const gpuInstanceData_t* instances = NULL, int instanceCount = 1 );
+#endif
 	void				DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass );
 	
 	void				SetColorMappings();
@@ -292,7 +303,7 @@ private:
 			idVec4 matrix[2], float color[4] );
 			
 	void				DrawInteractions( const viewDef_t* _viewDef );
-	void				DrawSingleInteraction( drawInteraction_t* din );
+	void				DrawSingleInteraction( drawInteraction_t* din, const gpuInstanceData_t* instances = NULL, int instanceCount = 1 );
 	int					DrawShaderPasses( const drawSurf_t* const* const drawSurfs, const int numDrawSurfs,
 										  const float guiStereoScreenOffset, const int stereoEye );
 										  
@@ -441,6 +452,9 @@ public:
 	drawSurf_t			unitSquareSurface;
 	drawSurf_t			zeroOneCubeSurface;
 	drawSurf_t			testImageSurface;
+#if !defined(USE_VULKAN)
+	unsigned int		gpuInstanceBuffer = 0;
+#endif
 	
 private:
 	uint64				glStateBits;

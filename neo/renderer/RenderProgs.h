@@ -292,6 +292,13 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_AMBIENT_LIGHTING_SKINNED );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_AmbientLightingInstanced()
+	{
+		BindShader_Builtin( BUILTIN_AMBIENT_LIGHTING_INSTANCED );
+	}
+#endif
 	
 	void	BindShader_SmallGeometryBuffer()
 	{
@@ -302,6 +309,13 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_SMALL_GEOMETRY_BUFFER_SKINNED );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_SmallGeometryBufferInstanced()
+	{
+		BindShader_Builtin( BUILTIN_SMALL_GEOMETRY_BUFFER_INSTANCED );
+	}
+#endif
 	// RB end
 	
 	void	BindShader_Texture( )
@@ -410,6 +424,13 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_DEPTH_SKINNED );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_DepthInstanced()
+	{
+		BindShader_Builtin( BUILTIN_DEPTH_INSTANCED );
+	}
+#endif
 	
 	void	BindShader_Shadow()
 	{
@@ -665,6 +686,10 @@ private:
 		BUILTIN_AMBIENT_LIGHTING_SKINNED,
 		BUILTIN_SMALL_GEOMETRY_BUFFER,
 		BUILTIN_SMALL_GEOMETRY_BUFFER_SKINNED,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_AMBIENT_LIGHTING_INSTANCED,
+		BUILTIN_SMALL_GEOMETRY_BUFFER_INSTANCED,
+#endif
 		// RB end
 		BUILTIN_TEXTURED,
 		BUILTIN_TEXTURE_VERTEXCOLOR,
@@ -690,6 +715,9 @@ private:
 		
 		BUILTIN_DEPTH,
 		BUILTIN_DEPTH_SKINNED,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_DEPTH_INSTANCED,
+#endif
 		BUILTIN_SHADOW,
 		BUILTIN_SHADOW_SKINNED,
 		BUILTIN_SHADOW_DEBUG,
@@ -751,6 +779,7 @@ private:
 		BRIGHTPASS,
 		HDR_DEBUG,
 		USE_SRGB,
+		USE_GPU_INSTANCING,
 		
 		MAX_SHADER_MACRO_NAMES,
 	};

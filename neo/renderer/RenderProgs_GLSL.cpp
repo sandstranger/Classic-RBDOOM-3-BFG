@@ -62,6 +62,15 @@ attribInfo_t attribsPC[] =
                 { "float4",		"color2",		"COLOR1",		"in_Color2",			PC_ATTRIB_INDEX_COLOR2,			AT_VS_IN,		VERTEX_MASK_COLOR2 },
 
 
+                { "float4", "instanceMVPX", "INSTANCE_MVP_X", "in_InstanceMVPX", 6, AT_VS_IN, 0 },
+                { "float4", "instanceMVPY", "INSTANCE_MVP_Y", "in_InstanceMVPY", 7, AT_VS_IN, 0 },
+                { "float4", "instanceMVPZ", "INSTANCE_MVP_Z", "in_InstanceMVPZ", 8, AT_VS_IN, 0 },
+                { "float4", "instanceMVPW", "INSTANCE_MVP_W", "in_InstanceMVPW", 9, AT_VS_IN, 0 },
+                { "float4", "instanceModelViewX", "INSTANCE_MODELVIEW_X", "in_InstanceModelViewX", 10, AT_VS_IN, 0 },
+                { "float4", "instanceModelViewY", "INSTANCE_MODELVIEW_Y", "in_InstanceModelViewY", 11, AT_VS_IN, 0 },
+                { "float4", "instanceModelViewZ", "INSTANCE_MODELVIEW_Z", "in_InstanceModelViewZ", 12, AT_VS_IN, 0 },
+                { "float4", "instanceModelViewW", "INSTANCE_MODELVIEW_W", "in_InstanceModelViewW", 13, AT_VS_IN, 0 },
+                { "float4", "instanceLocalViewOrigin", "INSTANCE_LOCAL_VIEW_ORIGIN", "in_InstanceLocalViewOrigin", 14, AT_VS_IN, 0 },
                 { "float4",		"position",		"POSITION",		"gl_Position",			0,	AT_VS_OUT | AT_VS_OUT_RESERVED,		0 },
                 { "float",		"clip0",		"CLP0",			"gl_ClipDistance[0]",	0,	AT_VS_OUT,		0 },
                 { "float",		"clip1",		"CLP1",			"gl_ClipDistance[1]",	0,	AT_VS_OUT,		0 },
@@ -314,7 +323,8 @@ const char* idRenderProgManager::GLSLMacroNames[MAX_SHADER_MACRO_NAMES] =
                 "LIGHT_PARALLEL",
                 "BRIGHTPASS",
                 "HDR_DEBUG",
-                "USE_SRGB"
+                "USE_SRGB",
+                "USE_GPU_INSTANCING"
         };
 
 

@@ -54,7 +54,7 @@ idCVar idRenderModelStatic::r_slopNormal( "r_slopNormal", "0.02", CVAR_RENDERER,
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
 static idCVar r_staticBatching( "r_staticBatching", "1", CVAR_BOOL | CVAR_RENDERER, "Merge opaque static model surfaces by material and spatial cell" );
-static idCVar r_staticBatchingDebug( "r_staticBatchingDebug", "0", CVAR_BOOL | CVAR_RENDERER, "Log static batching cache statistics" );
+static idCVar r_staticBatchingDebug( "r_staticBatchingDebug", "1", CVAR_BOOL | CVAR_RENDERER, "Log static batching cache statistics" );
 
 static const uint32_t STATIC_BATCH_CACHE_MAGIC = 0x53424348; // SBCH
 static const uint32_t STATIC_BATCH_CACHE_VERSION = 1;
@@ -1556,6 +1556,13 @@ void idRenderModelStatic::FinishSurfaces()
 {
 	int			i;
 	int			totalVerts, totalIndexes;
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( r_staticBatchingDebug.GetBool() && !fastLoad && surfaces.Num() > 0 )
+	{
+		common->Printf( "Static batching evaluating: %s (%d surfaces)\n", name.c_str(), surfaces.Num() );
+	}
+#endif
 	
 	hasDrawingSurfaces = false;
 	hasInteractingSurfaces = false;

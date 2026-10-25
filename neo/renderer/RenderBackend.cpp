@@ -1965,11 +1965,11 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 			int gpuInteractionInstanceCount = 1;
 #endif
 			const drawSurf_t* const surf = allSurfaces[ sortedSurfNum ];
+			bool gpuShadowInteractionInstanced = false;
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
 			const bool useShadowMapInteraction = !lightShader->IsAmbientLight()
 					&& r_useShadowMapping.GetBool() && vLight->globalShadows != NULL;
-			const bool gpuShadowInteractionInstanced = useShadowMapInteraction && gpuInteractionInstanceCount > 1;
 			if( glConfig.glVersion >= 3.2f && !surf->jointCache )
 			{
 				gpuInteractionInstanceCount = R_BuildGPUInstanceBatch( gpuInteractionSurfs,
@@ -1977,6 +1977,7 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 						gpuInteractionConsumed, gpuInteractionInstances, false, gpuInteractionInstanceSurfs );
 				if( gpuInteractionInstanceCount > 1 )
 				{
+					gpuShadowInteractionInstanced = useShadowMapInteraction;
 					for( int instanceIndex = 0; instanceIndex < gpuInteractionInstanceCount; ++instanceIndex )
 					{
 						if( useShadowMapInteraction )

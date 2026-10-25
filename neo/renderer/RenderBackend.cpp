@@ -6283,8 +6283,34 @@ void idRenderBackend::MotionBlur()
 	currentSpace = NULL;
 	
 	drawSurf_t** drawSurfs = ( drawSurf_t** )&viewDef->drawSurfs[0];
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	const int numMotionBlurSurfs = viewDef->numDrawSurfs;
+	const drawSurf_t** motionBlurBatchSurfs = (const drawSurf_t**)_alloca(
+			numMotionBlurSurfs * sizeof( const drawSurf_t* ) );
+	bool* motionBlurConsumed = (bool*)_alloca( numMotionBlurSurfs * sizeof( bool ) );
+	memset( motionBlurConsumed, 0, numMotionBlurSurfs * sizeof( bool ) );
+	int motionBlurBatchCount = 0;
+	int motionBlurDrawCallsSaved = 0;
+	for( int i = 0; i < numMotionBlurSurfs; ++i )
+	{
+		const drawSurf_t* candidate = drawSurfs[i];
+		const bool selected = candidate->space->weaponDepthHack
+			|| candidate->space->skipMotionBlur || candidate->material->HasSubview();
+		motionBlurBatchSurfs[i] = selected && candidate->material->Coverage() != MC_TRANSLUCENT
+			? candidate : NULL;
+	}
+#endif
 	for( int surfNum = 0; surfNum < viewDef->numDrawSurfs; surfNum++ )
 	{
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( motionBlurConsumed[surfNum] )
+		{
+			continue;
+		}
+		gpuInstanceData_t motionBlurInstances[MAX_GPU_INSTANCES_PER_DRAW];
+		const gpuInstanceData_t* motionBlurInstanceData = NULL;
+		int motionBlurInstanceCount = 1;
+#endif
 		const drawSurf_t* surf = drawSurfs[ surfNum ];
 		
 		if( !surf->space->weaponDepthHack && !surf->space->skipMotionBlur && !surf->material->HasSubview() )
@@ -6299,6 +6325,21 @@ void idRenderBackend::MotionBlur()
 			// muzzle flash, etc
 			continue;
 		}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( glConfig.glVersion >= 3.2f )
+		{
+			const int instanceCount = R_BuildGPUInstanceBatch( motionBlurBatchSurfs, numMotionBlurSurfs,
+					surfNum, viewDef->renderView.vieworg, motionBlurConsumed, motionBlurInstances );
+			if( instanceCount > 1 )
+			{
+				motionBlurInstanceCount = instanceCount;
+				motionBlurInstanceData = motionBlurInstances;
+				++motionBlurBatchCount;
+				motionBlurDrawCallsSaved += instanceCount - 1;
+			}
+		}
+#endif
 		
 		// set mvp matrix
 		if( surf->space != currentSpace )
@@ -6314,12 +6355,33 @@ void idRenderBackend::MotionBlur()
 		}
 		else
 		{
-			renderProgManager.BindShader_TextureVertexColor();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+			if( motionBlurInstanceCount > 1 )
+			{
+				renderProgManager.BindShader_TextureVertexColorInstanced();
+			}
+			else
+#endif
+			{
+				renderProgManager.BindShader_TextureVertexColor();
+			}
 		}
 		
 		// draw it solid
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		DrawElementsWithCounters( surf, motionBlurInstanceData, motionBlurInstanceCount );
+#else
 		DrawElementsWithCounters( surf );
+#endif
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( r_gpuInstancingDebug.GetBool() && motionBlurBatchCount > 0 )
+	{
+		idLib::Printf( "GPU instancing motion-blur mask: %d batches, %d draw calls saved\n",
+				motionBlurBatchCount, motionBlurDrawCallsSaved );
+	}
+#endif
 	
 	GL_State( GLS_DEPTHFUNC_ALWAYS );
 	

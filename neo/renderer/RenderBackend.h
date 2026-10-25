@@ -270,10 +270,10 @@ public:
 private:
 	void				DrawFlickerBox();
 	
-#if defined(USE_VULKAN)
-	void				DrawElementsWithCounters( const drawSurf_t* surf );
-#else
+#if defined(ANDROID) && !defined(USE_VULKAN)
 	void				DrawElementsWithCounters( const drawSurf_t* surf, const gpuInstanceData_t* instances = NULL, int instanceCount = 1 );
+#else
+	void				DrawElementsWithCounters( const drawSurf_t* surf );
 #endif
 	void				DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass );
 	
@@ -452,7 +452,7 @@ public:
 	drawSurf_t			unitSquareSurface;
 	drawSurf_t			zeroOneCubeSurface;
 	drawSurf_t			testImageSurface;
-#if !defined(USE_VULKAN)
+#if defined(ANDROID) && !defined(USE_VULKAN)
 	unsigned int		gpuInstanceBuffer = 0;
 #endif
 	

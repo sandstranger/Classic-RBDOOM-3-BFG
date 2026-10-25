@@ -106,6 +106,13 @@ static int g_multiDrawIndirectBatchCount = 0;
 static int g_multiDrawIndirectDrawCallsSaved = 0;
 static int g_multiDrawIndirectSubmittedCommands = 0;
 static const size_t MAX_GLES_MDI_BATCH_COMMANDS = 256;
+enum multiDrawLayoutKey_t
+{
+    MDI_LAYOUT_NONE = 0,
+    MDI_LAYOUT_DRAW_VERT,
+    MDI_LAYOUT_SHADOW_VERT
+};
+static multiDrawLayoutKey_t g_multiDrawBatchLayout = MDI_LAYOUT_NONE;
 #endif
 static bool gEnableGLSynchronization = false;
 
@@ -884,6 +891,7 @@ void idRenderBackend::FlushMultiDrawBatch()
     g_multiDrawCommands.clear();
     g_multiDrawVertexBuffer = 0;
     g_multiDrawIndexBuffer = 0;
+    g_multiDrawBatchLayout = MDI_LAYOUT_NONE;
 }
 #endif
 
@@ -954,6 +962,7 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
     if (useMultiDraw && !g_multiDrawCommands.empty()
         && (g_multiDrawVertexBuffer != (GLuint)vertexBuffer->GetAPIObject()
             || g_multiDrawIndexBuffer != (GLuint)indexBuffer->GetAPIObject()
+            || g_multiDrawBatchLayout != MDI_LAYOUT_DRAW_VERT
             || vertexLayout != LAYOUT_DRAW_VERT))
     {
         FlushMultiDrawBatch();
@@ -1150,6 +1159,7 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
         {
             g_multiDrawVertexBuffer = (GLuint)vertexBuffer->GetAPIObject();
             g_multiDrawIndexBuffer = (GLuint)indexBuffer->GetAPIObject();
+            g_multiDrawBatchLayout = MDI_LAYOUT_DRAW_VERT;
         }
         pc.c_drawElements++;
         pc.c_drawIndexes += surf->numIndexes;
@@ -2081,7 +2091,18 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 #endif
 {
 #if defined(ANDROID) && !defined(USE_VULKAN)
-    FlushMultiDrawBatch();
+    const bool useInstancing = instances != NULL && instanceCount > 1 && !drawSurf->jointCache;
+    const bool useMultiDrawShadow = g_multiDrawIndirectAvailable
+        && r_useMultiDrawIndirect.GetBool()
+        && isGLES32Version()
+        && !r_singleTriangle.GetBool()
+        && !drawSurf->jointCache
+        && !useInstancing
+        && (renderZPass || !r_useStencilShadowPreload.GetBool());
+    if (!useMultiDrawShadow)
+    {
+        FlushMultiDrawBatch();
+    }
 #endif
 	// get vertex buffer
 	const vertCacheHandle_t vbHandle = drawSurf->shadowCache;
@@ -2120,6 +2141,16 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 		indexBuffer = &vertexCache.frameData[vertexCache.drawListNum].indexBuffer;
 	}
 	const uint64 indexOffset = ( int )( ibHandle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    if (useMultiDrawShadow && !g_multiDrawCommands.empty()
+        && (g_multiDrawVertexBuffer != (GLuint)vertexBuffer->GetAPIObject()
+            || g_multiDrawIndexBuffer != (GLuint)indexBuffer->GetAPIObject()
+            || g_multiDrawBatchLayout != MDI_LAYOUT_SHADOW_VERT
+            || vertexLayout != LAYOUT_DRAW_SHADOW_VERT))
+    {
+        FlushMultiDrawBatch();
+    }
+#endif
 	
 	RENDERLOG_PRINTF( "Binding Buffers: %p %p\n", vertexBuffer, indexBuffer );
 	
@@ -2288,7 +2319,6 @@ if (!isGLES32Version()) {
 	// RB end
 	
 #if defined(ANDROID) && !defined(USE_VULKAN)
-	const bool useInstancing = instances != NULL && instanceCount > 1 && !drawSurf->jointCache;
 	const GLuint mvpAttribs[4] = { 1, 5, 6, 7 };
 	const GLuint lightOriginAttrib = 15;
 	if( useInstancing )
@@ -2315,8 +2345,40 @@ if (!isGLES32Version()) {
 	}
 #endif
 
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    if (!(useMultiDrawShadow && !g_multiDrawCommands.empty()))
+    {
+        renderProgManager.CommitUniforms(glStateBits);
+    }
+#else
 	renderProgManager.CommitUniforms( glStateBits );
+#endif
 	
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    if (useMultiDrawShadow)
+    {
+        drawElementsIndirectCommand_t command;
+        command.count = (GLuint)drawSurf->numIndexes;
+        command.instanceCount = 1;
+        command.firstIndex = (GLuint)(indexOffset / sizeof(triIndex_t));
+        command.baseVertex = (GLint)(vertOffset / sizeof(idShadowVert));
+        command.baseInstance = 0;
+        g_multiDrawCommands.push_back(command);
+        if (g_multiDrawCommands.size() == 1)
+        {
+            g_multiDrawVertexBuffer = (GLuint)vertexBuffer->GetAPIObject();
+            g_multiDrawIndexBuffer = (GLuint)indexBuffer->GetAPIObject();
+            g_multiDrawBatchLayout = MDI_LAYOUT_SHADOW_VERT;
+        }
+        pc.c_shadowElements++;
+        pc.c_shadowIndexes += drawSurf->numIndexes;
+        if (g_multiDrawCommands.size() >= MAX_GLES_MDI_BATCH_COMMANDS)
+        {
+            FlushMultiDrawBatch();
+        }
+        return;
+    }
+#endif
 	if( drawSurf->jointCache )
 	{
         if (!isGLES32Version()) {

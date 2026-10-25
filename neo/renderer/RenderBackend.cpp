@@ -2112,10 +2112,10 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 		{
 			continue;
 		}
+const gpuInstanceData_t* gpuInstanceData = NULL;
+		int gpuInstanceCount = 1;
 #if defined(ANDROID) && !defined(USE_VULKAN)
 		gpuInstanceData_t gpuInstances[MAX_GPU_INSTANCES_PER_DRAW];
-		const gpuInstanceData_t* gpuInstanceData = NULL;
-		int gpuInstanceCount = 1;
 		if( glConfig.glVersion >= 3.2f )
 		{
 			gpuInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i, viewDef->renderView.vieworg, gpuInstances );

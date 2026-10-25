@@ -2170,7 +2170,11 @@ if (!isGLES32Version()) {
 	
 	// RB: added stats
 	pc.c_shadowElements++;
+	#if defined(ANDROID) && !defined(USE_VULKAN)
+	pc.c_shadowIndexes += drawSurf->numIndexes * ( useInstancing ? instanceCount : 1 );
+#else
 	pc.c_shadowIndexes += drawSurf->numIndexes;
+#endif
 	// RB end
 	
 	if( !renderZPass && r_useStencilShadowPreload.GetBool() )
@@ -2215,7 +2219,11 @@ if (!isGLES32Version()) {
 		
 		// RB: added stats
 		pc.c_shadowElements++;
-		pc.c_shadowIndexes += drawSurf->numIndexes;
+		#if defined(ANDROID) && !defined(USE_VULKAN)
+	pc.c_shadowIndexes += drawSurf->numIndexes * ( useInstancing ? instanceCount : 1 );
+#else
+	pc.c_shadowIndexes += drawSurf->numIndexes;
+#endif
 		// RB end
 	}
 

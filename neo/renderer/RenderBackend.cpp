@@ -2016,7 +2016,7 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 			{
 				gpuInteractionInstanceCount = R_BuildGPUInstanceBatch( gpuInteractionSurfs,
 						gpuInteractionSurfaceCount, sortedSurfNum, viewDef->renderView.vieworg,
-						gpuInteractionConsumed, gpuInteractionInstances, false, gpuInteractionInstanceSurfs );
+						gpuInteractionConsumed, gpuInteractionInstances, true, gpuInteractionInstanceSurfs );
 				if( gpuInteractionInstanceCount > 1 )
 				{
 					gpuShadowInteractionInstanced = useShadowMapInteraction;

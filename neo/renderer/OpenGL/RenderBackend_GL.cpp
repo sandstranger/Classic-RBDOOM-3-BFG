@@ -1032,7 +1032,7 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 	}
 	if (useInstancing)
 	{
-		for (int i = 0; i < 9; ++i)
+		for (int i = 0; i < 10; ++i)
 		{
 			const GLuint attrib = instanceAttribs[i];
 			glVertexAttribDivisor(attrib, 0);

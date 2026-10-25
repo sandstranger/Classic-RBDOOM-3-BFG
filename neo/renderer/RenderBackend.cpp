@@ -1051,6 +1051,22 @@ static void R_FillInteractionGPUInstanceData( gpuInstanceData_t& instance, const
 }
 
 
+static void R_FillShadowInteractionGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t* surf,
+		const idVec3& viewOrigin, const idVec3& globalLightOrigin )
+{
+	R_FillGPUInstanceData( instance, surf, viewOrigin );
+
+	idVec4 localLightOrigin( 0.0f );
+	R_GlobalPointToLocal( surf->space->modelMatrix, globalLightOrigin, localLightOrigin.ToVec3() );
+	memcpy( instance.localLightOrigin, localLightOrigin.ToFloatPtr(), sizeof( instance.localLightOrigin ) );
+
+	// Shadow-map interaction variants use modelView as the per-instance model
+	// matrix. Light projection and shadow matrices are shared in world space.
+	idRenderMatrix modelMatrix;
+	idRenderMatrix::Transpose( *( idRenderMatrix* )surf->space->modelMatrix, modelMatrix );
+	memcpy( instance.modelView, modelMatrix[0], sizeof( instance.modelView ) );
+}
+
 static void R_FillTexGenGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t* surf,
 		const idVec3& viewOrigin, const idPlane globalPlanes[4] )
 {
@@ -1951,8 +1967,10 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 			const drawSurf_t* const surf = allSurfaces[ sortedSurfNum ];
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
-			const bool useShadowMapInteraction = r_useShadowMapping.GetBool() && vLight->globalShadows != NULL;
-			if( glConfig.glVersion >= 3.2f && !surf->jointCache && !useShadowMapInteraction )
+			const bool useShadowMapInteraction = !lightShader->IsAmbientLight()
+					&& r_useShadowMapping.GetBool() && vLight->globalShadows != NULL;
+			const bool gpuShadowInteractionInstanced = useShadowMapInteraction && gpuInteractionInstanceCount > 1;
+			if( glConfig.glVersion >= 3.2f && !surf->jointCache )
 			{
 				gpuInteractionInstanceCount = R_BuildGPUInstanceBatch( gpuInteractionSurfs,
 						gpuInteractionSurfaceCount, sortedSurfNum, viewDef->renderView.vieworg,
@@ -1961,10 +1979,19 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 				{
 					for( int instanceIndex = 0; instanceIndex < gpuInteractionInstanceCount; ++instanceIndex )
 					{
-						R_FillInteractionGPUInstanceData( gpuInteractionInstances[instanceIndex],
-								gpuInteractionInstanceSurfs[instanceIndex], viewDef->renderView.vieworg,
-								vLight->globalLightOrigin, vLight->lightProject,
-								lightTextureMatrix, lightStage->texture.hasMatrix );
+						if( useShadowMapInteraction )
+						{
+							R_FillShadowInteractionGPUInstanceData( gpuInteractionInstances[instanceIndex],
+									gpuInteractionInstanceSurfs[instanceIndex], viewDef->renderView.vieworg,
+									vLight->globalLightOrigin );
+						}
+						else
+						{
+							R_FillInteractionGPUInstanceData( gpuInteractionInstances[instanceIndex],
+									gpuInteractionInstanceSurfs[instanceIndex], viewDef->renderView.vieworg,
+									vLight->globalLightOrigin, vLight->lightProject,
+									lightTextureMatrix, lightStage->texture.hasMatrix );
+						}
 					}
 					gpuInteractionInstanceData = gpuInteractionInstances;
 					++gpuInteractionBatchCount;
@@ -2008,7 +2035,16 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 						}
 						else
 						{
-							renderProgManager.BindShader_Interaction_ShadowMapping_Parallel();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+							if( gpuInteractionInstanceCount > 1 )
+							{
+								renderProgManager.BindShader_Interaction_ShadowMapping_Parallel_Instanced();
+							}
+							else
+#endif
+							{
+								renderProgManager.BindShader_Interaction_ShadowMapping_Parallel();
+							}
 						}
 					}
 					else if( vLight->pointLight )
@@ -2019,7 +2055,16 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 						}
 						else
 						{
-							renderProgManager.BindShader_Interaction_ShadowMapping_Point();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+							if( gpuInteractionInstanceCount > 1 )
+							{
+								renderProgManager.BindShader_Interaction_ShadowMapping_Point_Instanced();
+							}
+							else
+#endif
+							{
+								renderProgManager.BindShader_Interaction_ShadowMapping_Point();
+							}
 						}
 					}
 					else
@@ -2030,7 +2075,16 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 						}
 						else
 						{
-							renderProgManager.BindShader_Interaction_ShadowMapping_Spot();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+							if( gpuInteractionInstanceCount > 1 )
+							{
+								renderProgManager.BindShader_Interaction_ShadowMapping_Spot_Instanced();
+							}
+							else
+#endif
+							{
+								renderProgManager.BindShader_Interaction_ShadowMapping_Spot();
+							}
 						}
 					}
 				}
@@ -2099,7 +2153,24 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 				// for determining the shadow mapping cascades
 				idRenderMatrix modelViewMatrix, tmp;
 				idRenderMatrix::Transpose( *( idRenderMatrix* )surf->space->modelViewMatrix, modelViewMatrix );
-				SetVertexParms( RENDERPARM_MODELVIEWMATRIX_X, modelViewMatrix[0], 4 );
+				if( gpuShadowInteractionInstanced )
+				{
+					idRenderMatrix inverseModelMatrix;
+					idRenderMatrix viewMatrix;
+					if( idRenderMatrix::Inverse( modelMatrix, inverseModelMatrix ) )
+					{
+						idRenderMatrix::Multiply( inverseModelMatrix, modelViewMatrix, viewMatrix );
+						SetVertexParms( RENDERPARM_MODELVIEWMATRIX_X, viewMatrix[0], 4 );
+					}
+					else
+					{
+						SetVertexParms( RENDERPARM_MODELVIEWMATRIX_X, modelViewMatrix[0], 4 );
+					}
+				}
+				else
+				{
+					SetVertexParms( RENDERPARM_MODELVIEWMATRIX_X, modelViewMatrix[0], 4 );
+				}
 				
 				idVec4 globalLightOrigin( vLight->globalLightOrigin.x, vLight->globalLightOrigin.y, vLight->globalLightOrigin.z, 1.0f );
 				SetVertexParm( RENDERPARM_GLOBALLIGHTORIGIN, globalLightOrigin.ToFloatPtr() );
@@ -2119,7 +2190,14 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 				idPlane lightProjection[4];
 				for( int i = 0; i < 4; i++ )
 				{
-					R_GlobalPlaneToLocal( surf->space->modelMatrix, vLight->lightProject[i], lightProjection[i] );
+					if( gpuShadowInteractionInstanced )
+					{
+						lightProjection[i] = vLight->lightProject[i];
+					}
+					else
+					{
+						R_GlobalPlaneToLocal( surf->space->modelMatrix, vLight->lightProject[i], lightProjection[i] );
+					}
 				}
 				
 				// optionally multiply the local light projection by the light texture matrix
@@ -2142,7 +2220,14 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 						for( int i = 0; i < ( r_shadowMapSplits.GetInteger() + 1 ); i++ )
 						{
 							idRenderMatrix modelToShadowMatrix;
-							idRenderMatrix::Multiply( shadowV[i], modelMatrix, modelToShadowMatrix );
+							if( gpuShadowInteractionInstanced )
+							{
+								modelToShadowMatrix = shadowV[i];
+							}
+							else
+							{
+								idRenderMatrix::Multiply( shadowV[i], modelMatrix, modelToShadowMatrix );
+							}
 							
 							idRenderMatrix shadowClipMVP;
 							idRenderMatrix::Multiply( shadowP[i], modelToShadowMatrix, shadowClipMVP );
@@ -2158,7 +2243,14 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 						for( int i = 0; i < 6; i++ )
 						{
 							idRenderMatrix modelToShadowMatrix;
-							idRenderMatrix::Multiply( shadowV[i], modelMatrix, modelToShadowMatrix );
+							if( gpuShadowInteractionInstanced )
+							{
+								modelToShadowMatrix = shadowV[i];
+							}
+							else
+							{
+								idRenderMatrix::Multiply( shadowV[i], modelMatrix, modelToShadowMatrix );
+							}
 							
 							idRenderMatrix shadowClipMVP;
 							idRenderMatrix::Multiply( shadowP[i], modelToShadowMatrix, shadowClipMVP );
@@ -2174,7 +2266,14 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 						// spot light
 						
 						idRenderMatrix modelToShadowMatrix;
-						idRenderMatrix::Multiply( shadowV[0], modelMatrix, modelToShadowMatrix );
+						if( gpuShadowInteractionInstanced )
+						{
+							modelToShadowMatrix = shadowV[0];
+						}
+						else
+						{
+							idRenderMatrix::Multiply( shadowV[0], modelMatrix, modelToShadowMatrix );
+						}
 						
 						idRenderMatrix shadowClipMVP;
 						idRenderMatrix::Multiply( shadowP[0], modelToShadowMatrix, shadowClipMVP );

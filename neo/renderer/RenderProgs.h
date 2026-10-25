@@ -485,11 +485,25 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_BLENDLIGHT );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_BlendLightInstanced()
+	{
+		BindShader_Builtin( BUILTIN_BLENDLIGHT_INSTANCED );
+	}
+#endif
 	
 	void	BindShader_Fog()
 	{
 		BindShader_Builtin( BUILTIN_FOG );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_FogInstanced()
+	{
+		BindShader_Builtin( BUILTIN_FOG_INSTANCED );
+	}
+#endif
 	
 	void	BindShader_FogSkinned()
 	{
@@ -754,7 +768,13 @@ private:
 		BUILTIN_SHADOW_DEBUG_SKINNED,
 		
 		BUILTIN_BLENDLIGHT,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_BLENDLIGHT_INSTANCED,
+#endif
 		BUILTIN_FOG,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_FOG_INSTANCED,
+#endif
 		BUILTIN_FOG_SKINNED,
 		BUILTIN_SKYBOX,
 		BUILTIN_WOBBLESKY,

@@ -1093,17 +1093,32 @@ static const int MAX_GPU_INSTANCES_PER_DRAW = 64;
 static bool R_GPUInstanceable( const drawSurf_t* surf )
 {
 	return surf != NULL && surf->space != NULL && surf->material != NULL
-		&& surf->frontEndGeo != NULL && surf->ambientCache != 0 && surf->indexCache != 0
+		&& surf->shaderRegisters != NULL && surf->frontEndGeo != NULL
+		&& surf->ambientCache != 0 && surf->indexCache != 0
 		&& surf->numIndexes > 0 && surf->jointCache == 0
 		&& surf->material->Coverage() == MC_OPAQUE && surf->material->Deform() == DFRM_NONE;
 }
 static bool R_CanBatchGPUInstances( const drawSurf_t* first, const drawSurf_t* candidate )
 {
-	return R_GPUInstanceable( first ) && R_GPUInstanceable( candidate )
-		&& first->frontEndGeo == candidate->frontEndGeo
-		&& first->ambientCache == candidate->ambientCache && first->indexCache == candidate->indexCache
-		&& first->numIndexes == candidate->numIndexes && first->material == candidate->material
-		&& first->shaderRegisters == candidate->shaderRegisters;
+	if( !R_GPUInstanceable( first ) || !R_GPUInstanceable( candidate )
+		|| first->frontEndGeo != candidate->frontEndGeo
+		|| first->ambientCache != candidate->ambientCache || first->indexCache != candidate->indexCache
+		|| first->numIndexes != candidate->numIndexes || first->material != candidate->material )
+	{
+		return false;
+	}
+
+	// Different entities can have separate register arrays. The batch is safe only
+	// when the resulting material parameters are identical for every instance.
+	const int numRegisters = first->material->GetNumRegisters();
+	for( int i = 0; i < numRegisters; ++i )
+	{
+		if( first->shaderRegisters[i] != candidate->shaderRegisters[i] )
+		{
+			return false;
+		}
+	}
+	return true;
 }
 static void R_FillGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t* surf, const idVec3& viewOrigin )
 {

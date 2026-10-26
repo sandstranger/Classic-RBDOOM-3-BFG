@@ -5298,6 +5298,7 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	if( renderSystem->GetStereo3DMode() != STEREO3D_OFF )
 	{
 		StereoRenderExecuteBackEndCommands( cmds );
+		Framebuffer::InvalidateDefaultFramebufferAttachments();
 		Framebuffer::EndFrame();
 		g_frameFences.EndFrame();
 		renderLog.EndFrame();
@@ -5350,6 +5351,7 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	}
 	
 	DrawFlickerBox();
+	Framebuffer::InvalidateDefaultFramebufferAttachments();
 	Framebuffer::EndFrame();
 	g_frameFences.EndFrame();
 	GL_EndFrame();

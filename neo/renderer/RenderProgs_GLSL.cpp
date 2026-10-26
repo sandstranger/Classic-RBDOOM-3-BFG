@@ -851,6 +851,7 @@ const char* fragmentInsert_GLSL_ES_3_00 =
                 "precision mediump samplerCube;\n"
                 "precision mediump samplerCubeShadow;\n"
                 "precision mediump sampler3D;\n"
+                "uniform highp float uTextureLodBias;\n"
                 "\n"
                 "void clip( float v ) { if ( v < 0.0 ) { discard; } }\n"
                 "void clip( vec2 v ) { if ( any( lessThan( v, vec2( 0.0 ) ) ) ) { discard; } }\n"
@@ -871,14 +872,38 @@ const char* fragmentInsert_GLSL_ES_3_00 =
                 "vec4 texCUBE( samplerCube sampler, vec3 texcoord ) { return texture( sampler, texcoord.xyz ); }\n"
                 "vec4 texCUBE( samplerCubeShadow sampler, vec4 texcoord ) { return vec4( texture( sampler, texcoord.xyzw ) ); }\n"
                 "\n"
+                "vec4 tex2DwithLodBias( sampler2D sampler, vec2 texcoord ) { return texture( sampler, texcoord, uTextureLodBias ); }\n"
+                "vec4 tex2DwithLodBias( sampler2D sampler, vec4 texcoord ) { return texture( sampler, texcoord.xy, texcoord.w + uTextureLodBias ); }\n"
+                "vec4 tex2DwithLodBias( sampler2DShadow sampler, vec3 texcoord ) { return vec4( texture( sampler, texcoord, uTextureLodBias ) ); }\n"
+                "vec4 tex2DwithLodBias( sampler2DShadow sampler, vec4 texcoord ) { return vec4( texture( sampler, texcoord.xyz, texcoord.w + uTextureLodBias ) ); }\n"
+                "vec4 tex2DwithLodBias( sampler2D sampler, vec2 texcoord, vec2 dx, vec2 dy ) { float biasScale = exp2( uTextureLodBias ); return textureGrad( sampler, texcoord, dx * biasScale, dy * biasScale ); }\n"
+                "vec4 tex2DwithLodBias( sampler2DShadow sampler, vec3 texcoord, vec2 dx, vec2 dy ) { float biasScale = exp2( uTextureLodBias ); return vec4( textureGrad( sampler, texcoord, dx * biasScale, dy * biasScale ) ); }\n"
+                "vec4 texCUBEwithLodBias( samplerCube sampler, vec3 texcoord ) { return texture( sampler, texcoord, uTextureLodBias ); }\n"
+                "vec4 texCUBEwithLodBias( samplerCube sampler, vec4 texcoord ) { return texture( sampler, texcoord.xyz, texcoord.w + uTextureLodBias ); }\n"
+                "vec4 texCUBEwithLodBias( samplerCubeShadow sampler, vec4 texcoord ) { return vec4( texture( sampler, texcoord, uTextureLodBias ) ); }\n"
+                "vec4 tex2DprojwithLodBias( sampler2D sampler, vec3 texcoord ) { return textureProj( sampler, texcoord, uTextureLodBias ); }\n"
+                "vec4 tex2DprojwithLodBias( sampler2D sampler, vec4 texcoord ) { return textureProj( sampler, texcoord, uTextureLodBias ); }\n"
+                "vec4 tex2DprojwithLodBias( sampler2DShadow sampler, vec4 texcoord ) { return vec4( textureProj( sampler, texcoord, uTextureLodBias ) ); }\n"
+                "vec4 tex3DprojwithLodBias( sampler3D sampler, vec4 texcoord ) { return textureProj( sampler, texcoord, uTextureLodBias ); }\n"
+                "vec4 tex2Dbias( sampler2D sampler, vec2 texcoord ) { return texture( sampler, texcoord, uTextureLodBias ); }\n"
+                "vec4 tex2Dbias( sampler2DShadow sampler, vec3 texcoord ) { return vec4( texture( sampler, texcoord, uTextureLodBias ) ); }\n"
+                "vec4 tex2Dbias( sampler2D sampler, vec2 texcoord, vec2 dx, vec2 dy ) { float biasScale = exp2( uTextureLodBias ); return textureGrad( sampler, texcoord, dx * biasScale, dy * biasScale ); }\n"
+                "vec4 tex2Dbias( sampler2DShadow sampler, vec3 texcoord, vec2 dx, vec2 dy ) { float biasScale = exp2( uTextureLodBias ); return vec4( textureGrad( sampler, texcoord, dx * biasScale, dy * biasScale ) ); }\n"
+                "vec4 texCUBEbias( samplerCube sampler, vec3 texcoord ) { return texture( sampler, texcoord, uTextureLodBias ); }\n"
+                "vec4 texCUBEbias( samplerCubeShadow sampler, vec4 texcoord ) { return vec4( texture( sampler, texcoord, uTextureLodBias ) ); }\n"
+                "vec4 tex2Dprojbias( sampler2D sampler, vec3 texcoord ) { return textureProj( sampler, texcoord, uTextureLodBias ); }\n"
+                "vec4 tex2Dprojbias( sampler2D sampler, vec4 texcoord ) { return textureProj( sampler, texcoord, uTextureLodBias ); }\n"
+                "vec4 tex2Dprojbias( sampler2DShadow sampler, vec4 texcoord ) { return vec4( textureProj( sampler, texcoord, uTextureLodBias ) ); }\n"
+                "vec4 tex3Dprojbias( sampler3D sampler, vec4 texcoord ) { return textureProj( sampler, texcoord, uTextureLodBias ); }\n"
+                "\n"
                 //"vec4 tex1Dproj( sampler1D sampler, vec2 texcoord ) { return textureProj( sampler, texcoord ); }\n"
                 "vec4 tex2Dproj( sampler2D sampler, vec3 texcoord ) { return textureProj( sampler, texcoord ); }\n"
                 "vec4 tex3Dproj( sampler3D sampler, vec4 texcoord ) { return textureProj( sampler, texcoord ); }\n"
                 "\n"
                 //"vec4 tex1Dbias( sampler1D sampler, vec4 texcoord ) { return texture( sampler, texcoord.x, texcoord.w ); }\n"
-                "vec4 tex2Dbias( sampler2D sampler, vec4 texcoord ) { return texture( sampler, texcoord.xy, texcoord.w ); }\n"
-                "vec4 tex3Dbias( sampler3D sampler, vec4 texcoord ) { return texture( sampler, texcoord.xyz, texcoord.w ); }\n"
-                "vec4 texCUBEbias( samplerCube sampler, vec4 texcoord ) { return texture( sampler, texcoord.xyz, texcoord.w ); }\n"
+                "vec4 tex2Dbias( sampler2D sampler, vec4 texcoord ) { return texture( sampler, texcoord.xy, texcoord.w + uTextureLodBias ); }\n"
+                "vec4 tex3Dbias( sampler3D sampler, vec4 texcoord ) { return texture( sampler, texcoord.xyz, texcoord.w + uTextureLodBias ); }\n"
+                "vec4 texCUBEbias( samplerCube sampler, vec4 texcoord ) { return texture( sampler, texcoord.xyz, texcoord.w + uTextureLodBias ); }\n"
                 "\n"
                 //"vec4 tex1Dlod( sampler1D sampler, vec4 texcoord ) { return textureLod( sampler, texcoord.x, texcoord.w ); }\n"
                 "vec4 tex2Dlod( sampler2D sampler, vec4 texcoord ) { return textureLod( sampler, texcoord.xy, texcoord.w ); }\n"
@@ -1648,6 +1673,34 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
             continue;
         }
 
+
+        if( glConfig.driverType == GLDRV_OPENGL_MESA && stage == SHADER_STAGE_FRAGMENT )
+        {
+            const char* lodBiasFunction = NULL;
+            if( token.Cmp( "tex2D" ) == 0 )
+            {
+                lodBiasFunction = "tex2DwithLodBias";
+            }
+            else if( token.Cmp( "texCUBE" ) == 0 )
+            {
+                lodBiasFunction = "texCUBEwithLodBias";
+            }
+            else if( token.Cmp( "tex2Dproj" ) == 0 )
+            {
+                lodBiasFunction = "tex2DprojwithLodBias";
+            }
+            else if( token.Cmp( "tex3Dproj" ) == 0 )
+            {
+                lodBiasFunction = "tex3DprojwithLodBias";
+            }
+
+            if( lodBiasFunction != NULL )
+            {
+                program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
+                program += lodBiasFunction;
+                continue;
+            }
+        }
 
         bool foundType = false;
         for( int i = 0; typeConversion[i].typeCG != NULL; i++ )

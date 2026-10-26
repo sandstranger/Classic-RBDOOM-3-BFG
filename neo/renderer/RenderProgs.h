@@ -854,7 +854,9 @@ private:
 			builtin( false ),
 			vertexLayout( LAYOUT_UNKNOWN ),
 			vertexShaderIndex( -1 ),
-			fragmentShaderIndex( -1 ) {}
+			fragmentShaderIndex( -1 ),
+			textureLodBiasLocation( -1 ),
+			appliedTextureLodBias( 99999.0f ) {}
 	
 		idStr				name;
 		uint				progId;
@@ -864,6 +866,8 @@ private:
 		vertexLayoutType_t	vertexLayout;
 		int					vertexShaderIndex;
 		int					fragmentShaderIndex;
+		int						textureLodBiasLocation;
+		float					appliedTextureLodBias;
 	};
 #endif
 	

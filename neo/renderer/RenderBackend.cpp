@@ -2738,7 +2738,7 @@ void MatrixLookAtRH( float m[16], const idVec3& eye, const idVec3& dir, const id
 idRenderBackend::ShadowMapPass
 =====================
 */
-void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side )
+void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side, bool restoreFramebuffer )
 {
 	if( r_skipShadows.GetBool() )
 	{
@@ -3278,14 +3278,19 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 		}
 	}
 	
-	// cleanup the shadow specific rendering state
-	if( r_useHDR.GetBool() /*&& !viewDef->is2Dgui*/ )
+	// Restore the main target only when requested. For cubemap/directional shadow
+	// sets, the caller keeps the shadow FBO active across all faces/splits and
+	// restores the main target once after the final pass.
+	if( restoreFramebuffer )
 	{
-		globalFramebuffers.hdrFBO->Bind();
-	}
-	else
-	{
-		Framebuffer::Unbind();
+		if( r_useHDR.GetBool() /*&& !viewDef->is2Dgui*/ )
+		{
+			globalFramebuffers.hdrFBO->Bind();
+		}
+		else
+		{
+			Framebuffer::Unbind();
+		}
 	}
 	renderProgManager.Unbind();
 	

@@ -35,6 +35,9 @@ If you have questions concerning this license or the applicable additional terms
 
 static idCVar r_postProcessScale("r_postProcessScale", "0.25", CVAR_FLOAT | CVAR_ARCHIVE,
                                  "Resolution scale for post-process effects (bloom, SSAO). Range: 0.25 to 1.0");
+static idCVar r_useTileBasedOptimizations("r_useTileBasedOptimizations", "1",
+        CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE,
+        "Use framebuffer invalidation for tile-based mobile GPUs");
 
 
 const int shadowMapResolutions[MAX_SHADOWMAP_RESOLUTIONS] = { 512, 256, 256, 128, 64 };
@@ -44,220 +47,140 @@ RenderTargetPool Framebuffer::renderTargetPool;
 Framebuffer* Framebuffer::currentBoundFramebuffer = nullptr;
 globalFramebuffers_t globalFramebuffers;
 
-RenderTargetPool::RenderTargetPool() : _currentFrame(0)
+RenderTargetPool::RenderTargetPool() : _currentFrame(0), _initialized(false) {}
+RenderTargetPool::~RenderTargetPool() { Shutdown(); }
+void RenderTargetPool::Initialize(const PoolConfig& config)
 {
+    if (_initialized) return;
+    _config=config; _pool.reserve(config.preallocateCount); _initialized=true;
+    common->Printf("RenderTargetPool initialized (limit %zu, reserve %zu)\n",_config.maxPoolSize,_config.preallocateCount);
 }
-
-RenderTargetPool::~RenderTargetPool()
+GLuint RenderTargetPool::Acquire(const std::string& name,const RenderTargetDesc& desc)
 {
-    Shutdown();
-}
-
-GLuint RenderTargetPool::Acquire(const std::string& name, const RenderTargetDesc& desc)
-{
-    auto it = _nameToIndex.find(name);
-    if (it != _nameToIndex.end())
+    if(!_initialized){PoolConfig config;Initialize(config);}
+    if(name.empty()||desc.width<=0||desc.height<=0||desc.levels<=0)return 0;
+    auto found=_nameToIndex.find(name);
+    if(found!=_nameToIndex.end())
     {
-        RenderTarget& rt = _pool[it->second];
-        if (CanReuse(rt, desc))
+        size_t i=found->second;
+        if(i<_pool.size())
         {
-            rt.inUse = true;
-            rt.lastUsedFrame = _currentFrame;
-            return rt.textureID;
+            RenderTarget& rt=_pool[i];
+            if(CanReuse(rt,desc)){rt.inUse=true;rt.lastUsedFrame=_currentFrame;return rt.textureID;}
+            _nameToIndex.erase(found);rt.inUse=false;rt.lastUsedFrame=_currentFrame;
+            if(rt.attachmentRefs==0)
+            {
+                DestroyRenderTarget(rt);rt=CreateRenderTarget(desc,name);
+                if(!rt.textureID)return 0;
+                rt.inUse=true;rt.lastUsedFrame=_currentFrame;_nameToIndex[name]=i;return rt.textureID;
+            }
         }
-        else
+        else _nameToIndex.erase(found);
+    }
+    for(size_t i=0;i<_pool.size();++i)
+    {
+        RenderTarget& rt=_pool[i];
+        if(!rt.inUse&&!rt.attachmentRefs&&CanReuse(rt,desc))
+        {rt.inUse=true;rt.lastUsedFrame=_currentFrame;rt.debugName=name;_nameToIndex[name]=i;return rt.textureID;}
+    }
+    if(_pool.size()>=_config.maxPoolSize&&_config.enableLRUEviction)
+    {
+        size_t candidate=_pool.size();int oldest=0x7fffffff;
+        for(size_t i=0;i<_pool.size();++i)
+        {const RenderTarget& rt=_pool[i];if(!rt.inUse&&!rt.attachmentRefs&&rt.lastUsedFrame<=oldest){candidate=i;oldest=rt.lastUsedFrame;}}
+        if(candidate<_pool.size())
         {
-            DestroyRenderTarget(rt);
-            rt = CreateRenderTarget(desc, name);
-            rt.inUse = true;
-            rt.lastUsedFrame = _currentFrame;
-            return rt.textureID;
+            DestroyRenderTarget(_pool[candidate]);_pool[candidate]=CreateRenderTarget(desc,name);
+            RenderTarget& rt=_pool[candidate];if(!rt.textureID)return 0;
+            rt.inUse=true;rt.lastUsedFrame=_currentFrame;_nameToIndex[name]=candidate;return rt.textureID;
         }
     }
-
-    for (size_t i = 0; i < _pool.size(); ++i)
-    {
-        RenderTarget& rt = _pool[i];
-        if (!rt.inUse && CanReuse(rt, desc))
-        {
-            rt.inUse = true;
-            rt.lastUsedFrame = _currentFrame;
-            rt.debugName = name;
-            _nameToIndex[name] = i;
-            return rt.textureID;
-        }
-    }
-
-    RenderTarget rt = CreateRenderTarget(desc, name);
-    rt.inUse = true;
-    rt.lastUsedFrame = _currentFrame;
-    _pool.push_back(rt);
-    _nameToIndex[name] = _pool.size() - 1;
-    return rt.textureID;
+    if(_pool.size()>=_config.maxPoolSize)
+        common->Warning("RenderTargetPool reached %zu entries; growing because all targets are in use",_config.maxPoolSize);
+    RenderTarget rt=CreateRenderTarget(desc,name);if(!rt.textureID)return 0;
+    rt.inUse=true;rt.lastUsedFrame=_currentFrame;_pool.push_back(rt);_nameToIndex[name]=_pool.size()-1;return rt.textureID;
 }
-
 void RenderTargetPool::Release(const std::string& name)
 {
-    auto it = _nameToIndex.find(name);
-    if (it != _nameToIndex.end())
-    {
-        _pool[it->second].inUse = false;
-    }
+    auto it=_nameToIndex.find(name);if(it==_nameToIndex.end())return;
+    size_t i=it->second;_nameToIndex.erase(it);
+    if(i<_pool.size()){_pool[i].inUse=false;_pool[i].lastUsedFrame=_currentFrame;}
 }
-
+bool RenderTargetPool::RetainTexture(GLuint textureID)
+{
+    if(!textureID)return false;
+    for(RenderTarget& rt:_pool)if(rt.textureID==textureID){++rt.attachmentRefs;return true;}
+    return false;
+}
+void RenderTargetPool::ReleaseAttachmentRef(GLuint textureID)
+{
+    if(!textureID)return;
+    for(RenderTarget& rt:_pool)if(rt.textureID==textureID){if(rt.attachmentRefs>0)--rt.attachmentRefs;return;}
+}
 GLuint RenderTargetPool::GetFBO(const std::string& name) const
 {
-    auto it = _nameToIndex.find(name);
-    if (it != _nameToIndex.end())
-    {
-        return _pool[it->second].fboID;
-    }
-    return 0;
+    auto it=_nameToIndex.find(name);return it!=_nameToIndex.end()&&it->second<_pool.size()?_pool[it->second].fboID:0;
 }
-
 GLuint RenderTargetPool::GetTexture(const std::string& name) const
 {
-    auto it = _nameToIndex.find(name);
-    if (it != _nameToIndex.end())
-    {
-        return _pool[it->second].textureID;
-    }
-    return 0;
+    auto it=_nameToIndex.find(name);return it!=_nameToIndex.end()&&it->second<_pool.size()?_pool[it->second].textureID:0;
 }
-
-void RenderTargetPool::BeginFrame()
-{
-    _currentFrame++;
-    _nameToIndex.clear();
-}
-
+void RenderTargetPool::BeginFrame(){++_currentFrame;}
 void RenderTargetPool::EndFrame()
 {
-    for (RenderTarget& rt : _pool)
-    {
-        rt.inUse = false;
-    }
-    _nameToIndex.clear();
+    if(!_initialized||!_config.enableLRUEviction||_config.maxFrameAge<0)return;
+    for(RenderTarget& rt:_pool)
+        if(rt.textureID&&!rt.inUse&&!rt.attachmentRefs&&(_currentFrame-rt.lastUsedFrame)>_config.maxFrameAge)
+        {DestroyRenderTarget(rt);rt=RenderTarget();}
 }
-
 void RenderTargetPool::Shutdown()
 {
-    for (RenderTarget& rt : _pool)
-    {
-        DestroyRenderTarget(rt);
-    }
-    _pool.clear();
-    _nameToIndex.clear();
+    for(RenderTarget& rt:_pool)DestroyRenderTarget(rt);
+    _pool.clear();_nameToIndex.clear();_currentFrame=0;_initialized=false;
 }
-
 size_t RenderTargetPool::GetActiveCount() const
 {
-    size_t count = 0;
-    for (const RenderTarget& rt : _pool)
-    {
-        if (rt.inUse)
-        {
-            count++;
-        }
-    }
-    return count;
+    size_t n=0;for(const RenderTarget& rt:_pool)if(rt.inUse)++n;return n;
 }
-
-RenderTarget RenderTargetPool::CreateRenderTarget(const RenderTargetDesc& desc, const std::string& name)
+RenderTarget RenderTargetPool::CreateRenderTarget(const RenderTargetDesc& desc,const std::string& name)
 {
-    RenderTarget rt;
-    rt.desc = desc;
-    rt.debugName = name;
-
-    glGenTextures(1, &rt.textureID);
-
-    if (desc.samples > 0)
+    RenderTarget rt;rt.desc=desc;rt.debugName=name;rt.attachmentRefs=0;
+    GLint oldFbo=0,oldTex=0;glGetIntegerv(GL_FRAMEBUFFER_BINDING,&oldFbo);glGetIntegerv(GL_TEXTURE_BINDING_2D,&oldTex);
+    glGenTextures(1,&rt.textureID);if(!rt.textureID)return rt;
+    glBindTexture(GL_TEXTURE_2D,rt.textureID);
+    glTexStorage2D(GL_TEXTURE_2D,desc.levels,desc.internalFormat,desc.width,desc.height);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAX_LEVEL,desc.levels-1);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,desc.isDepth?GL_NEAREST:GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,desc.isDepth?GL_NEAREST:GL_LINEAR);
+    glGenFramebuffers(1,&rt.fboID);glBindFramebuffer(GL_FRAMEBUFFER,rt.fboID);
+    if(desc.isDepth)
     {
-        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, rt.textureID);
-        glTexStorage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, desc.samples, desc.internalFormat, desc.width, desc.height, GL_FALSE);
+        GLenum attachment=desc.internalFormat==GL_DEPTH24_STENCIL8?GL_DEPTH_STENCIL_ATTACHMENT:GL_DEPTH_ATTACHMENT;
+        glFramebufferTexture2D(GL_FRAMEBUFFER,attachment,GL_TEXTURE_2D,rt.textureID,0);
+        const GLenum none[]={GL_NONE};glDrawBuffers(1,none);glReadBuffer(GL_NONE);
     }
-    else
+    else glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,rt.textureID,0);
+    GLenum status=glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    glBindFramebuffer(GL_FRAMEBUFFER,oldFbo);glBindTexture(GL_TEXTURE_2D,oldTex);
+    if(status!=GL_FRAMEBUFFER_COMPLETE)
     {
-        glBindTexture(GL_TEXTURE_2D, rt.textureID);
-        glTexStorage2D(GL_TEXTURE_2D, 1, desc.internalFormat, desc.width, desc.height);
-
-
-        if (desc.isDepth)
-        {
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        }
-        else
-        {
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        }
-
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-
-        if (desc.isDepth)
-        {
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
-        }
+        common->Warning("RenderTargetPool::CreateRenderTarget(%s): incomplete FBO 0x%X",name.c_str(),status);
+        DestroyRenderTarget(rt);return RenderTarget();
     }
-
-    glGenFramebuffers(1, &rt.fboID);
-    glBindFramebuffer(GL_FRAMEBUFFER, rt.fboID);
-
-    GLenum target = (desc.samples > 0) ? GL_TEXTURE_2D_MULTISAMPLE : GL_TEXTURE_2D;
-
-    if (desc.isDepth)
-    {
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, target, rt.textureID, 0);
-
-
-        GLenum drawBuffers[] = { GL_NONE };
-        glDrawBuffers(1, drawBuffers);
-
-
-        glReadBuffer(GL_NONE);
-    }
-    else
-    {
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, rt.textureID, 0);
-    }
-
-    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE)
-    {
-        common->Error("RenderTargetPool::CreateRenderTarget(%s): Framebuffer incomplete (0x%X)", name.c_str(), status);
-    }
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
     return rt;
 }
-
-bool RenderTargetPool::CanReuse(const RenderTarget& rt, const RenderTargetDesc& desc) const
+bool RenderTargetPool::CanReuse(const RenderTarget& rt,const RenderTargetDesc& desc) const
 {
-    return rt.desc.width == desc.width &&
-           rt.desc.height == desc.height &&
-           rt.desc.internalFormat == desc.internalFormat &&
-           rt.desc.samples == desc.samples &&
-           rt.desc.isDepth == desc.isDepth;
+    return rt.textureID&&rt.desc.width==desc.width&&rt.desc.height==desc.height&&
+       rt.desc.internalFormat==desc.internalFormat&&rt.desc.format==desc.format&&rt.desc.type==desc.type&&
+       rt.desc.samples==desc.samples&&rt.desc.levels==desc.levels&&rt.desc.isDepth==desc.isDepth;
 }
-
 void RenderTargetPool::DestroyRenderTarget(RenderTarget& rt)
 {
-    if (rt.textureID != 0)
-    {
-        glDeleteTextures(1, &rt.textureID);
-        rt.textureID = 0;
-    }
-    if (rt.fboID != 0)
-    {
-        glDeleteFramebuffers(1, &rt.fboID);
-        rt.fboID = 0;
-    }
+    if(rt.textureID){glDeleteTextures(1,&rt.textureID);rt.textureID=0;}
+    if(rt.fboID){glDeleteFramebuffers(1,&rt.fboID);rt.fboID=0;}
+    rt.attachmentRefs=0;
 }
 
 
@@ -296,16 +219,11 @@ Framebuffer::Framebuffer(const char* name, int w, int h)
     framebuffers.Append(this);
 }
 
-Framebuffer::~Framebuffer()
-{
-    if (frameBuffer != 0)
-    {
-        glDeleteFramebuffers(1, &frameBuffer);
-    }
-}
+Framebuffer::~Framebuffer(){PurgeFramebuffer();}
 
 void Framebuffer::Init()
 {
+    if(!renderTargetPool.IsInitialized()) InitializePool();
     cmdSystem->AddCommand("listFramebuffers", R_ListFramebuffers_f, CMD_FL_RENDERER, "lists framebuffers");
     tr.backend.currentFramebuffer = NULL;
     int width, height;
@@ -368,7 +286,7 @@ void Framebuffer::Init()
 #else
         // Для Android MSAA не поддерживается так же, используем обычный путь
         globalFramebuffers.hdrFBO->AddColorBuffer(GL_RGBA16F, 0);
-        globalFramebuffers.hdrFBO->AddDepthBuffer(GL_DEPTH24_STENCIL8);
+        // currentDepthImage is attached below; avoid allocating a duplicate full-resolution depth texture.
         globalFramebuffers.hdrFBO->AttachImage2D(GL_TEXTURE_2D, globalImages->currentRenderHDRImage, 0);
         globalFramebuffers.hdrFBO->AttachImageDepth(GL_TEXTURE_2D, globalImages->currentDepthImage);
 #endif
@@ -534,112 +452,20 @@ void Framebuffer::Init()
 #endif
 }
 
-void RenderTargetPool::Initialize(const PoolConfig& config)
-{
-    _config = config;
-    _pool.reserve(config.preallocateCount);
-
-    common->Printf("RenderTargetPool initialized:\n");
-    common->Printf("  Max pool size: %zu\n", _config.maxPoolSize);
-    common->Printf("  Pre-allocated: %zu\n", _config.preallocateCount);
-    common->Printf("  LRU eviction: %s\n", _config.enableLRUEviction ? "enabled" : "disabled");
-}
-
-
 void Framebuffer::InitializePool()
 {
     RenderTargetPool::PoolConfig config;
-    config.maxPoolSize = 64;
-    config.preallocateCount = 32;
-    config.enableLRUEviction = true;
-    config.maxFrameAge = 10;
-
+    config.maxPoolSize=64; config.preallocateCount=16; // reserve CPU entries, allocate GPU storage on demand
+    config.enableLRUEviction=true; config.maxFrameAge=10;
     renderTargetPool.Initialize(config);
-
-
-    int screenWidth = renderSystem->GetWidth() > 0 ? renderSystem->GetWidth() : 1280;
-    int screenHeight = renderSystem->GetHeight() > 0 ? renderSystem->GetHeight() : 720;
-
-    float postProcessScale = r_postProcessScale.GetFloat();
-    int bloomWidth = static_cast<int>(screenWidth * postProcessScale);
-    int bloomHeight = static_cast<int>(screenHeight * postProcessScale);
-    int ssaoWidth = screenWidth / 4;
-    int ssaoHeight = screenHeight / 4;
-
-
-    RenderTargetDesc hdrDesc;
-    hdrDesc.width = screenWidth;
-    hdrDesc.height = screenHeight;
-    hdrDesc.internalFormat = GL_RGBA16F;
-    hdrDesc.format = GL_RGBA;
-    hdrDesc.type = GL_FLOAT;
-    hdrDesc.samples = 0;
-    hdrDesc.isDepth = false;
-
-    renderTargetPool.Acquire("_hdrColor_prealloc", hdrDesc);
-
-    RenderTargetDesc hdrDepthDesc;
-    hdrDepthDesc.width = screenWidth;
-    hdrDepthDesc.height = screenHeight;
-    hdrDepthDesc.internalFormat = GL_DEPTH24_STENCIL8;
-    hdrDepthDesc.format = GL_DEPTH_STENCIL;
-    hdrDepthDesc.type = GL_UNSIGNED_INT_24_8;
-    hdrDepthDesc.samples = 0;
-    hdrDepthDesc.isDepth = true;
-
-    renderTargetPool.Acquire("_hdrDepth_prealloc", hdrDepthDesc);
-
-
-    for (int i = 0; i < MAX_BLOOM_BUFFERS; i++)
-    {
-        RenderTargetDesc bloomDesc;
-        bloomDesc.width = bloomWidth;
-        bloomDesc.height = bloomHeight;
-        bloomDesc.internalFormat = GL_RGBA8;
-        bloomDesc.format = GL_RGBA;
-        bloomDesc.type = GL_UNSIGNED_BYTE;
-        bloomDesc.samples = 0;
-        bloomDesc.isDepth = false;
-
-        std::string bloomName = va("_bloomTex_prealloc%i", i);
-        renderTargetPool.Acquire(bloomName, bloomDesc);
-    }
-
-
-    for (int i = 0; i < MAX_SSAO_BUFFERS; i++)
-    {
-        RenderTargetDesc ssaoDesc;
-        ssaoDesc.width = ssaoWidth;
-        ssaoDesc.height = ssaoHeight;
-        ssaoDesc.internalFormat = GL_R8;
-        ssaoDesc.format = GL_RED;
-        ssaoDesc.type = GL_UNSIGNED_BYTE;
-        ssaoDesc.samples = 0;
-        ssaoDesc.isDepth = false;
-
-        std::string ssaoName = va("_ssaoTex_prealloc%i", i);
-        renderTargetPool.Acquire(ssaoName, ssaoDesc);
-    }
-
-    renderTargetPool.EndFrame();
-
-    common->Printf("RenderTargetPool pre-allocated %zu render targets\n", renderTargetPool.GetPoolSize());
 }
-
-void Framebuffer::BeginFrame()
-{
-    //renderTargetPool.BeginFrame();
-}
-
-void Framebuffer::EndFrame()
-{
-//    renderTargetPool.EndFrame();
-}
-
+void Framebuffer::BeginFrame(){renderTargetPool.BeginFrame();}
+void Framebuffer::EndFrame(){renderTargetPool.EndFrame();}
 void Framebuffer::Shutdown()
 {
-  //  renderTargetPool.Shutdown();
     framebuffers.DeleteContents(true);
+    renderTargetPool.Shutdown();
+    currentBoundFramebuffer=nullptr;
 }
 
 void Framebuffer::Bind()
@@ -656,6 +482,33 @@ void Framebuffer::Bind()
 bool Framebuffer::IsBound() const
 {
     return (currentBoundFramebuffer == this);
+}
+
+bool Framebuffer::InvalidateAttachments(const GLenum* attachments, GLsizei count)
+{
+#if defined(ANDROID)
+    if (!r_useTileBasedOptimizations.GetBool() || attachments == nullptr || count <= 0)
+    {
+        return false;
+    }
+
+    // Call at the beginning of a pass that overwrites the complete attachment.
+    // The target is already bound, so this does not add another FBO switch.
+    if (glInvalidateFramebuffer != nullptr)
+    {
+        glInvalidateFramebuffer(GL_FRAMEBUFFER, count, attachments);
+        return true;
+    }
+    if (GLAD_GL_EXT_discard_framebuffer && glDiscardFramebufferEXT != nullptr)
+    {
+        glDiscardFramebufferEXT(GL_FRAMEBUFFER, count, attachments);
+        return true;
+    }
+#else
+    (void)attachments;
+    (void)count;
+#endif
+    return false;
 }
 
 void Framebuffer::Unbind()
@@ -802,6 +655,16 @@ void Framebuffer::AttachImage2D(int target, const idImage* image, int index, int
     {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + index, target, image->texnum, mipmapLod);
     }
+#if ANDROID
+    if (colorTextures[index] != 0 && colorTextures[index] != image->texnum)
+    {
+        glDeleteTextures(1, &colorTextures[index]);
+        colorTextures[index] = 0;
+    }
+#endif
+    GLuint tex=image->texnum;bool retain=renderTargetPool.RetainTexture(tex);
+    GLuint old=attachedImageColorTextures[index];attachedImageColorTextures[index]=retain?tex:0;
+    if(old)renderTargetPool.ReleaseAttachmentRef(old);
 }
 
 void Framebuffer::AttachImage3D(const idImage* image)
@@ -826,11 +689,25 @@ void Framebuffer::AttachImageDepth(int target, const idImage* image)
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, target, image->texnum,
                                0);
     }
+#if ANDROID
+    // AddDepthBuffer's temporary texture is superseded by the idImage depth attachment.
+    if (depthTexture != 0 && depthTexture != image->texnum)
+    {
+        glDeleteTextures(1, &depthTexture);
+        depthTexture = 0;
+    }
+#endif
+    GLuint tex=image->texnum;bool retain=renderTargetPool.RetainTexture(tex);
+    GLuint old=attachedImageDepthTexture;attachedImageDepthTexture=retain?tex:0;
+    if(old)renderTargetPool.ReleaseAttachmentRef(old);
 }
 
 void Framebuffer::AttachImageDepthLayer(const idImage* image, int layer)
 {
     glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, image->texnum, 0, layer);
+    GLuint tex=image->texnum;bool retain=renderTargetPool.RetainTexture(tex);
+    GLuint old=attachedImageDepthTexture;attachedImageDepthTexture=retain?tex:0;
+    if(old)renderTargetPool.ReleaseAttachmentRef(old);
 }
 
 void Framebuffer::Check()
@@ -1012,11 +889,25 @@ Framebuffer* Framebuffer::Find(const char* name)
 
 void Framebuffer::PurgeFramebuffer()
 {
-    if (frameBuffer != 0)
+    if(frameBuffer){glDeleteFramebuffers(1,&frameBuffer);frameBuffer=0;}
+    if(currentBoundFramebuffer==this)currentBoundFramebuffer=nullptr;
+    for(int i=0;i<MAX_COLOR_ATTACHMENTS;++i)
     {
-        glDeleteFramebuffers(1, &frameBuffer);
-        frameBuffer = 0;
+        if(attachedImageColorTextures[i])
+        {
+            renderTargetPool.ReleaseAttachmentRef(attachedImageColorTextures[i]);
+            attachedImageColorTextures[i]=0;
+        }
+        if(colorTextures[i]){glDeleteTextures(1,&colorTextures[i]);colorTextures[i]=0;}
     }
+    if(attachedImageDepthTexture)
+    {
+        renderTargetPool.ReleaseAttachmentRef(attachedImageDepthTexture);
+        attachedImageDepthTexture=0;
+    }
+    if(depthTexture){glDeleteTextures(1,&depthTexture);depthTexture=0;}
+    if(depthBuffer){glDeleteRenderbuffers(1,&depthBuffer);depthBuffer=0;}
+    if(stencilBuffer){glDeleteRenderbuffers(1,&stencilBuffer);stencilBuffer=0;}
 }
 
 #endif

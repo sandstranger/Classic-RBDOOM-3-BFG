@@ -270,6 +270,7 @@ idImage::idImage
 */
 idImage::idImage(const char *name) : imgName(name) {
     texnum = TEXTURE_NOT_LOADED;
+    renderTargetPoolAllocated = false;
     internalFormat = 0;
     dataFormat = 0;
     dataType = 0;
@@ -1575,6 +1576,22 @@ void idImage::AllocImage() {
     int w = opts.width;
     int h = opts.height;
 #endif
+#if ANDROID
+    bool allocatedFromPool=false;
+    if(opts.isRenderTarget&&opts.textureType==TT_2D&&!IsCompressed())
+    {
+        int skip=getMipmapSkipLevel(opts.numLevels),levels=opts.numLevels-skip;if(levels<1)levels=1;
+        RenderTargetDesc d;d.width=Max(1,w>>skip);d.height=Max(1,h>>skip);
+        d.internalFormat=internalFormat;d.format=dataFormat;d.type=dataType;d.samples=0;d.levels=levels;
+        d.isDepth=(dataFormat==GL_DEPTH_COMPONENT||dataFormat==GL_DEPTH_STENCIL||
+                   internalFormat==GL_DEPTH_COMPONENT16||internalFormat==GL_DEPTH_COMPONENT24||
+                   internalFormat==GL_DEPTH24_STENCIL8||internalFormat==GL_DEPTH_COMPONENT32F);
+        texnum=Framebuffer::renderTargetPool.Acquire(GetName(),d);
+        if(texnum){renderTargetPoolAllocated=true;allocatedFromPool=true;}
+    }
+    if(allocatedFromPool)glBindTexture(target,texnum);
+    else
+#endif
 #ifndef ANDROID
     if (!glConfig.directStateAccess)
 #endif
@@ -1734,8 +1751,11 @@ idImage::PurgeImage
 */
 void idImage::PurgeImage() {
     if (texnum != TEXTURE_NOT_LOADED) {
-        glDeleteTextures(1, (GLuint *) &texnum);
-        texnum = TEXTURE_NOT_LOADED;
+        if(renderTargetPoolAllocated) {
+            Framebuffer::renderTargetPool.Release(GetName());
+            renderTargetPoolAllocated=false;
+        } else glDeleteTextures(1,(GLuint *)&texnum);
+        texnum=TEXTURE_NOT_LOADED;
     }
 
     for (int i = 0; i < MAX_MULTITEXTURE_UNITS; i++) {

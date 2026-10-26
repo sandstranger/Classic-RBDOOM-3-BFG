@@ -59,17 +59,17 @@ struct RenderTargetDesc
     GLenum format;
     GLenum type;
     int samples;
+    int levels;
     bool isDepth;
+
+    RenderTargetDesc() : width(0), height(0), internalFormat(0), format(0), type(0), samples(0), levels(1), isDepth(false) {}
 
     bool operator==(const RenderTargetDesc& other) const
     {
-        return width == other.width &&
-               height == other.height &&
-               internalFormat == other.internalFormat &&
-               format == other.format &&
-               type == other.type &&
-               samples == other.samples &&
-               isDepth == other.isDepth;
+        return width == other.width && height == other.height &&
+               internalFormat == other.internalFormat && format == other.format &&
+               type == other.type && samples == other.samples &&
+               levels == other.levels && isDepth == other.isDepth;
     }
 };
 
@@ -81,8 +81,9 @@ struct RenderTarget
     bool inUse;
     std::string debugName;
     int lastUsedFrame;
+    int attachmentRefs;
 
-    RenderTarget() : textureID(0), fboID(0), inUse(false), lastUsedFrame(0) {}
+    RenderTarget() : textureID(0), fboID(0), inUse(false), lastUsedFrame(0), attachmentRefs(0) {}
 };
 
 class RenderTargetPool
@@ -110,6 +111,7 @@ private:
     std::unordered_map<std::string, size_t> _nameToIndex;
     int _currentFrame;
     PoolConfig _config;
+    bool _initialized;
 
 public:
     RenderTargetPool();
@@ -125,6 +127,9 @@ public:
 
 
     void Release(const std::string& name);
+    bool RetainTexture(GLuint textureID);
+    void ReleaseAttachmentRef(GLuint textureID);
+    bool IsInitialized() const { return _initialized; }
 
 
     GLuint GetFBO(const std::string& name) const;
@@ -177,6 +182,7 @@ public:
 
     void Bind();
     bool IsBound() const;
+    bool InvalidateAttachments(const GLenum* attachments, GLsizei count);
     static void Unbind();
     static bool IsDefaultFramebufferActive();
 
@@ -219,6 +225,8 @@ private:
     uint32_t frameBuffer;
 
     GLuint colorTextures[MAX_COLOR_ATTACHMENTS] = {};
+    GLuint attachedImageColorTextures[MAX_COLOR_ATTACHMENTS] = {};
+    GLuint attachedImageDepthTexture = 0;
     int colorFormat;
     uint32_t depthBuffer;
     GLuint depthTexture;

@@ -4330,6 +4330,8 @@ void idRenderBackend::CalculateAutomaticExposure()
 #if !defined(USE_VULKAN)
 		// read back the contents
 		glReadPixels( 0, 0, 64, 64,  GL_RGBA, GL_FLOAT, image );
+		const GLenum tileColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
+		globalFramebuffers.hdr64FBO->InvalidateAttachments(tileColorAttachment, 1);
 #endif
 		
 		sum = 0.0f;
@@ -4519,6 +4521,7 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 		return;
 	}
 	
+	const GLenum tileColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
 	RENDERLOG_PRINTF( "---------- RB_Bloom( avg = %f, max = %f, key = %f ) ----------\n", hdrAverageLuminance, hdrMaxLuminance, hdrKey );
 	
 	// BRIGHTPASS
@@ -4536,14 +4539,13 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 
 	GL_State( /*GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO |*/ GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS | GLS_CULL_TWOSIDED );
 	
-	int screenWidth = renderSystem->GetWidth();
-	int screenHeight = renderSystem->GetHeight();
 	
 	// set the window clipping
-	GL_Viewport( 0, 0, screenWidth / 4, screenHeight / 4 );
-	GL_Scissor( 0, 0, screenWidth / 4, screenHeight / 4 );
+	GL_Viewport( 0, 0, globalFramebuffers.bloomRenderFBO[0]->GetWidth(), globalFramebuffers.bloomRenderFBO[0]->GetHeight() );
+	GL_Scissor( 0, 0, globalFramebuffers.bloomRenderFBO[0]->GetWidth(), globalFramebuffers.bloomRenderFBO[0]->GetHeight() );
 	
 	globalFramebuffers.bloomRenderFBO[ 0 ]->Bind();
+	globalFramebuffers.bloomRenderFBO[ 0 ]->InvalidateAttachments(tileColorAttachment, 1);
 	
 	GL_SelectTexture( 0 );
 	
@@ -4606,19 +4608,32 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 	// BLOOM PING PONG rendering
 	renderProgManager.BindShader_HDRGlareChromatic();
 	
+	Framebuffer* lastBloomTarget = nullptr;
 	int j;
 	for( j = 0; j < r_hdrGlarePasses.GetInteger(); j++ )
 	{
-		globalFramebuffers.bloomRenderFBO[( j + 1 ) % 2 ]->Bind();
-		
-		// FIXME
+		Framebuffer* bloomTarget = globalFramebuffers.bloomRenderFBO[( j + 1 ) % 2 ];
+		lastBloomTarget = bloomTarget;
+		bloomTarget->Bind();
+		GL_Viewport( 0, 0, bloomTarget->GetWidth(), bloomTarget->GetHeight() );
+		GL_Scissor( 0, 0, bloomTarget->GetWidth(), bloomTarget->GetHeight() );
+		if (!bloomTarget->InvalidateAttachments(tileColorAttachment, 1))
+		{
 #if !defined(USE_VULKAN)
-		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+			glClear( GL_COLOR_BUFFER_BIT );
 #endif
+		}
 		
 		globalImages->bloomRenderImage[j % 2]->Bind();
 		
 		DrawElementsWithCounters( &unitSquareSurface );
+	}
+
+	// The final ping-pong destination is not sampled by the composite. Discard it
+	// while it is still bound so the driver can avoid storing this transient output.
+	if (lastBloomTarget != nullptr)
+	{
+		lastBloomTarget->InvalidateAttachments(tileColorAttachment, 1);
 	}
 	
 	// add filtered glare back to main context
@@ -4744,6 +4759,7 @@ void idRenderBackend::DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef
 	
 	int screenWidth = renderSystem->GetWidth();
 	int screenHeight = renderSystem->GetHeight();
+	const GLenum tileColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
 	
 	// build hierarchical depth buffer
 	if( r_useHierarchicalDepthBuffer.GetBool() )
@@ -4764,8 +4780,10 @@ void idRenderBackend::DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef
 			GL_Scissor( 0, 0, width, height );
 			
 			globalFramebuffers.csDepthFBO[i]->Bind();
-			
-			glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+			if (!globalFramebuffers.csDepthFBO[i]->InvalidateAttachments(tileColorAttachment, 1))
+			{
+				glClear( GL_COLOR_BUFFER_BIT );
+			}
 			
 			if( i == 0 )
 			{
@@ -4809,9 +4827,13 @@ void idRenderBackend::DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef
 	if( r_ssaoFiltering.GetBool() )
 	{
 		globalFramebuffers.ambientOcclusionFBO[0]->Bind();
-		
-		glClearColor( 0, 0, 0, 0 );
-		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+		GL_Viewport( 0, 0, globalFramebuffers.ambientOcclusionFBO[0]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[0]->GetHeight() );
+		GL_Scissor( 0, 0, globalFramebuffers.ambientOcclusionFBO[0]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[0]->GetHeight() );
+		if (!globalFramebuffers.ambientOcclusionFBO[0]->InvalidateAttachments(tileColorAttachment, 1))
+		{
+			glClearColor( 0, 0, 0, 0 );
+			glClear( GL_COLOR_BUFFER_BIT );
+		}
 		
 		renderProgManager.BindShader_AmbientOcclusion();
 	}
@@ -4894,6 +4916,9 @@ void idRenderBackend::DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef
 		// AO blur X
 #if 1
 		globalFramebuffers.ambientOcclusionFBO[1]->Bind();
+		GL_Viewport( 0, 0, globalFramebuffers.ambientOcclusionFBO[1]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[1]->GetHeight() );
+		GL_Scissor( 0, 0, globalFramebuffers.ambientOcclusionFBO[1]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[1]->GetHeight() );
+		globalFramebuffers.ambientOcclusionFBO[1]->InvalidateAttachments(tileColorAttachment, 1);
 		
 		renderProgManager.BindShader_AmbientOcclusionBlur();
 		
@@ -4911,6 +4936,8 @@ void idRenderBackend::DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef
 #endif
 		
 		// AO blur Y
+		GL_Viewport( 0, 0, screenWidth, screenHeight );
+		GL_Scissor( 0, 0, screenWidth, screenHeight );
 		if( hdrIsActive )
 		{
 			globalFramebuffers.hdrFBO->Bind();
@@ -4977,6 +5004,7 @@ void idRenderBackend::DrawScreenSpaceGlobalIllumination( const viewDef_t* _viewD
 	
 	int screenWidth = renderSystem->GetWidth();
 	int screenHeight = renderSystem->GetHeight();
+	const GLenum tileColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
 	
 	// set the window clipping
 	GL_Viewport( 0, 0, screenWidth, screenHeight );
@@ -5007,8 +5035,10 @@ void idRenderBackend::DrawScreenSpaceGlobalIllumination( const viewDef_t* _viewD
 			GL_Scissor( 0, 0, width, height );
 			
 			globalFramebuffers.csDepthFBO[i]->Bind();
-			
-			glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+			if (!globalFramebuffers.csDepthFBO[i]->InvalidateAttachments(tileColorAttachment, 1))
+			{
+				glClear( GL_COLOR_BUFFER_BIT );
+			}
 			
 			if( i == 0 )
 			{
@@ -5052,10 +5082,14 @@ void idRenderBackend::DrawScreenSpaceGlobalIllumination( const viewDef_t* _viewD
 	if( r_ssgiFiltering.GetBool() )
 	{
 		globalFramebuffers.ambientOcclusionFBO[0]->Bind();
-		
-		// FIXME remove and mix with color from previous frame
-		glClearColor( 0, 0, 0, 0 );
-		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+		GL_Viewport( 0, 0, globalFramebuffers.ambientOcclusionFBO[0]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[0]->GetHeight() );
+		GL_Scissor( 0, 0, globalFramebuffers.ambientOcclusionFBO[0]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[0]->GetHeight() );
+		if (!globalFramebuffers.ambientOcclusionFBO[0]->InvalidateAttachments(tileColorAttachment, 1))
+		{
+			// FIXME remove and mix with color from previous frame
+			glClearColor( 0, 0, 0, 0 );
+			glClear( GL_COLOR_BUFFER_BIT );
+		}
 		
 		renderProgManager.BindShader_DeepGBufferRadiosity();
 	}
@@ -5154,6 +5188,9 @@ void idRenderBackend::DrawScreenSpaceGlobalIllumination( const viewDef_t* _viewD
 		// AO blur X
 #if 1
 		globalFramebuffers.ambientOcclusionFBO[1]->Bind();
+		GL_Viewport( 0, 0, globalFramebuffers.ambientOcclusionFBO[1]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[1]->GetHeight() );
+		GL_Scissor( 0, 0, globalFramebuffers.ambientOcclusionFBO[1]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[1]->GetHeight() );
+		globalFramebuffers.ambientOcclusionFBO[1]->InvalidateAttachments(tileColorAttachment, 1);
 		
 		renderProgManager.BindShader_DeepGBufferRadiosityBlur();
 		
@@ -5171,6 +5208,8 @@ void idRenderBackend::DrawScreenSpaceGlobalIllumination( const viewDef_t* _viewD
 #endif
 		
 		// AO blur Y
+		GL_Viewport( 0, 0, screenWidth, screenHeight );
+		GL_Scissor( 0, 0, screenWidth, screenHeight );
 		if( hdrIsActive )
 		{
 			globalFramebuffers.hdrFBO->Bind();
@@ -5247,9 +5286,11 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	renderLog.StartFrame();
 	GL_StartFrame();
 	g_frameFences.BeginFrame();
+	Framebuffer::BeginFrame();
 
 	if( cmds->commandId == RC_NOP && !cmds->next )
 	{
+		Framebuffer::EndFrame();
 		g_frameFences.EndFrame();
 		return;
 	}
@@ -5257,6 +5298,7 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	if( renderSystem->GetStereo3DMode() != STEREO3D_OFF )
 	{
 		StereoRenderExecuteBackEndCommands( cmds );
+		Framebuffer::EndFrame();
 		g_frameFences.EndFrame();
 		renderLog.EndFrame();
 		return;
@@ -5308,6 +5350,7 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	}
 	
 	DrawFlickerBox();
+	Framebuffer::EndFrame();
 	g_frameFences.EndFrame();
 	GL_EndFrame();
 	
@@ -5924,10 +5967,13 @@ void idRenderBackend::PostProcess( const void* data )
 		screenCorrectionParm[3] = screenHeight;
 		SetFragmentParm( RENDERPARM_SCREENCORRECTIONFACTOR, screenCorrectionParm ); // rpScreenCorrectionFactor
 		
+		const GLenum tileColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
 		globalFramebuffers.smaaEdgesFBO->Bind();
-		
-		glClearColor( 0, 0, 0, 0 );
-		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+		if (!globalFramebuffers.smaaEdgesFBO->InvalidateAttachments(tileColorAttachment, 1))
+		{
+			glClearColor( 0, 0, 0, 0 );
+			glClear( GL_COLOR_BUFFER_BIT );
+		}
 		
 		GL_SelectTexture( 0 );
 		globalImages->smaaInputImage->Bind();
@@ -5940,8 +5986,10 @@ void idRenderBackend::PostProcess( const void* data )
 		
 		globalFramebuffers.smaaBlendFBO->Bind();
 		//Framebuffer::Unbind();
-		
-		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+		if (!globalFramebuffers.smaaBlendFBO->InvalidateAttachments(tileColorAttachment, 1))
+		{
+			glClear( GL_COLOR_BUFFER_BIT );
+		}
 		
 		GL_SelectTexture( 0 );
 		globalImages->smaaEdgesImage->Bind();

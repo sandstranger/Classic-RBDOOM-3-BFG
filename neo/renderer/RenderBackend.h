@@ -300,7 +300,7 @@ private:
 	
 	// RB
 	void				AmbientPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs, bool fillGbuffer );
-	void				ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side );
+	void				ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side, bool restoreFramebuffer = true );
 	
 	void				StencilShadowPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight );
 	void				StencilSelectLight( const viewLight_t* vLight );

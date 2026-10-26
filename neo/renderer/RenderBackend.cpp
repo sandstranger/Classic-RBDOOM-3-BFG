@@ -2738,7 +2738,7 @@ void MatrixLookAtRH( float m[16], const idVec3& eye, const idVec3& dir, const id
 idRenderBackend::ShadowMapPass
 =====================
 */
-void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side )
+void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side, bool restoreFramebuffer )
 {
 	if( r_skipShadows.GetBool() )
 	{
@@ -3278,14 +3278,19 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 		}
 	}
 	
-	// cleanup the shadow specific rendering state
-	if( r_useHDR.GetBool() /*&& !viewDef->is2Dgui*/ )
+	// Restore the main target only when requested. For cubemap/directional shadow
+	// sets, the caller keeps the shadow FBO active across all faces/splits and
+	// restores the main target once after the final pass.
+	if( restoreFramebuffer )
 	{
-		globalFramebuffers.hdrFBO->Bind();
-	}
-	else
-	{
-		Framebuffer::Unbind();
+		if( r_useHDR.GetBool() /*&& !viewDef->is2Dgui*/ )
+		{
+			globalFramebuffers.hdrFBO->Bind();
+		}
+		else
+		{
+			Framebuffer::Unbind();
+		}
 	}
 	renderProgManager.Unbind();
 	
@@ -3381,8 +3386,23 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 			
 			for( ; side < sideStop ; side++ )
 			{
-				ShadowMapPass( vLight->globalShadows, vLight, side );
+				// Keep the shadow framebuffer bound while rendering all faces/splits for
+				// this light. Switching back to the main target after every face can
+				// force tile GPUs to flush and reload the main framebuffer repeatedly.
+				ShadowMapPass( vLight->globalShadows, vLight, side, false );
 			}
+
+#if !defined(USE_VULKAN)
+			// Restore the main render target once, after the complete shadow set.
+			if( r_useHDR.GetBool() )
+			{
+				globalFramebuffers.hdrFBO->Bind();
+			}
+			else
+			{
+				Framebuffer::Unbind();
+			}
+#endif
 
             // go back from light view to default camera view
 			ResetViewportAndScissorToDefaultCamera( _viewDef );
@@ -5298,6 +5318,7 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	if( renderSystem->GetStereo3DMode() != STEREO3D_OFF )
 	{
 		StereoRenderExecuteBackEndCommands( cmds );
+		Framebuffer::InvalidateDefaultFramebufferAttachments();
 		Framebuffer::EndFrame();
 		g_frameFences.EndFrame();
 		renderLog.EndFrame();
@@ -5350,6 +5371,7 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	}
 	
 	DrawFlickerBox();
+	Framebuffer::InvalidateDefaultFramebufferAttachments();
 	Framebuffer::EndFrame();
 	g_frameFences.EndFrame();
 	GL_EndFrame();

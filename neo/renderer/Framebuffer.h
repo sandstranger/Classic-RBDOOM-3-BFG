@@ -183,6 +183,7 @@ public:
     void Bind();
     bool IsBound() const;
     bool InvalidateAttachments(const GLenum* attachments, GLsizei count);
+    static void InvalidateDefaultFramebufferAttachments();
     static void Unbind();
     static bool IsDefaultFramebufferActive();
 

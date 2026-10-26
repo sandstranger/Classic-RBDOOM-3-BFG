@@ -523,6 +523,31 @@ void Framebuffer::Unbind()
     }
 }
 
+void Framebuffer::InvalidateDefaultFramebufferAttachments()
+{
+#if defined(ANDROID)
+    if (!r_useTileBasedOptimizations.GetBool())
+    {
+        return;
+    }
+
+    // The default framebuffer's depth and stencil data are never presented.
+    // At the end of the frame, discard them instead of storing transient tile data.
+    // Unbind any renderer FBO first; do not invalidate the color buffer that is presented.
+    Unbind();
+
+    const GLenum attachments[] = { GL_DEPTH, GL_STENCIL };
+    if (glInvalidateFramebuffer != nullptr)
+    {
+        glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, attachments);
+    }
+    else if (GLAD_GL_EXT_discard_framebuffer && glDiscardFramebufferEXT != nullptr)
+    {
+        glDiscardFramebufferEXT(GL_FRAMEBUFFER, 2, attachments);
+    }
+#endif
+}
+
 bool Framebuffer::IsDefaultFramebufferActive()
 {
     return (currentBoundFramebuffer == nullptr);

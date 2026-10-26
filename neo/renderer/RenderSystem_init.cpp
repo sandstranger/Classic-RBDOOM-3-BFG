@@ -2466,6 +2466,7 @@ void idRenderSystemLocal::Init()
 	}
 #endif
 	
+	Framebuffer::InitializePool();
 	globalImages->Init();
 	
 	// RB begin

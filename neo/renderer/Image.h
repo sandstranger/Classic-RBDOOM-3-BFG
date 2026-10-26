@@ -470,6 +470,7 @@ private:
 	void SetTextureParameters();
 	//GK: End
 #endif
+	bool				renderTargetPoolAllocated;
 	bool				actuallyloaded;
 };
 

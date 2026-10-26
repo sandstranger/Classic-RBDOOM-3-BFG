@@ -774,7 +774,7 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 #else
 	opts.samples = samples;
 #endif
-	opts.isRenderTarget = isRenderTarget;
+	opts.isRenderTarget = isRenderTarget || pic == NULL;
 	DeriveOpts();
 
 	// RB: allow pic == NULL for internal framebuffer images

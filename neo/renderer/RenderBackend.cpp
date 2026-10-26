@@ -81,6 +81,13 @@ void RB_InitExposureReadback()
 
 		glBindBuffer( GL_PIXEL_PACK_BUFFER, buffers[i] );
 		glBufferData( GL_PIXEL_PACK_BUFFER, RB_EXPOSURE_READBACK_BYTES, NULL, GL_STREAM_READ );
+		GLint allocatedBytes = 0;
+		glGetBufferParameteriv( GL_PIXEL_PACK_BUFFER, GL_BUFFER_SIZE, &allocatedBytes );
+		if ( allocatedBytes < RB_EXPOSURE_READBACK_BYTES )
+		{
+			success = false;
+			break;
+		}
 	}
 
 	glBindBuffer( GL_PIXEL_PACK_BUFFER, previousPackBuffer );
@@ -105,6 +112,11 @@ void RB_InitExposureReadback()
 
 void RB_ShutdownExposureReadback()
 {
+	if ( !rbExposureReadbackInitialized )
+	{
+		return;
+	}
+
 	GLuint buffers[RB_EXPOSURE_READBACK_COUNT] = {};
 	for ( int i = 0; i < RB_EXPOSURE_READBACK_COUNT; ++i )
 	{
@@ -178,16 +190,27 @@ static bool RB_ReadExposurePixelsAsync( float* image )
 		glBindBuffer( GL_PIXEL_PACK_BUFFER, slot.buffer );
 
 		const void* mapped = glMapBufferRange( GL_PIXEL_PACK_BUFFER, 0, RB_EXPOSURE_READBACK_BYTES, GL_MAP_READ_BIT );
+		bool mapSucceeded = false;
 		if ( mapped != nullptr )
 		{
 			memcpy( image, mapped, (size_t)RB_EXPOSURE_READBACK_BYTES );
-			hasSample = ( glUnmapBuffer( GL_PIXEL_PACK_BUFFER ) == GL_TRUE );
+			mapSucceeded = ( glUnmapBuffer( GL_PIXEL_PACK_BUFFER ) == GL_TRUE );
 		}
 
 		glBindBuffer( GL_PIXEL_PACK_BUFFER, previousPackBuffer );
 		glDeleteSync( slot.fence );
 		slot.fence = nullptr;
 		slot.sequence = 0;
+
+		if ( !mapSucceeded )
+		{
+			// If a completed PBO cannot be mapped reliably, fall back to the
+			// synchronous path instead of leaving exposure frozen indefinitely.
+			RB_ShutdownExposureReadback();
+			glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+			return true;
+		}
+		hasSample = true;
 	}
 
 	// Use a three-buffer ring. If the next slot is still in flight, skip this

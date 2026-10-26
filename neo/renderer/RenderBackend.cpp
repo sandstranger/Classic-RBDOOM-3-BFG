@@ -55,6 +55,7 @@ static rbExposureReadbackSlot_t rbExposureReadbackSlots[RB_EXPOSURE_READBACK_COU
 static unsigned long long rbExposureReadbackNextSequence = 1;
 static int rbExposureReadbackWriteIndex = 0;
 static bool rbExposureReadbackInitialized = false;
+static bool rbExposureReadbackHasInitialSample = false;
 }
 
 void RB_InitExposureReadback()
@@ -107,6 +108,7 @@ void RB_InitExposureReadback()
 
 	rbExposureReadbackNextSequence = 1;
 	rbExposureReadbackWriteIndex = 0;
+	rbExposureReadbackHasInitialSample = false;
 	rbExposureReadbackInitialized = true;
 }
 
@@ -133,6 +135,7 @@ void RB_ShutdownExposureReadback()
 	glDeleteBuffers( RB_EXPOSURE_READBACK_COUNT, buffers );
 	rbExposureReadbackNextSequence = 1;
 	rbExposureReadbackWriteIndex = 0;
+	rbExposureReadbackHasInitialSample = false;
 	rbExposureReadbackInitialized = false;
 }
 
@@ -142,6 +145,15 @@ static bool RB_ReadExposurePixelsAsync( float* image )
 	{
 		// Keep HDR working on drivers where PBO allocation is unavailable.
 		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+		return true;
+	}
+
+	if ( !rbExposureReadbackHasInitialSample )
+	{
+		// Seed exposure synchronously once so the first HDR frame never tonemaps
+		// with uninitialized luminance while the asynchronous ring is warming up.
+		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+		rbExposureReadbackHasInitialSample = true;
 		return true;
 	}
 

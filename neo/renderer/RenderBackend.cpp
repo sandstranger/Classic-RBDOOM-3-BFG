@@ -4589,13 +4589,13 @@ void idRenderBackend::CalculateAutomaticExposure()
 				color[1] = image[i * 4 + 1];
 				color[2] = image[i * 4 + 2];
 				color[3] = image[i * 4 + 3];
-				
+
 				luminance = ( color.x * LUMINANCE_SRGB.x + color.y * LUMINANCE_SRGB.y + color.z * LUMINANCE_SRGB.z ) + 0.0001f;
 				if( luminance > maxLuminance )
 				{
 					maxLuminance = luminance;
 				}
-				
+
 				//float logLuminance = log( luminance + 1 );
 				//if( logLuminance > 0 )
 				{
@@ -4608,7 +4608,7 @@ void idRenderBackend::CalculateAutomaticExposure()
 #else
 			avgLuminance = sum / ( 64.0f * 64.0f );
 #endif
-			
+
 			// The user's adapted luminance level is simulated by closing the gap between
 			// adapted luminance and current luminance by 2% every frame, based on a
 			// 30 fps rate. Only update adaptation time when a GPU sample is available.
@@ -4616,21 +4616,21 @@ void idRenderBackend::CalculateAutomaticExposure()
 			{
 				hdrTime = curTime;
 			}
-			
+
 			deltaTime = curTime - hdrTime;
-			
+
 			//if(r_hdrMaxLuminance->value)
 			{
 				hdrAverageLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), hdrAverageLuminance );
 				avgLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), avgLuminance );
-				
+
 				hdrMaxLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), hdrMaxLuminance );
 				maxLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), maxLuminance );
 			}
-			
+
 			newAdaptation = hdrAverageLuminance + ( avgLuminance - hdrAverageLuminance ) * ( 1.0f - powf( 0.98f, 30.0f * deltaTime ) );
 			newMaximum = hdrMaxLuminance + ( maxLuminance - hdrMaxLuminance ) * ( 1.0f - powf( 0.98f, 30.0f * deltaTime ) );
-			
+
 			if( !IsNAN( newAdaptation ) && !IsNAN( newMaximum ) )
 			{
 #if 1
@@ -4641,10 +4641,10 @@ void idRenderBackend::CalculateAutomaticExposure()
 				hdrMaxLuminance = maxLuminance;
 #endif
 			}
-			
+
 			hdrTime = curTime;
 		}
-		
+
 		// calculate HDR image key
 #if 0
 		// RB: this never worked :/

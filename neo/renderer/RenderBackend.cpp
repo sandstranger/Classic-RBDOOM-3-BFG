@@ -4855,32 +4855,36 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 	// BLOOM PING PONG rendering
 	renderProgManager.BindShader_HDRGlareChromatic();
 	
-	Framebuffer* lastBloomTarget = nullptr;
+	// The old loop rendered one extra blur pass whose destination was immediately
+	// invalidated and never sampled by the composite. Skip that wasted full-screen
+	// draw, and composite the last pass that actually contributes to the image.
+	int bloomPassCount = r_hdrGlarePasses.GetInteger();
+	if ( bloomPassCount > 0 )
+	{
+		--bloomPassCount;
+	}
+	else
+	{
+		bloomPassCount = 0;
+	}
+
 	int j;
-	for( j = 0; j < r_hdrGlarePasses.GetInteger(); j++ )
+	for( j = 0; j < bloomPassCount; j++ )
 	{
 		Framebuffer* bloomTarget = globalFramebuffers.bloomRenderFBO[( j + 1 ) % 2 ];
-		lastBloomTarget = bloomTarget;
 		bloomTarget->Bind();
 		GL_Viewport( 0, 0, bloomTarget->GetWidth(), bloomTarget->GetHeight() );
 		GL_Scissor( 0, 0, bloomTarget->GetWidth(), bloomTarget->GetHeight() );
-		if (!bloomTarget->InvalidateAttachments(tileColorAttachment, 1))
+		if ( !bloomTarget->InvalidateAttachments( tileColorAttachment, 1 ) )
 		{
 #if !defined(USE_VULKAN)
 			glClear( GL_COLOR_BUFFER_BIT );
 #endif
 		}
-		
-		globalImages->bloomRenderImage[j % 2]->Bind();
-		
-		DrawElementsWithCounters( &unitSquareSurface );
-	}
 
-	// The final ping-pong destination is not sampled by the composite. Discard it
-	// while it is still bound so the driver can avoid storing this transient output.
-	if (lastBloomTarget != nullptr)
-	{
-		lastBloomTarget->InvalidateAttachments(tileColorAttachment, 1);
+		globalImages->bloomRenderImage[j % 2]->Bind();
+
+		DrawElementsWithCounters( &unitSquareSurface );
 	}
 	
 	// add filtered glare back to main context
@@ -4892,7 +4896,7 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 	
 	renderProgManager.BindShader_Screen();
 	
-	globalImages->bloomRenderImage[( j + 1 ) % 2]->Bind();
+	globalImages->bloomRenderImage[j % 2]->Bind();
 	
 	DrawElementsWithCounters( &unitSquareSurface );
 	

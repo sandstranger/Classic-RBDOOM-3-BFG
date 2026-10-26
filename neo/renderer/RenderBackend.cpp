@@ -3386,8 +3386,23 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 			
 			for( ; side < sideStop ; side++ )
 			{
-				ShadowMapPass( vLight->globalShadows, vLight, side );
+				// Keep the shadow framebuffer bound while rendering all faces/splits for
+				// this light. Switching back to the main target after every face can
+				// force tile GPUs to flush and reload the main framebuffer repeatedly.
+				ShadowMapPass( vLight->globalShadows, vLight, side, false );
 			}
+
+#if !defined(USE_VULKAN)
+			// Restore the main render target once, after the complete shadow set.
+			if( r_useHDR.GetBool() )
+			{
+				globalFramebuffers.hdrFBO->Bind();
+			}
+			else
+			{
+				Framebuffer::Unbind();
+			}
+#endif
 
             // go back from light view to default camera view
 			ResetViewportAndScissorToDefaultCamera( _viewDef );

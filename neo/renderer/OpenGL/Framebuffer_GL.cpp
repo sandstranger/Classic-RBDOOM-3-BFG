@@ -701,6 +701,14 @@ void Framebuffer::AttachImageDepth(int target, const idImage* image)
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, target, image->texnum,
                                0);
     }
+#if ANDROID
+    // AddDepthBuffer's temporary texture is superseded by the idImage depth attachment.
+    if (depthTexture != 0 && depthTexture != image->texnum)
+    {
+        glDeleteTextures(1, &depthTexture);
+        depthTexture = 0;
+    }
+#endif
     GLuint tex=image->texnum;bool retain=renderTargetPool.RetainTexture(tex);
     GLuint old=attachedImageDepthTexture;attachedImageDepthTexture=retain?tex:0;
     if(old)renderTargetPool.ReleaseAttachmentRef(old);

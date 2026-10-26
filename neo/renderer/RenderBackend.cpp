@@ -4539,8 +4539,6 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 
 	GL_State( /*GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO |*/ GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS | GLS_CULL_TWOSIDED );
 	
-	int screenWidth = renderSystem->GetWidth();
-	int screenHeight = renderSystem->GetHeight();
 	
 	// set the window clipping
 	GL_Viewport( 0, 0, globalFramebuffers.bloomRenderFBO[0]->GetWidth(), globalFramebuffers.bloomRenderFBO[0]->GetHeight() );

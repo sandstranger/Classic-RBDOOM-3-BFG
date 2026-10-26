@@ -35,6 +35,9 @@ If you have questions concerning this license or the applicable additional terms
 
 static idCVar r_postProcessScale("r_postProcessScale", "0.25", CVAR_FLOAT | CVAR_ARCHIVE,
                                  "Resolution scale for post-process effects (bloom, SSAO). Range: 0.25 to 1.0");
+static idCVar r_useTileBasedOptimizations("r_useTileBasedOptimizations", "1",
+        CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE,
+        "Use framebuffer invalidation for tile-based mobile GPUs");
 
 
 const int shadowMapResolutions[MAX_SHADOWMAP_RESOLUTIONS] = { 512, 256, 256, 128, 64 };
@@ -283,7 +286,7 @@ void Framebuffer::Init()
 #else
         // Для Android MSAA не поддерживается так же, используем обычный путь
         globalFramebuffers.hdrFBO->AddColorBuffer(GL_RGBA16F, 0);
-        globalFramebuffers.hdrFBO->AddDepthBuffer(GL_DEPTH24_STENCIL8);
+        // currentDepthImage is attached below; avoid allocating a duplicate full-resolution depth texture.
         globalFramebuffers.hdrFBO->AttachImage2D(GL_TEXTURE_2D, globalImages->currentRenderHDRImage, 0);
         globalFramebuffers.hdrFBO->AttachImageDepth(GL_TEXTURE_2D, globalImages->currentDepthImage);
 #endif
@@ -493,6 +496,33 @@ bool Framebuffer::IsBound() const
     return (currentBoundFramebuffer == this);
 }
 
+bool Framebuffer::InvalidateAttachments(const GLenum* attachments, GLsizei count)
+{
+#if defined(ANDROID)
+    if (!r_useTileBasedOptimizations.GetBool() || attachments == nullptr || count <= 0)
+    {
+        return false;
+    }
+
+    // Call at the beginning of a pass that overwrites the complete attachment.
+    // The target is already bound, so this does not add another FBO switch.
+    if (glInvalidateFramebuffer != nullptr)
+    {
+        glInvalidateFramebuffer(GL_FRAMEBUFFER, count, attachments);
+        return true;
+    }
+    if (GLAD_GL_EXT_discard_framebuffer && glDiscardFramebufferEXT != nullptr)
+    {
+        glDiscardFramebufferEXT(GL_FRAMEBUFFER, count, attachments);
+        return true;
+    }
+#else
+    (void)attachments;
+    (void)count;
+#endif
+    return false;
+}
+
 void Framebuffer::Unbind()
 {
     RENDERLOG_PRINTF("Framebuffer::Unbind()\n");
@@ -637,6 +667,13 @@ void Framebuffer::AttachImage2D(int target, const idImage* image, int index, int
     {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + index, target, image->texnum, mipmapLod);
     }
+#if ANDROID
+    if (colorTextures[index] != 0 && colorTextures[index] != image->texnum)
+    {
+        glDeleteTextures(1, &colorTextures[index]);
+        colorTextures[index] = 0;
+    }
+#endif
     GLuint tex=image->texnum;bool retain=renderTargetPool.RetainTexture(tex);
     GLuint old=attachedImageColorTextures[index];attachedImageColorTextures[index]=retain?tex:0;
     if(old)renderTargetPool.ReleaseAttachmentRef(old);
@@ -859,8 +896,22 @@ void Framebuffer::PurgeFramebuffer()
     if(frameBuffer){glDeleteFramebuffers(1,&frameBuffer);frameBuffer=0;}
     if(currentBoundFramebuffer==this)currentBoundFramebuffer=nullptr;
     for(int i=0;i<MAX_COLOR_ATTACHMENTS;++i)
-        if(attachedImageColorTextures[i]){renderTargetPool.ReleaseAttachmentRef(attachedImageColorTextures[i]);attachedImageColorTextures[i]=0;}
-    if(attachedImageDepthTexture){renderTargetPool.ReleaseAttachmentRef(attachedImageDepthTexture);attachedImageDepthTexture=0;}
+    {
+        if(attachedImageColorTextures[i])
+        {
+            renderTargetPool.ReleaseAttachmentRef(attachedImageColorTextures[i]);
+            attachedImageColorTextures[i]=0;
+        }
+        if(colorTextures[i]){glDeleteTextures(1,&colorTextures[i]);colorTextures[i]=0;}
+    }
+    if(attachedImageDepthTexture)
+    {
+        renderTargetPool.ReleaseAttachmentRef(attachedImageDepthTexture);
+        attachedImageDepthTexture=0;
+    }
+    if(depthTexture){glDeleteTextures(1,&depthTexture);depthTexture=0;}
+    if(depthBuffer){glDeleteRenderbuffers(1,&depthBuffer);depthBuffer=0;}
+    if(stencilBuffer){glDeleteRenderbuffers(1,&stencilBuffer);stencilBuffer=0;}
 }
 
 #endif

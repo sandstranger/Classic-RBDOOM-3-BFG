@@ -4575,8 +4575,10 @@ void idRenderBackend::CalculateAutomaticExposure()
 #else
 		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
 #endif
-		const GLenum tileColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
-		globalFramebuffers.hdr64FBO->InvalidateAttachments( tileColorAttachment, 1 );
+		// Do not invalidate hdr64FBO here: on Android the PBO readback is
+		// asynchronous, and the GPU may still be reading this attachment.
+		// Discarding it before the readback fence signals can produce unstable
+		// luminance samples on tile-based GPUs.
 #endif
 		
 		if ( hasLuminanceSample )

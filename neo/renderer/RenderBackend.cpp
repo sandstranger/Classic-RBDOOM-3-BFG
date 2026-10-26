@@ -4610,10 +4610,12 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 	// BLOOM PING PONG rendering
 	renderProgManager.BindShader_HDRGlareChromatic();
 	
+	Framebuffer* lastBloomTarget = nullptr;
 	int j;
 	for( j = 0; j < r_hdrGlarePasses.GetInteger(); j++ )
 	{
 		Framebuffer* bloomTarget = globalFramebuffers.bloomRenderFBO[( j + 1 ) % 2 ];
+		lastBloomTarget = bloomTarget;
 		bloomTarget->Bind();
 		GL_Viewport( 0, 0, bloomTarget->GetWidth(), bloomTarget->GetHeight() );
 		GL_Scissor( 0, 0, bloomTarget->GetWidth(), bloomTarget->GetHeight() );
@@ -4627,6 +4629,13 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 		globalImages->bloomRenderImage[j % 2]->Bind();
 		
 		DrawElementsWithCounters( &unitSquareSurface );
+	}
+
+	// The final ping-pong destination is not sampled by the composite. Discard it
+	// while it is still bound so the driver can avoid storing this transient output.
+	if (lastBloomTarget != nullptr)
+	{
+		lastBloomTarget->InvalidateAttachments(tileColorAttachment, 1);
 	}
 	
 	// add filtered glare back to main context

@@ -39,6 +39,11 @@ If you have questions concerning this license or the applicable additional terms
 #include "../RenderCommon.h"
 #include "../RenderBackend.h"
 #include "../../framework/Common_local.h"
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+extern void RB_InitExposureReadback();
+extern void RB_ShutdownExposureReadback();
+#endif
 #if ANDROID
 
 #define GL_MULTISAMPLE                    0x809D
@@ -760,6 +765,11 @@ void idRenderBackend::Init()
 	
 	renderProgManager.Init();
 
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	// Prepare asynchronous HDR exposure readback after the GLES context exists.
+	RB_InitExposureReadback();
+#endif
+
 	//GL_CheckErrors();
 	
 	tr.SetInitialized();
@@ -786,6 +796,10 @@ void idRenderBackend::Init()
 void idRenderBackend::Shutdown()
 {
 	cmdBufferPool.Shutdown();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	// Delete PBOs and fences while the GLES context is still alive.
+	RB_ShutdownExposureReadback();
+#endif
 	GLimp_Shutdown();
 }
 

@@ -5875,6 +5875,8 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 		{
 			glBindFramebuffer( GL_READ_FRAMEBUFFER, globalFramebuffers.hdrFBO->GetFramebuffer() );
 			glBindFramebuffer( GL_DRAW_FRAMEBUFFER, globalFramebuffers.hdrNonMSAAFBO->GetFramebuffer() );
+			const GLenum hdrColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
+			Framebuffer::InvalidateDrawFramebufferAttachments( hdrColorAttachment, 1 );
 			glBlitFramebuffer( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight(),
 							   0, 0, renderSystem->GetWidth(), renderSystem->GetHeight(),
 							   GL_COLOR_BUFFER_BIT,
@@ -5883,6 +5885,8 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 			// TODO resolve to 1x1
 			glBindFramebuffer( GL_READ_FRAMEBUFFER_EXT, globalFramebuffers.hdrNonMSAAFBO->GetFramebuffer() );
 			glBindFramebuffer( GL_DRAW_FRAMEBUFFER_EXT, globalFramebuffers.hdr64FBO->GetFramebuffer() );
+			const GLenum hdr64ColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
+			Framebuffer::InvalidateDrawFramebufferAttachments( hdr64ColorAttachment, 1 );
 			glBlitFramebuffer( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight(),
 							   0, 0, 64, 64,
 							   GL_COLOR_BUFFER_BIT,
@@ -5904,6 +5908,8 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 			{
 				glBindFramebuffer(GL_READ_FRAMEBUFFER_EXT, globalFramebuffers.hdrFBO->GetFramebuffer());
 				glBindFramebuffer(GL_DRAW_FRAMEBUFFER_EXT, globalFramebuffers.hdr64FBO->GetFramebuffer());
+				const GLenum hdr64ColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
+				Framebuffer::InvalidateDrawFramebufferAttachments( hdr64ColorAttachment, 1 );
 				glBlitFramebuffer(0, 0, renderSystem->GetWidth(), renderSystem->GetHeight(),
 					0, 0, 64, 64,
 					GL_COLOR_BUFFER_BIT,

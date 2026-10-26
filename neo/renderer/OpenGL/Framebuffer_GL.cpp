@@ -511,6 +511,30 @@ bool Framebuffer::InvalidateAttachments(const GLenum* attachments, GLsizei count
     return false;
 }
 
+
+bool Framebuffer::InvalidateDrawFramebufferAttachments(const GLenum* attachments, GLsizei count)
+{
+#if defined(ANDROID)
+    if (!r_useTileBasedOptimizations.GetBool() || attachments == nullptr || count <= 0)
+    {
+        return false;
+    }
+
+    // Used when READ_FRAMEBUFFER and DRAW_FRAMEBUFFER are bound separately
+    // for a full-overwrite blit. Invalidate only the destination; rebinding
+    // GL_FRAMEBUFFER here would also change the read target.
+    if (glInvalidateFramebuffer != nullptr)
+    {
+        glInvalidateFramebuffer(GL_DRAW_FRAMEBUFFER, count, attachments);
+        return true;
+    }
+#else
+    (void)attachments;
+    (void)count;
+#endif
+    return false;
+}
+
 void Framebuffer::Unbind()
 {
     RENDERLOG_PRINTF("Framebuffer::Unbind()\n");

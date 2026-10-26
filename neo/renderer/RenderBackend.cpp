@@ -38,6 +38,190 @@ If you have questions concerning this license or the applicable additional terms
 #define GL_READ_FRAMEBUFFER_EXT           0x8CA8
 #define GL_DRAW_FRAMEBUFFER_EXT           0x8CA9
 
+#if defined(ANDROID) && !defined(USE_VULKAN)
+namespace
+{
+static const int RB_EXPOSURE_READBACK_COUNT = 3;
+static const GLsizeiptr RB_EXPOSURE_READBACK_BYTES = 64 * 64 * 4 * sizeof(float);
+
+struct rbExposureReadbackSlot_t
+{
+	GLuint buffer;
+	GLsync fence;
+	unsigned long long sequence;
+};
+
+static rbExposureReadbackSlot_t rbExposureReadbackSlots[RB_EXPOSURE_READBACK_COUNT] = {};
+static unsigned long long rbExposureReadbackNextSequence = 1;
+static int rbExposureReadbackWriteIndex = 0;
+static bool rbExposureReadbackInitialized = false;
+}
+
+void RB_InitExposureReadback()
+{
+	if ( rbExposureReadbackInitialized )
+	{
+		return;
+	}
+
+	GLint previousPackBuffer = 0;
+	glGetIntegerv( GL_PIXEL_PACK_BUFFER_BINDING, &previousPackBuffer );
+
+	GLuint buffers[RB_EXPOSURE_READBACK_COUNT] = {};
+	glGenBuffers( RB_EXPOSURE_READBACK_COUNT, buffers );
+
+	bool success = true;
+	for ( int i = 0; i < RB_EXPOSURE_READBACK_COUNT; ++i )
+	{
+		if ( buffers[i] == 0 )
+		{
+			success = false;
+			break;
+		}
+
+		glBindBuffer( GL_PIXEL_PACK_BUFFER, buffers[i] );
+		glBufferData( GL_PIXEL_PACK_BUFFER, RB_EXPOSURE_READBACK_BYTES, NULL, GL_STREAM_READ );
+	}
+
+	glBindBuffer( GL_PIXEL_PACK_BUFFER, previousPackBuffer );
+
+	if ( !success )
+	{
+		glDeleteBuffers( RB_EXPOSURE_READBACK_COUNT, buffers );
+		return;
+	}
+
+	for ( int i = 0; i < RB_EXPOSURE_READBACK_COUNT; ++i )
+	{
+		rbExposureReadbackSlots[i].buffer = buffers[i];
+		rbExposureReadbackSlots[i].fence = nullptr;
+		rbExposureReadbackSlots[i].sequence = 0;
+	}
+
+	rbExposureReadbackNextSequence = 1;
+	rbExposureReadbackWriteIndex = 0;
+	rbExposureReadbackInitialized = true;
+}
+
+void RB_ShutdownExposureReadback()
+{
+	GLuint buffers[RB_EXPOSURE_READBACK_COUNT] = {};
+	for ( int i = 0; i < RB_EXPOSURE_READBACK_COUNT; ++i )
+	{
+		if ( rbExposureReadbackSlots[i].fence != nullptr )
+		{
+			glDeleteSync( rbExposureReadbackSlots[i].fence );
+		}
+		buffers[i] = rbExposureReadbackSlots[i].buffer;
+		rbExposureReadbackSlots[i].buffer = 0;
+		rbExposureReadbackSlots[i].fence = nullptr;
+		rbExposureReadbackSlots[i].sequence = 0;
+	}
+
+	glDeleteBuffers( RB_EXPOSURE_READBACK_COUNT, buffers );
+	rbExposureReadbackNextSequence = 1;
+	rbExposureReadbackWriteIndex = 0;
+	rbExposureReadbackInitialized = false;
+}
+
+static bool RB_ReadExposurePixelsAsync( float* image )
+{
+	if ( !rbExposureReadbackInitialized )
+	{
+		// Keep HDR working on drivers where PBO allocation is unavailable.
+		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+		return true;
+	}
+
+	int readyIndex = -1;
+	unsigned long long oldestReadySequence = ~0ULL;
+	bool waitFailed = false;
+
+	// Never wait for the current frame's readback. Only consume a completed
+	// buffer from an earlier frame, otherwise keep the previous exposure.
+	for ( int i = 0; i < RB_EXPOSURE_READBACK_COUNT; ++i )
+	{
+		rbExposureReadbackSlot_t& slot = rbExposureReadbackSlots[i];
+		if ( slot.fence == nullptr )
+		{
+			continue;
+		}
+
+		const GLenum waitResult = glClientWaitSync( slot.fence, 0, 0 );
+		if ( waitResult == GL_WAIT_FAILED )
+		{
+			waitFailed = true;
+			break;
+		}
+
+		if ( ( waitResult == GL_ALREADY_SIGNALED || waitResult == GL_CONDITION_SATISFIED ) &&
+			 slot.sequence < oldestReadySequence )
+		{
+			oldestReadySequence = slot.sequence;
+			readyIndex = i;
+		}
+	}
+
+	if ( waitFailed )
+	{
+		RB_ShutdownExposureReadback();
+		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+		return true;
+	}
+
+	bool hasSample = false;
+	if ( readyIndex >= 0 )
+	{
+		rbExposureReadbackSlot_t& slot = rbExposureReadbackSlots[readyIndex];
+		GLint previousPackBuffer = 0;
+		glGetIntegerv( GL_PIXEL_PACK_BUFFER_BINDING, &previousPackBuffer );
+		glBindBuffer( GL_PIXEL_PACK_BUFFER, slot.buffer );
+
+		const void* mapped = glMapBufferRange( GL_PIXEL_PACK_BUFFER, 0, RB_EXPOSURE_READBACK_BYTES, GL_MAP_READ_BIT );
+		if ( mapped != nullptr )
+		{
+			memcpy( image, mapped, (size_t)RB_EXPOSURE_READBACK_BYTES );
+			hasSample = ( glUnmapBuffer( GL_PIXEL_PACK_BUFFER ) == GL_TRUE );
+		}
+
+		glBindBuffer( GL_PIXEL_PACK_BUFFER, previousPackBuffer );
+		glDeleteSync( slot.fence );
+		slot.fence = nullptr;
+		slot.sequence = 0;
+	}
+
+	// Use a three-buffer ring. If the next slot is still in flight, skip this
+	// submission rather than blocking the render thread or overwriting it.
+	const int writeIndex = rbExposureReadbackWriteIndex;
+	rbExposureReadbackSlot_t& writeSlot = rbExposureReadbackSlots[writeIndex];
+	if ( writeSlot.fence == nullptr && writeSlot.buffer != 0 )
+	{
+		GLint previousPackBuffer = 0;
+		glGetIntegerv( GL_PIXEL_PACK_BUFFER_BINDING, &previousPackBuffer );
+		glBindBuffer( GL_PIXEL_PACK_BUFFER, writeSlot.buffer );
+		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, NULL );
+		GLsync fence = glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
+		glBindBuffer( GL_PIXEL_PACK_BUFFER, previousPackBuffer );
+
+		if ( fence == nullptr )
+		{
+			// A missing fence makes safe asynchronous reuse impossible.
+			// Tear down the ring and fall back to the original synchronous path.
+			RB_ShutdownExposureReadback();
+			glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+			return true;
+		}
+
+		writeSlot.fence = fence;
+		writeSlot.sequence = rbExposureReadbackNextSequence++;
+	}
+
+	rbExposureReadbackWriteIndex = ( rbExposureReadbackWriteIndex + 1 ) % RB_EXPOSURE_READBACK_COUNT;
+	return hasSample;
+}
+#endif
+
+
 idCVar r_drawEyeColor( "r_drawEyeColor", "0", CVAR_RENDERER | CVAR_BOOL, "Draw a colored box, red = left eye, blue = right eye, grey = non-stereo" );
 idCVar r_motionBlur( "r_motionBlur", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "1 - 5, log2 of the number of motion blur samples" );
 idCVar r_forceZPassStencilShadows( "r_forceZPassStencilShadows", "0", CVAR_RENDERER | CVAR_BOOL, "force Z-pass rendering for performance testing" );
@@ -4347,77 +4531,84 @@ void idRenderBackend::CalculateAutomaticExposure()
 		// calculate the average scene luminance
 		globalFramebuffers.hdr64FBO->Bind();
 		
-		// FIXME
+		bool hasLuminanceSample = true;
 #if !defined(USE_VULKAN)
-		// read back the contents
-		glReadPixels( 0, 0, 64, 64,  GL_RGBA, GL_FLOAT, image );
-		const GLenum tileColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
-		globalFramebuffers.hdr64FBO->InvalidateAttachments(tileColorAttachment, 1);
-#endif
-		
-		sum = 0.0f;
-		maxLuminance = 0.0f;
-		for( i = 0; i < ( 64 * 64 ); i += 4 )
-		{
-			color[0] = image[i * 4 + 0];
-			color[1] = image[i * 4 + 1];
-			color[2] = image[i * 4 + 2];
-			color[3] = image[i * 4 + 3];
-			
-			luminance = ( color.x * LUMINANCE_SRGB.x + color.y * LUMINANCE_SRGB.y + color.z * LUMINANCE_SRGB.z ) + 0.0001f;
-			if( luminance > maxLuminance )
-			{
-				maxLuminance = luminance;
-			}
-			
-			//float logLuminance = log( luminance + 1 );
-			//if( logLuminance > 0 )
-			{
-				sum += luminance;
-			}
-		}
-#if 0
-		sum /= ( 64.0f * 64.0f );
-		avgLuminance = exp( sum );
+		// Android reads into a three-buffer PBO ring and only maps a buffer after
+		// its fence signals. Desktop retains the original direct readback path.
+#if defined(ANDROID)
+		hasLuminanceSample = RB_ReadExposurePixelsAsync( image );
 #else
-		avgLuminance = sum / ( 64.0f * 64.0f );
+		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+#endif
+		const GLenum tileColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
+		globalFramebuffers.hdr64FBO->InvalidateAttachments( tileColorAttachment, 1 );
 #endif
 		
-		// the user's adapted luminance level is simulated by closing the gap between
-		// adapted luminance and current luminance by 2% every frame, based on a
-		// 30 fps rate. This is not an accurate model of human adaptation, which can
-		// take longer than half an hour.
-		if( hdrTime > curTime )
+		if ( hasLuminanceSample )
 		{
+			sum = 0.0f;
+			maxLuminance = 0.0f;
+			for( i = 0; i < ( 64 * 64 ); i += 4 )
+			{
+				color[0] = image[i * 4 + 0];
+				color[1] = image[i * 4 + 1];
+				color[2] = image[i * 4 + 2];
+				color[3] = image[i * 4 + 3];
+				
+				luminance = ( color.x * LUMINANCE_SRGB.x + color.y * LUMINANCE_SRGB.y + color.z * LUMINANCE_SRGB.z ) + 0.0001f;
+				if( luminance > maxLuminance )
+				{
+					maxLuminance = luminance;
+				}
+				
+				//float logLuminance = log( luminance + 1 );
+				//if( logLuminance > 0 )
+				{
+					sum += luminance;
+				}
+			}
+#if 0
+			sum /= ( 64.0f * 64.0f );
+			avgLuminance = exp( sum );
+#else
+			avgLuminance = sum / ( 64.0f * 64.0f );
+#endif
+			
+			// The user's adapted luminance level is simulated by closing the gap between
+			// adapted luminance and current luminance by 2% every frame, based on a
+			// 30 fps rate. Only update adaptation time when a GPU sample is available.
+			if( hdrTime > curTime )
+			{
+				hdrTime = curTime;
+			}
+			
+			deltaTime = curTime - hdrTime;
+			
+			//if(r_hdrMaxLuminance->value)
+			{
+				hdrAverageLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), hdrAverageLuminance );
+				avgLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), avgLuminance );
+				
+				hdrMaxLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), hdrMaxLuminance );
+				maxLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), maxLuminance );
+			}
+			
+			newAdaptation = hdrAverageLuminance + ( avgLuminance - hdrAverageLuminance ) * ( 1.0f - powf( 0.98f, 30.0f * deltaTime ) );
+			newMaximum = hdrMaxLuminance + ( maxLuminance - hdrMaxLuminance ) * ( 1.0f - powf( 0.98f, 30.0f * deltaTime ) );
+			
+			if( !IsNAN( newAdaptation ) && !IsNAN( newMaximum ) )
+			{
+#if 1
+				hdrAverageLuminance = newAdaptation;
+				hdrMaxLuminance = newMaximum;
+#else
+				hdrAverageLuminance = avgLuminance;
+				hdrMaxLuminance = maxLuminance;
+#endif
+			}
+			
 			hdrTime = curTime;
 		}
-		
-		deltaTime = curTime - hdrTime;
-		
-		//if(r_hdrMaxLuminance->value)
-		{
-			hdrAverageLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), hdrAverageLuminance );
-			avgLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), avgLuminance );
-			
-			hdrMaxLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), hdrMaxLuminance );
-			maxLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), maxLuminance );
-		}
-		
-		newAdaptation = hdrAverageLuminance + ( avgLuminance - hdrAverageLuminance ) * ( 1.0f - powf( 0.98f, 30.0f * deltaTime ) );
-		newMaximum = hdrMaxLuminance + ( maxLuminance - hdrMaxLuminance ) * ( 1.0f - powf( 0.98f, 30.0f * deltaTime ) );
-		
-		if( !IsNAN( newAdaptation ) && !IsNAN( newMaximum ) )
-		{
-#if 1
-			hdrAverageLuminance = newAdaptation;
-			hdrMaxLuminance = newMaximum;
-#else
-			hdrAverageLuminance = avgLuminance;
-			hdrMaxLuminance = maxLuminance;
-#endif
-		}
-		
-		hdrTime = curTime;
 		
 		// calculate HDR image key
 #if 0

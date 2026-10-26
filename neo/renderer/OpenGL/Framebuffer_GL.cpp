@@ -452,18 +452,6 @@ void Framebuffer::Init()
 #endif
 }
 
-void RenderTargetPool::Initialize(const PoolConfig& config)
-{
-    _config = config;
-    _pool.reserve(config.preallocateCount);
-
-    common->Printf("RenderTargetPool initialized:\n");
-    common->Printf("  Max pool size: %zu\n", _config.maxPoolSize);
-    common->Printf("  Pre-allocated: %zu\n", _config.preallocateCount);
-    common->Printf("  LRU eviction: %s\n", _config.enableLRUEviction ? "enabled" : "disabled");
-}
-
-
 void Framebuffer::InitializePool()
 {
     RenderTargetPool::PoolConfig config;

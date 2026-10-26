@@ -5247,9 +5247,11 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	renderLog.StartFrame();
 	GL_StartFrame();
 	g_frameFences.BeginFrame();
+	Framebuffer::BeginFrame();
 
 	if( cmds->commandId == RC_NOP && !cmds->next )
 	{
+		Framebuffer::EndFrame();
 		g_frameFences.EndFrame();
 		return;
 	}
@@ -5257,6 +5259,7 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	if( renderSystem->GetStereo3DMode() != STEREO3D_OFF )
 	{
 		StereoRenderExecuteBackEndCommands( cmds );
+		Framebuffer::EndFrame();
 		g_frameFences.EndFrame();
 		renderLog.EndFrame();
 		return;
@@ -5308,6 +5311,7 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	}
 	
 	DrawFlickerBox();
+	Framebuffer::EndFrame();
 	g_frameFences.EndFrame();
 	GL_EndFrame();
 	

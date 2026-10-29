@@ -216,6 +216,9 @@ enum rpBinding_t
 
 #define VERTEX_UNIFORM_ARRAY_NAME				"_va_"
 #define FRAGMENT_UNIFORM_ARRAY_NAME				"_fa_"
+// GLES has no GL_TEXTURE_LOD_BIAS: r_lodBias reaches the lit surface programs through this uniform instead
+#define TEXTURE_LOD_BIAS_UNIFORM_NAME			"uTextureLodBias"
+bool R_GLSLUsesTextureLodBias( const char* hlslFileName, rpStage_t stage );
 
 static const int AT_VS_IN			= IDBIT( 1 );
 static const int AT_VS_OUT			= IDBIT( 2 );
@@ -854,7 +857,9 @@ private:
 			builtin( false ),
 			vertexLayout( LAYOUT_UNKNOWN ),
 			vertexShaderIndex( -1 ),
-			fragmentShaderIndex( -1 ) {}
+			fragmentShaderIndex( -1 ),
+			textureLodBiasLocation( -1 ),
+			textureLodBias( 0.0f ) {}
 	
 		idStr				name;
 		uint				progId;
@@ -864,6 +869,8 @@ private:
 		vertexLayoutType_t	vertexLayout;
 		int					vertexShaderIndex;
 		int					fragmentShaderIndex;
+		int					textureLodBiasLocation;	// TEXTURE_LOD_BIAS_UNIFORM_NAME, -1 if the program has none
+		float				textureLodBias;			// value last set on it
 	};
 #endif
 	

@@ -160,10 +160,25 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	ID_TIME_T glslTimeStamp;
 	int glslFileLength = fileSystem->ReadFile( outFileGLSL.c_str(), NULL, &glslTimeStamp );
 
+	// glsl cached before r_lodBias became a shader bias on gles must be regenerated, or the setting does nothing
+	bool missingTextureLodBias = false;
+	if( glslFileLength > 0 && R_GLSLUsesTextureLodBias( inFile.c_str(), shader.stage ) )
+	{
+		void* cachedGLSL = NULL;
+		if( fileSystem->ReadFile( outFileGLSL.c_str(), &cachedGLSL ) > 0 && cachedGLSL != NULL )
+		{
+			missingTextureLodBias = strstr( ( const char* )cachedGLSL, TEXTURE_LOD_BIAS_UNIFORM_NAME ) == NULL;
+		}
+		if( cachedGLSL != NULL )
+		{
+			Mem_Free( cachedGLSL );
+		}
+	}
+
 	// if the glsl file doesn't exist or we have a newer HLSL file we need to recreate the glsl file.
 	idStr programGLSL;
 	idStr programUniforms;
-	if( ( glslFileLength <= 0 ) || ( hlslTimeStamp != FILE_NOT_FOUND_TIMESTAMP && hlslTimeStamp > glslTimeStamp ) || r_alwaysExportGLSL.GetBool() || glConfig.forceGLSLGeneration )
+	if( ( glslFileLength <= 0 ) || ( hlslTimeStamp != FILE_NOT_FOUND_TIMESTAMP && hlslTimeStamp > glslTimeStamp ) || r_alwaysExportGLSL.GetBool() || glConfig.forceGLSLGeneration || missingTextureLodBias )
 	{
 		const char* hlslFileBuffer = NULL;
 		int len = 0;
@@ -406,6 +421,8 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
         }
         assert( vShader.uniformArray != -1 || vertexShaderIndex > -1 || vShader.uniforms.Num() == 0 );
         assert( fShader.uniformArray != -1 || fragmentShaderIndex > -1 || fShader.uniforms.Num() == 0 );
+        prog.textureLodBiasLocation = glGetUniformLocation( program, TEXTURE_LOD_BIAS_UNIFORM_NAME );
+        prog.textureLodBias = 0.0f;
 
         if( glConfig.gpuSkinningAvailable )
         {
@@ -520,6 +537,8 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
     }
     assert( vShader.uniformArray != -1 || vertexShaderIndex > -1 || vShader.uniforms.Num() == 0 );
     assert( fShader.uniformArray != -1 || fragmentShaderIndex > -1 || fShader.uniforms.Num() == 0 );
+    prog.textureLodBiasLocation = glGetUniformLocation( program, TEXTURE_LOD_BIAS_UNIFORM_NAME );
+    prog.textureLodBias = 0.0f;
 
     if( glConfig.gpuSkinningAvailable )
     {
@@ -565,7 +584,7 @@ idRenderProgManager::CommitUnforms
 void idRenderProgManager::CommitUniforms( uint64 stateBits )
 {
 	const int progID = current;
-	const renderProg_t& prog = renderProgs[progID];
+	renderProg_t& prog = renderProgs[progID];
 
 	//GL_CheckErrors();
 
@@ -607,6 +626,12 @@ void idRenderProgManager::CommitUniforms( uint64 stateBits )
 	if( prog.fragmentShaderIndex >= 0 )
 	{
 		commitarray( localVectors, shaders[ prog.fragmentShaderIndex ] );
+	}
+
+	if( prog.textureLodBiasLocation != -1 && prog.textureLodBias != r_lodBias.GetFloat() )
+	{
+		prog.textureLodBias = r_lodBias.GetFloat();
+		glUniform1f( prog.textureLodBiasLocation, prog.textureLodBias );
 	}
 
 	//GL_CheckErrors();

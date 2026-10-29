@@ -1699,6 +1699,10 @@ void idRenderBackend::CheckCVars()
 	if( r_maxAnisotropicFiltering.IsModified() || r_useTrilinearFiltering.IsModified() || r_lodBias.IsModified() )
 	{
 		idLib::Printf( "Updating texture filter parameters.\n" );
+#ifdef ANDROID
+		// r_lodBias is a shader uniform on gles (CommitUniforms), only filtering changes concern the textures
+		const bool filteringChanged = r_maxAnisotropicFiltering.IsModified() || r_useTrilinearFiltering.IsModified();
+#endif
 		r_maxAnisotropicFiltering.ClearModified();
 		r_useTrilinearFiltering.ClearModified();
 		r_lodBias.ClearModified();
@@ -1707,6 +1711,14 @@ void idRenderBackend::CheckCVars()
 		{
 			if( globalImages->images[i] )
 			{
+#ifdef ANDROID
+				// Bind() loads images that aren't resident, i.e. every texture this session ever referenced, at once.
+				// an image loaded later gets the current filtering from AllocImage() anyway.
+				if( !filteringChanged || !globalImages->images[i]->IsLoaded() )
+				{
+					continue;
+				}
+#endif
 				//GK: It sucks but some textures needs to be bound when altering their parameters (so much for DSA)
 				globalImages->images[i]->Bind();
 				globalImages->images[i]->SetTexParameters();

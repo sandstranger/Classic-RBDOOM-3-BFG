@@ -43,6 +43,9 @@ If you have questions concerning this license or the applicable additional terms
 #ifdef USE_OPENXR
 #include "OpenXR/XRCommon.h"
 #endif
+#if ANDROID
+#include "TextureCache.h"
+#endif
 // foresthale 2014-03-01: fixed custom screenshot resolution by doing a more direct render path
 #define BUGFIXEDSCREENSHOTRESOLUTION 1
 #ifdef BUGFIXEDSCREENSHOTRESOLUTION
@@ -2535,6 +2538,12 @@ void idRenderSystemLocal::Shutdown()
 	idCinematic::ShutdownCinematic();
 	
 	globalImages->Shutdown();
+	
+#if ANDROID
+	// the etc2 texture cache writes its files through fileSystem, which common shuts down after us.
+	// finish them and stop the writer thread here: left running, exit() destroys it as a joinable std::thread.
+	idTextureCache::Instance().Shutdown();
+#endif
 	
 	// RB begin
 	Framebuffer::Shutdown();

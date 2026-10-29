@@ -117,6 +117,22 @@ idTextureCache& idTextureCache::Instance() {
     return instance;
 }
 
+// Exits that skip the engine shutdown (Sys_Error, a recursive error) never call Shutdown(), and exit() then
+// destroys this with the writer thread still joinable, which is std::terminate. Stop it without the pending
+// writes: by now their buffers (BufferPool is destroyed first) and the filesystem may already be gone.
+idTextureCache::~idTextureCache() {
+    {
+        std::lock_guard<std::mutex> lock(m_queueMutex);
+        while (!m_jobQueue.empty()) m_jobQueue.pop();
+        m_shutdownRequested.store(true);
+    }
+    m_queueCV.notify_one();
+
+    if (m_workerThread.joinable()) {
+        m_workerThread.join();
+    }
+}
+
 void idTextureCache::Init(const char* cacheDir, size_t maxSizeBytes) {
     std::lock_guard<std::mutex> lock(m_indexMutex);
     if (m_initialized) return;

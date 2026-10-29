@@ -83,7 +83,7 @@ void setTextureCacheData(const bool enableTextureCache, const char *pathToTextur
     g_pathToTextureCacheDir = pathToTextureCacheDir;
     if (enableTextureCache) {
         idTextureCache::Instance().Init(g_pathToTextureCacheDir.c_str(),
-                                        15 * 1024 * 1024 * 1024);
+                                        15ULL * 1024 * 1024 * 1024);
     }
 }
 }

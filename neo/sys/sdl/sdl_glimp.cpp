@@ -297,7 +297,6 @@ bool GLimp_Init( glimpParms_t parms )
 		}
 #else
 		SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
-		SDL_GL_SetAttribute(SDL_GL_FRAMEBUFFER_SRGB_CAPABLE, 1);
 
 		extern int glesVersion;
 		int glesMinorVersion = 2;

@@ -229,16 +229,25 @@ void main( PS_IN fragment, out PS_OUT result )
 #else
 	
 #if defined( TBR_MOBILE )
-	const float2 poissonDisk[8] = float2[](
-		float2( 0.6111618, 0.1050905 ),
-		float2( 0.3030421, -0.6292974 ),
-		float2( 0.4090526, 0.6716492 ),
-		float2( 0.7685862, -0.6118501 ),
-		float2( -0.4028573, 0.07754025 ),
-		float2( -0.6411021, -0.4748057 ),
-		float2( -0.1314865, 0.8404058 ),
-		float2( -0.9713828, -0.06329931 ) );
-	const int shadowSampleCount = 8;
+	// GLES shadow samplers use GL_LINEAR filtering, so each texture() call
+	// performs hardware bilinear percentage-closer filtering. Four rotated
+	// taps therefore cover a 2x2 compare footprint each: 16 depth comparisons
+	// instead of the previous 32, without manual depth fetches.
+	float4 jitterTC = ( fragment.position * rpScreenCorrectionFactor ) + rpJitterTexOffset;
+	float randomAngle = tex2D( samp6, jitterTC.xy ).x * PI;
+	float2 rot = float2( cos( randomAngle ), sin( randomAngle ) );
+
+	float shadowTexelSize = rpScreenCorrectionFactor.z * rpJitterTexScale.x;
+	float2 pcfAxisX = rot * ( shadowTexelSize * 0.70710678 );
+	float2 pcfAxisY = float2( -rot.y, rot.x ) * ( shadowTexelSize * 0.70710678 );
+
+	// Retain the original 1/12 visibility floor used by the 12-tap path.
+	float shadow = 4.0 / 12.0;
+	shadow += texture( samp5, float4( shadowTexcoord.xy + pcfAxisX, shadowTexcoord.w, shadowTexcoord.z ) );
+	shadow += texture( samp5, float4( shadowTexcoord.xy - pcfAxisX, shadowTexcoord.w, shadowTexcoord.z ) );
+	shadow += texture( samp5, float4( shadowTexcoord.xy + pcfAxisY, shadowTexcoord.w, shadowTexcoord.z ) );
+	shadow += texture( samp5, float4( shadowTexcoord.xy - pcfAxisY, shadowTexcoord.w, shadowTexcoord.z ) );
+	shadow *= 0.25;
 #else
 	const float2 poissonDisk[12] = float2[](
 		float2(0.6111618, 0.1050905),

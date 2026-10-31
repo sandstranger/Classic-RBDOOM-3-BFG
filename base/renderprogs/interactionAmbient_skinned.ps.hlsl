@@ -37,12 +37,12 @@ uniform sampler2D samp4 : register(s4); // texture 5 is the light projection tex
 
 struct PS_IN {
 	half4 position	: VPOS;
-	half4 texcoord1	: TEXCOORD1_centroid;
-	half4 texcoord2	: TEXCOORD2_centroid;
-	half4 texcoord3	: TEXCOORD3_centroid;
-	half4 texcoord4	: TEXCOORD4_centroid;
-	half4 texcoord5	: TEXCOORD5_centroid;
-	half4 texcoord6	: TEXCOORD6_centroid;
+	float4 texcoord1	: TEXCOORD1_centroid;
+	float4 texcoord2	: TEXCOORD2_centroid;
+	float4 texcoord3	: TEXCOORD3_centroid;
+	float4 texcoord4	: TEXCOORD4_centroid;
+	float4 texcoord5	: TEXCOORD5_centroid;
+	float4 texcoord6	: TEXCOORD6_centroid;
 	half4 color		: COLOR0;
 };
 

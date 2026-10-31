@@ -229,18 +229,14 @@ void main( PS_IN fragment, out PS_OUT result )
 #else
 	
 #if defined( TBR_MOBILE )
-	// Keep the eight-tap Poisson kernel on mobile. The four-tap cross kernel
-	// produced visible hard/axis-biased penumbrae on this scene.
-	const float2 poissonDisk[8] = float2[](
+	// Four-tap Poisson kernel for a lower-cost soft-shadow comparison.
+	// Keep samples distributed around the disk to avoid a directional bias.
+	const float2 poissonDisk[4] = float2[](
 		float2( 0.6111618, 0.1050905 ),
 		float2( 0.3030421, -0.6292974 ),
-		float2( 0.4090526, 0.6716492 ),
-		float2( 0.7685862, -0.6118501 ),
-		float2( -0.4028573, 0.07754025 ),
 		float2( -0.6411021, -0.4748057 ),
-		float2( -0.1314865, 0.8404058 ),
-		float2( -0.9713828, -0.06329931 ) );
-	const int shadowSampleCount = 8;
+		float2( -0.1314865, 0.8404058 ) );
+	const int shadowSampleCount = 4;
 #else
 	const float2 poissonDisk[12] = float2[](
 		float2(0.6111618, 0.1050905),

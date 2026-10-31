@@ -229,25 +229,18 @@ void main( PS_IN fragment, out PS_OUT result )
 #else
 	
 #if defined( TBR_MOBILE )
-	// GLES shadow samplers use GL_LINEAR filtering, so each texture() call
-	// performs hardware bilinear percentage-closer filtering. Four rotated
-	// taps therefore cover a 2x2 compare footprint each: 16 depth comparisons
-	// instead of the previous 32, without manual depth fetches.
-	float4 jitterTC = ( fragment.position * rpScreenCorrectionFactor ) + rpJitterTexOffset;
-	float randomAngle = tex2D( samp6, jitterTC.xy ).x * PI;
-	float2 rot = float2( cos( randomAngle ), sin( randomAngle ) );
-
-	float shadowTexelSize = rpScreenCorrectionFactor.z * rpJitterTexScale.x;
-	float2 pcfAxisX = rot * ( shadowTexelSize * 0.70710678 );
-	float2 pcfAxisY = float2( -rot.y, rot.x ) * ( shadowTexelSize * 0.70710678 );
-
-	// Retain the original 1/12 visibility floor used by the 12-tap path.
-	float shadow = 4.0 / 12.0;
-	shadow += texture( samp5, float4( shadowTexcoord.xy + pcfAxisX, shadowTexcoord.w, shadowTexcoord.z ) );
-	shadow += texture( samp5, float4( shadowTexcoord.xy - pcfAxisX, shadowTexcoord.w, shadowTexcoord.z ) );
-	shadow += texture( samp5, float4( shadowTexcoord.xy + pcfAxisY, shadowTexcoord.w, shadowTexcoord.z ) );
-	shadow += texture( samp5, float4( shadowTexcoord.xy - pcfAxisY, shadowTexcoord.w, shadowTexcoord.z ) );
-	shadow *= 0.25;
+	// Keep the eight-tap Poisson kernel on mobile. The four-tap cross kernel
+	// produced visible hard/axis-biased penumbrae on this scene.
+	const float2 poissonDisk[8] = float2[](
+		float2( 0.6111618, 0.1050905 ),
+		float2( 0.3030421, -0.6292974 ),
+		float2( 0.4090526, 0.6716492 ),
+		float2( 0.7685862, -0.6118501 ),
+		float2( -0.4028573, 0.07754025 ),
+		float2( -0.6411021, -0.4748057 ),
+		float2( -0.1314865, 0.8404058 ),
+		float2( -0.9713828, -0.06329931 ) );
+	const int shadowSampleCount = 8;
 #else
 	const float2 poissonDisk[12] = float2[](
 		float2(0.6111618, 0.1050905),
@@ -263,18 +256,15 @@ void main( PS_IN fragment, out PS_OUT result )
 		float2(-0.7005203, 0.4596822),
 		float2(-0.9713828, -0.06329931) );
 	const int shadowSampleCount = 12;
+#endif
 
-	// Preserve the original 1/12 minimum visibility floor while reducing taps.
+	// Preserve the original visibility floor and normalized Poisson kernel.
 	float shadow = float( shadowSampleCount ) / 12.0;
 	float stepSize = 1.0 / float( shadowSampleCount );
-
 	float4 jitterTC = ( fragment.position * rpScreenCorrectionFactor ) + rpJitterTexOffset;
 	float randomAngle = tex2D( samp6, jitterTC.xy ).x * PI;
 
-	float2 rot;
-	rot.x = cos( randomAngle );
-	rot.y = sin( randomAngle );
-
+	float2 rot = float2( cos( randomAngle ), sin( randomAngle ) );
 	float shadowTexelSize = rpScreenCorrectionFactor.z * rpJitterTexScale.x;
 	for( int i = 0; i < shadowSampleCount; i++ )
 	{
@@ -286,9 +276,8 @@ void main( PS_IN fragment, out PS_OUT result )
 		float4 shadowTexcoordJittered = float4( shadowTexcoord.xy + jitterRotated * shadowTexelSize, shadowTexcoord.z, shadowTexcoord.w );
 		shadow += texture( samp5, shadowTexcoordJittered.xywz );
 	}
-
 	shadow *= stepSize;
-#endif // TBR_MOBILE / desktop Poisson PCF
+
 
 	//float shadow = texture( samp5, shadowTexcoord.xywz );
 #endif // original disabled multi-tap experiment

@@ -43,13 +43,13 @@ uniform sampler2D				samp6 : register(s6); // texture 7 is the jitter texture
 struct PS_IN
 {
 	half4 position		: VPOS;
-	half4 texcoord0		: TEXCOORD0_centroid;
-	half4 texcoord1		: TEXCOORD1_centroid;
-	half4 texcoord2		: TEXCOORD2_centroid;
-	half4 texcoord3		: TEXCOORD3_centroid;
-	half4 texcoord4		: TEXCOORD4_centroid;
-	half4 texcoord5		: TEXCOORD5_centroid;
-	half4 texcoord6		: TEXCOORD6_centroid;
+	float4 texcoord0		: TEXCOORD0_centroid;
+	float4 texcoord1		: TEXCOORD1_centroid;
+	float4 texcoord2		: TEXCOORD2_centroid;
+	float4 texcoord3		: TEXCOORD3_centroid;
+	float4 texcoord4		: TEXCOORD4_centroid;
+	float4 texcoord5		: TEXCOORD5_centroid;
+	float4 texcoord6		: TEXCOORD6_centroid;
 	float4 texcoord7		: TEXCOORD7_centroid;
 	float4 texcoord8		: TEXCOORD8_centroid;
 	float4 texcoord9		: TEXCOORD9_centroid;

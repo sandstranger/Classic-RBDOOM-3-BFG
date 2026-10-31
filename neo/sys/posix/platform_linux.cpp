@@ -60,12 +60,22 @@ static int cmdargc = 0;
 
 #if ANDROID
 #include "SDL3/SDL_main.h"
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <string>
 using namespace std;
 
 string g_pathToHomeFolder;
 string g_pathToResourcesFolder;
 string g_pathToSDLControllerDB;
+
+// SDL may enter SDL_main as soon as the activity resumes. Do not let the engine
+// initialize its filesystem until Kotlin has installed every required JNI path.
+static std::mutex g_androidStartupMutex;
+static std::condition_variable g_androidStartupCondition;
+static bool g_androidStartupConfigReady = false;
+static bool g_androidStartupConfigValid = false;
 #endif
 
 /*
@@ -593,7 +603,28 @@ int main( int argc, const char** argv )
 #endif
 
 #if ANDROID
-	chdir(g_pathToResourcesFolder.c_str());
+	{
+		std::unique_lock<std::mutex> lock(g_androidStartupMutex);
+		const bool configReady = g_androidStartupCondition.wait_for(
+			lock, std::chrono::seconds(15), []() {
+				return g_androidStartupConfigReady;
+			}
+		);
+		if (!configReady) {
+			fprintf(stderr, "[DoomBFA] Timed out waiting for Android startup paths from JNI.\n");
+			return 1;
+		}
+		if (!g_androidStartupConfigValid) {
+			fprintf(stderr, "[DoomBFA] Android startup paths are empty or the game data root is not a directory.\n");
+			return 1;
+		}
+	}
+
+	if (chdir(g_pathToResourcesFolder.c_str()) != 0) {
+		fprintf(stderr, "[DoomBFA] Cannot enter game data directory '%s': %s\n",
+			g_pathToResourcesFolder.c_str(), strerror(errno));
+		return 1;
+	}
 #endif
 
 	Posix_EarlyInit( );
@@ -722,8 +753,22 @@ bool needToReInitGameControllers (){
 
 __attribute__((used)) __attribute__((visibility("default")))
 void setPathsToResources (const char *pathToHomeFolder, const char *pathToResourcesFolder) {
-	g_pathToHomeFolder = pathToHomeFolder;
-	g_pathToResourcesFolder = pathToResourcesFolder;
+	{
+		std::lock_guard<std::mutex> lock(g_androidStartupMutex);
+		if (!g_androidStartupConfigReady) {
+			g_pathToHomeFolder = pathToHomeFolder != NULL ? pathToHomeFolder : "";
+			g_pathToResourcesFolder = pathToResourcesFolder != NULL ? pathToResourcesFolder : "";
+
+			struct stat resourcePathInfo;
+			g_androidStartupConfigValid =
+				!g_pathToHomeFolder.empty() &&
+				!g_pathToResourcesFolder.empty() &&
+				stat(g_pathToResourcesFolder.c_str(), &resourcePathInfo) == 0 &&
+				S_ISDIR(resourcePathInfo.st_mode);
+			g_androidStartupConfigReady = true;
+		}
+	}
+	g_androidStartupCondition.notify_all();
 }
 
 __attribute__((used)) __attribute__((visibility("default")))

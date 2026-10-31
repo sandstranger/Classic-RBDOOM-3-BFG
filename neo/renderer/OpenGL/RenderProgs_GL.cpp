@@ -113,8 +113,8 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	{
 		case GLDRV_OPENGL_MESA:
 		{
-			outFileGLSL.Format( "renderprogs/glsles-3_00/%s%s", shader.name.c_str(), shader.nameOutSuffix.c_str() );
-			outFileUniforms.Format( "renderprogs/glsles-3_00/%s%s", shader.name.c_str(), shader.nameOutSuffix.c_str() );
+			outFileGLSL.Format( "renderprogs/glsles-3_20/%s%s", shader.name.c_str(), shader.nameOutSuffix.c_str() );
+			outFileUniforms.Format( "renderprogs/glsles-3_20/%s%s", shader.name.c_str(), shader.nameOutSuffix.c_str() );
 			break;
 		}
 

@@ -141,11 +141,11 @@ void main( PS_IN fragment, out PS_OUT result )
 	//float exposureOffset = rpScreenCorrectionFactor.w;
 	
 	float avgLuminance = max( hdrAverageLuminance, 0.001 );
-	float linearExposure = ( hdrKey / avgLuminance );
-	float exposure = log2( max( linearExposure, 0.0001 ) );
+	float linearExposure = max( hdrKey / avgLuminance, 0.0001 );
 	
-	//exposure = -2.0;
-	float3 exposedColor = exp2( exposure ) * color.rgb;
+	// exp2(log2(x)) is an identity for positive x; keep exposure linear
+	// and avoid two transcendental operations in this full-screen pass.
+	float3 exposedColor = linearExposure * color.rgb;
 	
 	color.rgb = ACESFilm( exposedColor );
 	

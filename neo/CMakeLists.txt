@@ -480,30 +480,40 @@ if(USE_VULKAN)
 
 else()
 if (NOT ANDROID)
-	if(USE_SYSTEM_LIBGLEW)
-		find_package(GLEW)
-	endif()
+	# if(GLEW_FOUND)
+	# 	include_directories(${GLEW_INCLUDE_DIRS})
+	# 	set(GLEW_LIBRARY ${GLEW_LIBRARIES})
+	# 	if (ALL_STATIC)
+	# 		add_definitions(-DGLEW_STATIC)
+	# 	endif()
+	# else()
+	# 	include_directories("libs/glew/include")
+	# 	set(GLEW_LIBRARY "" )
+	# 	add_definitions(-DGLEW_STATIC)
+		
+	# 	set(GLEW_INCLUDES libs/glew/include/GL/glew.h)
+	# 	set(GLEW_SOURCES libs/glew/src/glew.c)
 
-	if(GLEW_FOUND)
-		include_directories(${GLEW_INCLUDE_DIRS})
-		set(GLEW_LIBRARY ${GLEW_LIBRARIES})
-		if (ALL_STATIC)
-			add_definitions(-DGLEW_STATIC)
-		endif()
+	# 	if(WIN32)
+	# 		set(GLEW_INCLUDES ${GLEW_INCLUDES} libs/glew/include/GL/wglew.h)
+	# 	else()
+	# 		set(GLEW_INCLUDES ${GLEW_INCLUDES} libs/glew/include/GL/glxew.h)
+	# 		set(GLEW_INCLUDES ${GLEW_INCLUDES} libs/glew/include/GL/eglew.h)
+	# 	endif()
+		
+	# endif()
+	include_directories("libs/glad/include")
+	set(GLAD_INCLUDES libs/glad/include/glad/gl.h)
+	set(GLAD_SOURCES libs/glad/src/gl.c)
+
+	if(WIN32)
+		set(GLAD_INCLUDES ${GLAD_INCLUDES} libs/glad/include/glad/wgl.h)
+		set(GLAD_SOURCES ${GLAD_SOURCES} libs/glad/src/wgl.c)
 	else()
-		include_directories("libs/glew/include")
-		set(GLEW_LIBRARY "" )
-		add_definitions(-DGLEW_STATIC)
-		
-		set(GLEW_INCLUDES libs/glew/include/GL/glew.h)
-		set(GLEW_SOURCES libs/glew/src/glew.c)
-
-		if(WIN32)
-			set(GLEW_INCLUDES ${GLEW_INCLUDES} libs/glew/include/GL/wglew.h)
-		else()
-			set(GLEW_INCLUDES ${GLEW_INCLUDES} libs/glew/include/GL/glxew.h)
-		endif()
-		
+		set(GLAD_INCLUDES ${GLAD_INCLUDES} libs/glad/include/glad/glx.h)
+		set(GLAD_SOURCES ${GLAD_SOURCES} libs/glad/src/glx.c)
+		set(GLAD_INCLUDES ${GLAD_INCLUDES} libs/glad/include/glad/egl.h libs/glad/include/EGL/eglplatform.h libs/glad/include/KHR/khrplatform.h)
+		set(GLAD_SOURCES ${GLAD_SOURCES} libs/glad/src/egl.c)
 	endif()
 endif()
 
@@ -1158,6 +1168,12 @@ source_group("zlib" FILES ${ZLIB_SOURCES})
 source_group("zlib\\minizip" FILES ${MINIZIP_INCLUDES})
 source_group("zlib\\minizip" FILES ${MINIZIP_SOURCES})
 
+# source_group("glew" FILES ${GLEW_INCLUDES})
+# source_group("glew" FILES ${GLEW_SOURCES})
+
+#source_group("glad" FILES ${GLAD_INCLUDES})
+#source_group("glad" FILES ${GLAD_SOURCES})
+
 source_group("rapidjson" FILES ${RAPIDJSON_INCLUDES})
 
 source_group("freetype" FILES ${FREETYPE_SOURCES})
@@ -1303,6 +1319,8 @@ set(LIB_INCLUDES
 			${ZLIB_INCLUDES}
 			${MINIZIP_INCLUDES}
 			${BINKDEC_INCLUDES}
+			#${GLEW_INCLUDES}
+			${GLAD_INCLUDES}
 			#${OPEN_PLATFORM_INCLUDES}
 			${RAPIDJSON_INCLUDES}
 			#${FREETYPE_SOURCES}
@@ -1315,6 +1333,8 @@ set(LIB_SOURCES
 			${ZLIB_SOURCES}
 			${MINIZIP_SOURCES}
 			${BINKDEC_SOURCES}
+			#${GLEW_SOURCES}
+			${GLAD_SOURCES}
 			#${OPEN_PLATFORM_SOURCES}
 			#${FREETYPE_SOURCES}
 			${TIMIDITY_SOURCES}
@@ -1770,6 +1790,7 @@ endif()
 		${FFMPEG_LIBRARIES}
         ${ZLIB_LIBRARY}
         ${JPEG_LIBRARY}
+        #${GLEW_LIBRARY}
 		${OpenSSL_LIBRARY}
 		${CMAKE_DL_LIBS}
 		)

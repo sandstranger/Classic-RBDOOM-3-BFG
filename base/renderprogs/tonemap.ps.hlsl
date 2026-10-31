@@ -35,7 +35,7 @@ uniform sampler2D	samp1 : register(s1); // texture 1 is heatmap
 struct PS_IN
 {
 	float4 position : VPOS;
-	float2 texcoord0 : TEXCOORD0_centroid;
+	half2 texcoord0 : TEXCOORD0_centroid;
 };
 
 struct PS_OUT

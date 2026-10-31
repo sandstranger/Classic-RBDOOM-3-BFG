@@ -830,6 +830,7 @@ const char* vertexInsert_GLSL_ES_3_00 =
         {
                 "#version 320 es\n"
                 "#define PC\n"
+                "// TBR_MOBILE_SHADER_PATH\n"
                 "precision highp float;\n"
                 "\n"
                 "float saturate( float v ) { return clamp( v, 0.0, 1.0 ); }\n"
@@ -848,6 +849,7 @@ const char* fragmentInsert_GLSL_ES_3_00 =
         {
                 "#version 320 es\n"
                 "#define PC\n"
+                "// TBR_MOBILE_SHADER_PATH\n"
                 "precision highp float;\n"
                 "precision mediump sampler2D;\n"
                 "precision mediump sampler2DShadow;\n"

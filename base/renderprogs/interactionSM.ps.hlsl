@@ -263,7 +263,6 @@ void main( PS_IN fragment, out PS_OUT result )
 		float2(-0.7005203, 0.4596822),
 		float2(-0.9713828, -0.06329931) );
 	const int shadowSampleCount = 12;
-#endif
 
 	// Preserve the original 1/12 minimum visibility floor while reducing taps.
 	float shadow = float( shadowSampleCount ) / 12.0;
@@ -289,9 +288,10 @@ void main( PS_IN fragment, out PS_OUT result )
 	}
 
 	shadow *= stepSize;
+#endif // TBR_MOBILE / desktop Poisson PCF
 
 	//float shadow = texture( samp5, shadowTexcoord.xywz );
-#endif
+#endif // original disabled multi-tap experiment
 
 
 	half3 halfAngleVector = normalize( lightVector + viewVector );

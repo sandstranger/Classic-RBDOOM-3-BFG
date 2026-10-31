@@ -50,9 +50,9 @@ struct PS_IN
 	half4 texcoord4		: TEXCOORD4_centroid;
 	half4 texcoord5		: TEXCOORD5_centroid;
 	half4 texcoord6		: TEXCOORD6_centroid;
-	half4 texcoord7		: TEXCOORD7_centroid;
+	float4 texcoord7		: TEXCOORD7_centroid;
 	half4 texcoord8		: TEXCOORD8_centroid;
-	half4 texcoord9		: TEXCOORD9_centroid;
+	float4 texcoord9		: TEXCOORD9_centroid;
 	half4 color			: COLOR0;
 };
 
@@ -106,22 +106,21 @@ void main( PS_IN fragment, out PS_OUT result )
 	int shadowIndex = 0;
 	
 #if defined( LIGHT_POINT )
-	float3 toLightGlobal = normalize( fragment.texcoord8.xyz );
-	
-	float axis[6];
-	axis[0] = -toLightGlobal.x;
-	axis[1] =  toLightGlobal.x;
-	axis[2] = -toLightGlobal.y;
-	axis[3] =  toLightGlobal.y;
-	axis[4] = -toLightGlobal.z;
-	axis[5] =  toLightGlobal.z;
-
-	for( int i = 0; i < 6; i++ )
+	// Face selection depends only on the largest absolute component; normalization
+	// and a dynamically indexed six-element array are unnecessary here.
+	float3 toLightGlobal = fragment.texcoord8.xyz;
+	float3 absToLightGlobal = abs( toLightGlobal );
+	if( absToLightGlobal.x >= absToLightGlobal.y && absToLightGlobal.x >= absToLightGlobal.z )
 	{
-		if( axis[i] > axis[shadowIndex] )
-		{
-			shadowIndex = i;
-		}
+		shadowIndex = ( toLightGlobal.x > 0.0 ) ? 1 : 0;
+	}
+	else if( absToLightGlobal.y >= absToLightGlobal.z )
+	{
+		shadowIndex = ( toLightGlobal.y > 0.0 ) ? 3 : 2;
+	}
+	else
+	{
+		shadowIndex = ( toLightGlobal.z > 0.0 ) ? 5 : 4;
 	}
 
 #endif // #if defined( POINTLIGHT )
@@ -362,10 +361,11 @@ void main( PS_IN fragment, out PS_OUT result )
 	OLD Blinn Phong
 	*/
 
-	const half specularPower = 10.0f;
-	
-	// RB: added abs
-	half3 specularContribution = _half3( pow( hdotN, specularPower ) );
+	// hdotN is clamped to [0, 1]; replace the general pow path with an exact multiply chain.
+	half specularBase2 = hdotN * hdotN;
+	half specularBase4 = specularBase2 * specularBase2;
+	half specularBase8 = specularBase4 * specularBase4;
+	half3 specularContribution = _half3( specularBase8 * specularBase2 );
 
 	half3 diffuseColor = diffuseMap * sRGBToLinearRGB( rpDiffuseModifier.xyz );
 	half3 specularColor = specMap.xyz * specularContribution * sRGBToLinearRGB( rpSpecularModifier.xyz );

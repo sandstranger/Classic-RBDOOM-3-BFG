@@ -38,12 +38,12 @@ struct VS_IN {
 
 struct VS_OUT {
 	float4 position		: POSITION;
-	float4 texcoord1	: TEXCOORD1;
-	float4 texcoord2	: TEXCOORD2;
-	float4 texcoord3	: TEXCOORD3;
-	float4 texcoord4	: TEXCOORD4;
-	float4 texcoord5	: TEXCOORD5;
-	float4 texcoord6	: TEXCOORD6;
+	half4 texcoord1	: TEXCOORD1;
+	half4 texcoord2	: TEXCOORD2;
+	half4 texcoord3	: TEXCOORD3;
+	half4 texcoord4	: TEXCOORD4;
+	half4 texcoord5	: TEXCOORD5;
+	half4 texcoord6	: TEXCOORD6;
 	float4 color		: COLOR0;
 };
 

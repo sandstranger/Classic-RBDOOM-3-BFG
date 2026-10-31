@@ -932,6 +932,7 @@ struct inOutVariable_t
     idStr	type;
     idStr	nameCg;
     idStr	nameGLSL;
+    bool	halfPrecision;
     bool	declareInOut;
 };
 
@@ -951,6 +952,7 @@ void ParseInOutStruct( idLexer& src, int attribType, int attribIgnoreType, idLis
         idToken token;
         src.ReadToken( &token );
         var.type = token;
+        var.halfPrecision = ( var.type == "half" || var.type == "half2" || var.type == "half3" || var.type == "half4" );
         src.ReadToken( &token );
         var.nameCg = token;
 
@@ -1199,6 +1201,19 @@ static const char* GetPrecisionForGLSLVar( const char* glslName )
             return glslPrecisionMap[i].precision;
     }
     return "";
+}
+
+static const char* GetPrecisionForInOutVariable( const inOutVariable_t& var )
+{
+    // VPOS is gl_FragCoord and must retain full precision even when the HLSL
+    // declaration uses half for the legacy input structure.
+    if( var.nameGLSL == "gl_FragCoord" )
+        return GetPrecisionForGLSLVar( var.nameGLSL );
+
+    if( glConfig.driverType == GLDRV_OPENGL_MESA && var.halfPrecision )
+        return "mediump";
+
+    return GetPrecisionForGLSLVar( var.nameGLSL );
 }
 
 static const char* GetPrecisionForSamplerType( const char* samplerType )
@@ -1501,7 +1516,7 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
                 {
                     if( varsIn[i].declareInOut )
                     {
-                        const char* prec = GetPrecisionForGLSLVar( varsIn[i].nameGLSL );
+                        const char* prec = GetPrecisionForInOutVariable( varsIn[i] );
                         idStr precStr = prec[0] ? idStr(prec) + " " : idStr("");
 
 
@@ -1527,7 +1542,7 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
                 {
                     if( varsOut[i].declareInOut )
                     {
-                        const char* prec = GetPrecisionForGLSLVar( varsOut[i].nameGLSL );
+                        const char* prec = GetPrecisionForInOutVariable( varsOut[i] );
                         idStr precStr = prec[0] ? idStr(prec) + " " : idStr("");
 
                         if( vkGLSL )
@@ -1553,7 +1568,7 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
                 {
                     if( varsIn[i].declareInOut )
                     {
-                        const char* prec = GetPrecisionForGLSLVar( varsIn[i].nameGLSL );
+                        const char* prec = GetPrecisionForInOutVariable( varsIn[i] );
                         idStr precStr = prec[0] ? idStr(prec) + " " : idStr("");
 
                         if( vkGLSL )
@@ -1571,6 +1586,8 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
                 var.type = "vec4";
                 var.nameCg = "position";
                 var.nameGLSL = "gl_FragCoord";
+                var.halfPrecision = false;
+                var.declareInOut = false;
                 varsIn.Append( var );
                 continue;
             }
@@ -1583,7 +1600,7 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
                 {
                     if( varsOut[i].declareInOut )
                     {
-                        const char* prec = GetPrecisionForGLSLVar( varsOut[i].nameGLSL );
+                        const char* prec = GetPrecisionForInOutVariable( varsOut[i] );
                         idStr precStr = prec[0] ? idStr(prec) + " " : idStr("");
 
                         if( vkGLSL )
@@ -1688,6 +1705,13 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
             if( token.Cmp( typeConversion[i].typeCG ) == 0 )
             {
                 program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
+                // Preserve HLSL half precision on GLES. It reduces FP32 work and
+                // register pressure on mobile tile-based GPUs. Constructors stay unqualified.
+                const bool isHalfType = ( token == "half" || token == "half2" || token == "half3" || token == "half4" );
+                if( isHalfType && glConfig.driverType == GLDRV_OPENGL_MESA && !src.PeekTokenString( "(" ) )
+                {
+                    program += "mediump ";
+                }
                 program += typeConversion[i].typeGLSL;
                 foundType = true;
                 break;

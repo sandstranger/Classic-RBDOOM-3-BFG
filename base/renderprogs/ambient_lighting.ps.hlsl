@@ -70,10 +70,13 @@ void main( PS_IN fragment, out PS_OUT result ) {
 	localNormal.z = sqrt( abs( dot( localNormal.xy, localNormal.xy ) - 0.25 ) );
 	localNormal = normalize( localNormal );
 
-	const half specularPower = 10.0f;
 	half hDotN = dot3( normalize( fragment.texcoord6.xyz ), localNormal );
-	// RB: added abs
-	half3 specularContribution = _half3( pow( abs( hDotN ), specularPower ) );
+	// x^10 is cheaper than a general-purpose pow on mobile shader cores.
+	half specularBase = abs( hDotN );
+	half specularBase2 = specularBase * specularBase;
+	half specularBase4 = specularBase2 * specularBase2;
+	half specularBase8 = specularBase4 * specularBase4;
+	half3 specularContribution = _half3( specularBase8 * specularBase2 );
 
 	half3 diffuseColor = diffuseMap * ( rpDiffuseModifier.xyz ) * 1.5f;
 	half3 specularColor = specMap.xyz * specularContribution * ( rpSpecularModifier.xyz ); 
@@ -91,8 +94,10 @@ void main( PS_IN fragment, out PS_OUT result ) {
 	half3 lightColor = sRGBToLinearRGB( rpAmbientColor.rgb );
 	
 	half rim =  1.0f - saturate( hDotN );
-	half rimPower = 8.0;
-	half3 rimColor = sRGBToLinearRGB( half3( 0.125 ) * 1.2 ) * lightColor * pow( rim, rimPower );
+	half rim2 = rim * rim;
+	half rim4 = rim2 * rim2;
+	half rim8 = rim4 * rim4;
+	half3 rimColor = sRGBToLinearRGB( half3( 0.125 ) * 1.2 ) * lightColor * rim8;
 	
 	//result.color.rgb = localNormal.xyz * 0.5 + 0.5;
 	result.color.xyz = ( ( diffuseColor + specularColor ) * halfLdotN * lightColor + rimColor ) * fragment.color.rgb;

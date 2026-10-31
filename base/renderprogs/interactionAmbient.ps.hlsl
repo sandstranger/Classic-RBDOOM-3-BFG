@@ -84,10 +84,13 @@ void main( PS_IN fragment, out PS_OUT result ) {
 	half lambert = ldotN;
 #endif
 	
-	const half specularPower = 10.0f;
 	half hDotN = dot3( normalize( fragment.texcoord6.xyz ), localNormal );
-	// RB: added abs
-	half3 specularContribution = _half3( pow( abs( hDotN ), specularPower ) );
+	// x^10 is cheaper than a general-purpose pow on mobile shader cores.
+	half specularBase = abs( hDotN );
+	half specularBase2 = specularBase * specularBase;
+	half specularBase4 = specularBase2 * specularBase2;
+	half specularBase8 = specularBase4 * specularBase4;
+	half3 specularContribution = _half3( specularBase8 * specularBase2 );
 
 	half3 diffuseColor = diffuseMap * sRGBToLinearRGB( rpDiffuseModifier.xyz );
 	half3 specularColor = specMap.xyz * specularContribution * sRGBToLinearRGB( rpSpecularModifier.xyz );

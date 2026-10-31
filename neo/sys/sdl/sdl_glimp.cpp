@@ -128,7 +128,7 @@ GLimp_GetSupportedVersion
  in order to retrieve it from the system and use it acordingly later with other flags and attributes
  */
 void GLimp_GetSupportedVersion(int* major, int* minor) {
-	
+#ifndef ANDROID
 	window = SDL_CreateWindow(ENGINE_NAME,
 							0, 0, SDL_WINDOW_OPENGL );
 	// DG end
@@ -144,6 +144,10 @@ void GLimp_GetSupportedVersion(int* major, int* minor) {
 		SDL_DestroyWindow(window);
 		window = NULL;
 	}
+#else
+	*major = 3;
+	*minor = 2;
+#endif
 }
 
 int SDL_GetDisplayFromIndex(int index) {

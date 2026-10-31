@@ -502,6 +502,7 @@ if (NOT ANDROID)
 	# 	endif()
 		
 	# endif()
+if (NOT ANDROID)
 	include_directories("libs/glad/include")
 	set(GLAD_INCLUDES libs/glad/include/glad/gl.h)
 	set(GLAD_SOURCES libs/glad/src/gl.c)
@@ -516,7 +517,7 @@ if (NOT ANDROID)
 		set(GLAD_SOURCES ${GLAD_SOURCES} libs/glad/src/egl.c)
 	endif()
 endif()
-
+endif ()
 	if (INSIDE_PACKAGE)
 		if (NOT EXISTS ${CMAKE_SOURCE_DIR}/libs/glu/build/src)
 			execute_process (
@@ -1334,7 +1335,7 @@ set(LIB_SOURCES
 			${MINIZIP_SOURCES}
 			${BINKDEC_SOURCES}
 			#${GLEW_SOURCES}
-			${GLAD_SOURCES}
+#			${GLAD_SOURCES}
 			#${OPEN_PLATFORM_SOURCES}
 			#${FREETYPE_SOURCES}
 			${TIMIDITY_SOURCES}

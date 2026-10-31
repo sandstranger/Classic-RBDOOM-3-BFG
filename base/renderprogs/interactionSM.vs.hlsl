@@ -52,7 +52,7 @@ struct VS_OUT {
 	half4 texcoord5	: TEXCOORD5;
 	half4 texcoord6	: TEXCOORD6;
 	float4 texcoord7	: TEXCOORD7;
-	half4 texcoord8	: TEXCOORD8;
+	float4 texcoord8	: TEXCOORD8;
 	float4 texcoord9	: TEXCOORD9;
 	float4 color		: COLOR0;
 };

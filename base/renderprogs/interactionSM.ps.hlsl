@@ -51,7 +51,7 @@ struct PS_IN
 	half4 texcoord5		: TEXCOORD5_centroid;
 	half4 texcoord6		: TEXCOORD6_centroid;
 	float4 texcoord7		: TEXCOORD7_centroid;
-	half4 texcoord8		: TEXCOORD8_centroid;
+	float4 texcoord8		: TEXCOORD8_centroid;
 	float4 texcoord9		: TEXCOORD9_centroid;
 	half4 color			: COLOR0;
 };

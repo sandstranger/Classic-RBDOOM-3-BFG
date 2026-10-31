@@ -160,6 +160,21 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	ID_TIME_T glslTimeStamp;
 	int glslFileLength = fileSystem->ReadFile( outFileGLSL.c_str(), NULL, &glslTimeStamp );
 
+	// Regenerate cached GLES shaders when the TBR mobile specialization is first introduced.
+	bool missingTbrMobileShaderPath = false;
+	if( glConfig.driverType == GLDRV_OPENGL_MESA && glslFileLength > 0 )
+	{
+		void* cachedGLSL = NULL;
+		if( fileSystem->ReadFile( outFileGLSL.c_str(), &cachedGLSL ) > 0 && cachedGLSL != NULL )
+		{
+			missingTbrMobileShaderPath = strstr( ( const char* )cachedGLSL, "TBR_MOBILE_SHADER_PATH" ) == NULL;
+		}
+		if( cachedGLSL != NULL )
+		{
+			Mem_Free( cachedGLSL );
+		}
+	}
+
 	// glsl cached before r_lodBias became a shader bias on gles must be regenerated, or the setting does nothing
 	bool missingTextureLodBias = false;
 	if( glslFileLength > 0 && R_GLSLUsesTextureLodBias( inFile.c_str(), shader.stage ) )
@@ -178,7 +193,7 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	// if the glsl file doesn't exist or we have a newer HLSL file we need to recreate the glsl file.
 	idStr programGLSL;
 	idStr programUniforms;
-	if( ( glslFileLength <= 0 ) || ( hlslTimeStamp != FILE_NOT_FOUND_TIMESTAMP && hlslTimeStamp > glslTimeStamp ) || r_alwaysExportGLSL.GetBool() || glConfig.forceGLSLGeneration || missingTextureLodBias )
+	if( ( glslFileLength <= 0 ) || ( hlslTimeStamp != FILE_NOT_FOUND_TIMESTAMP && hlslTimeStamp > glslTimeStamp ) || r_alwaysExportGLSL.GetBool() || glConfig.forceGLSLGeneration || missingTextureLodBias || missingTbrMobileShaderPath )
 	{
 		const char* hlslFileBuffer = NULL;
 		int len = 0;
@@ -218,6 +233,10 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 		}
 
 		idStrList compileMacros;
+		if( glConfig.driverType == GLDRV_OPENGL_MESA )
+		{
+			compileMacros.Append( idStr( "TBR_MOBILE" ) );
+		}
 		for( int j = 0; j < MAX_SHADER_MACRO_NAMES; j++ )
 		{
 			if( IDBIT( j ) & shader.shaderFeatures )

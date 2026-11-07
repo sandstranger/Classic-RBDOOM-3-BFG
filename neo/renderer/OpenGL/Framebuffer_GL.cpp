@@ -252,6 +252,27 @@ void Framebuffer::Init()
         glReadBuffer(GL_NONE);
 #endif
     }
+
+    // depth only target for the shadow atlas, the back end attaches the atlas image every frame
+    globalFramebuffers.shadowAtlasFBO = new Framebuffer("_shadowAtlas", shadowMapResolutions[0], shadowMapResolutions[0]);
+#ifndef ANDROID
+    if (!glConfig.directStateAccess)
+    {
+        globalFramebuffers.shadowAtlasFBO->Bind();
+        glDrawBuffers(0, NULL);
+    }
+    else
+    {
+        glNamedFramebufferDrawBuffers(globalFramebuffers.shadowAtlasFBO->frameBuffer, 0, NULL);
+    }
+#else
+    {
+        globalFramebuffers.shadowAtlasFBO->Bind();
+        GLenum drawBuffers[] = { GL_NONE };
+        glDrawBuffers(1, drawBuffers);
+        glReadBuffer(GL_NONE);
+    }
+#endif
 #ifndef _WIN32
     int screenWidth = renderSystem->GetWidth() > 0 ? renderSystem->GetWidth() : 1280;
     int screenHeight = renderSystem->GetHeight() > 0 ? renderSystem->GetHeight() : 720;
@@ -574,6 +595,29 @@ void Framebuffer::InvalidateDefaultFramebufferAttachments()
     else if (GLAD_GL_EXT_discard_framebuffer && glDiscardFramebufferEXT != nullptr)
     {
         glDiscardFramebufferEXT(GL_FRAMEBUFFER, 2, attachments);
+    }
+#endif
+}
+
+void Framebuffer::InvalidateDefaultFramebufferForOverwrite()
+{
+    Unbind();
+#if defined(ANDROID)
+    if (!r_useTileBasedOptimizations.GetBool())
+    {
+        return;
+    }
+
+    // The next draw covers the whole back buffer, so a tile based GPU
+    // must not read the old color, depth or stencil back into its tiles.
+    const GLenum attachments[] = { GL_COLOR, GL_DEPTH, GL_STENCIL };
+    if (glInvalidateFramebuffer != nullptr)
+    {
+        glInvalidateFramebuffer(GL_FRAMEBUFFER, 3, attachments);
+    }
+    else if (GLAD_GL_EXT_discard_framebuffer && glDiscardFramebufferEXT != nullptr)
+    {
+        glDiscardFramebufferEXT(GL_FRAMEBUFFER, 3, attachments);
     }
 #endif
 }

@@ -2148,11 +2148,17 @@ idRenderProgManager::SetUniformValue
 */
 void idRenderProgManager::SetUniformValue( const renderParm_t rp, const float* value )
 {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    if (memcmp(uniforms[rp].ToFloatPtr(), value, 4 * sizeof(float)) != 0)
+#if !defined(USE_VULKAN)
+    // most parms are set again with the value they already have,
+    // only a real change makes the programs that use the parm upload again
+    if (memcmp(uniforms[rp].ToFloatPtr(), value, 4 * sizeof(float)) == 0)
     {
-        tr.backend.FlushMultiDrawBatch();
+        return;
     }
+#if defined(ANDROID)
+    tr.backend.FlushMultiDrawBatch();
+#endif
+    uniformChangeSerial[rp] = ++uniformSerial;
 #endif
     for( int i = 0; i < 4; i++ )
     {
@@ -2172,4 +2178,11 @@ void idRenderProgManager::ZeroUniforms()
     tr.backend.FlushMultiDrawBatch();
 #endif
     memset( uniforms.Ptr(), 0, uniforms.Allocated() );
+#if !defined(USE_VULKAN)
+    ++uniformSerial;
+    for( int i = 0; i < RENDERPARM_TOTAL; i++ )
+    {
+        uniformChangeSerial[i] = uniformSerial;
+    }
+#endif
 }

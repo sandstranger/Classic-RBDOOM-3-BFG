@@ -2556,7 +2556,16 @@ void idRenderBackend::SetBuffer( const void* data )
 	RENDERLOG_PRINTF( "---------- RB_SetBuffer ---------- to buffer # %d\n", cmd->buffer );
 	
 	GL_Scissor( 0, 0, tr.GetWidth(), tr.GetHeight() );
-	
+
+	// The HDR color target is cleared by the first HDR view of the frame, when it starts its
+	// render pass. Clearing it here too would be a render pass of its own: on a tile based GPU
+	// that writes the cleared target out, only for the view to read it back in.
+	// The same goes for the back buffer when a HDR view's tonemap replaces all of it.
+	if( skipBackBufferClear )
+	{
+		return;
+	}
+
 	// clear screen for debugging
 	// automatically enable this with several other debug tools
 	// that might leave unrendered portions of the screen
@@ -2570,19 +2579,19 @@ void idRenderBackend::SetBuffer( const void* data )
 				c[1] = c[1] / 255.0f;
 				c[2] = c[2] / 255.0f;
 			}
-			GL_Clear( true, false, false, 0, c[0], c[1], c[2], 1.0f, true );
+			GL_Clear( true, false, false, 0, c[0], c[1], c[2], 1.0f, false );
 		}
 		else if( r_clear.GetInteger() == 2 )
 		{
-			GL_Clear( true, false, false, 0, 0.0f, 0.0f,  0.0f, 1.0f, true );
+			GL_Clear( true, false, false, 0, 0.0f, 0.0f,  0.0f, 1.0f, false );
 		}
 		else if( r_showOverDraw.GetBool() )
 		{
-			GL_Clear( true, false, false, 0, 1.0f, 1.0f, 1.0f, 1.0f, true );
+			GL_Clear( true, false, false, 0, 1.0f, 1.0f, 1.0f, 1.0f, false );
 		}
 		else
 		{
-			GL_Clear( true, false, false, 0, 0.4f, 0.0f, 0.25f, 1.0f, true );
+			GL_Clear( true, false, false, 0, 0.4f, 0.0f, 0.25f, 1.0f, false );
 		}
 	}
 }
@@ -2617,6 +2626,12 @@ idRenderBackend::idRenderBackend()
 {
 	memset( glcontext.tmu, 0, sizeof( glcontext.tmu ) );
 	memset( glcontext.stencilOperations, 0, sizeof( glcontext.stencilOperations ) );
+
+	numShadowAtlasLights = 0;
+	shadowAtlasSize = 0;
+	hdrTargetClearedThisFrame = false;
+	skipBackBufferClear = false;
+	bloomResultImage = NULL;
 }
 
 /*

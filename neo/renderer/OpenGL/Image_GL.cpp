@@ -1561,7 +1561,8 @@ void idImage::AllocImage() {
         case TT_2D_ARRAY:
             target = GL_TEXTURE_2D_ARRAY;
             uploadTarget = GL_TEXTURE_2D_ARRAY;
-            numSides = 6;
+            // the shadow atlas keeps every side of every light in one layer
+            numSides = ( usage == TD_SHADOW_ATLAS ) ? 1 : 6;
             break;
         case TT_2D_MULTISAMPLE:
             target = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;

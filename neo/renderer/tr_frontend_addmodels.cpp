@@ -355,6 +355,66 @@ void R_SetupDrawSurfJoints( drawSurf_t* drawSurf, const srfTriangles_t* tri, con
 
 /*
 ===================
+R_PointLightShadowCulledSides
+
+Returns a bit for every point light shadow map side the caster can't reach.
+Side n looks from the light down +X, -X, +Y, -Y, +Z, -Z for n = 0 .. 5, with
+the r_shadowMapFrustumFOV frustum the back end renders it with.
+
+The test only rejects sides the world space bounds of the caster are
+completely outside of, so a culled side never loses a shadow.
+===================
+*/
+static int R_PointLightShadowCulledSides( const idBounds& localBounds, const float modelMatrix[16], const idVec3& lightOrigin )
+{
+	if( localBounds.IsCleared() )
+	{
+		return 0;
+	}
+
+	// world space bounds, relative to the light origin
+	const idVec3 center = localBounds.GetCenter();
+	const idVec3 extents = localBounds[1] - center;
+	float mins[3];
+	float maxs[3];
+	for( int i = 0; i < 3; i++ )
+	{
+		const float c = center[0] * modelMatrix[0 * 4 + i] + center[1] * modelMatrix[1 * 4 + i] + center[2] * modelMatrix[2 * 4 + i] + modelMatrix[3 * 4 + i] - lightOrigin[i];
+		const float e = extents[0] * idMath::Fabs( modelMatrix[0 * 4 + i] ) + extents[1] * idMath::Fabs( modelMatrix[1 * 4 + i] ) + extents[2] * idMath::Fabs( modelMatrix[2 * 4 + i] );
+		mins[i] = c - e;
+		maxs[i] = c + e;
+	}
+
+	// a little slack for the rounding of the transformed bounds
+	const float tanHalfFov = idMath::Tan( DEG2RAD( r_shadowMapFrustumFOV.GetFloat() * 0.5f ) ) * 1.01f;
+
+	int culledSides = 0;
+	for( int side = 0; side < 6; side++ )
+	{
+		const int axis = side >> 1;
+
+		// the farthest the bounds reach in the direction this side looks at
+		const float forward = ( side & 1 ) ? -mins[axis] : maxs[axis];
+		bool reachable = forward > 0.0f;
+
+		// and the bounds must get inside the side's pyramid on both other axes
+		for( int k = 1; k < 3 && reachable; k++ )
+		{
+			const int other = ( axis + k ) % 3;
+			const float nearest = ( mins[other] > 0.0f ) ? mins[other] : ( ( maxs[other] < 0.0f ) ? -maxs[other] : 0.0f );
+			reachable = nearest <= forward * tanHalfFov + 1.0f;
+		}
+
+		if( !reachable )
+		{
+			culledSides |= 1 << side;
+		}
+	}
+	return culledSides;
+}
+
+/*
+===================
 R_AddSingleModel
 
 May be run in parallel.
@@ -1115,9 +1175,17 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 						}
 						
 						R_SetupDrawSurfJoints( shadowDrawSurf, tri, shader );
-						
+
+						// a point light renders six shadow map sides, most casters only reach one or two of them
+						if( vLight->pointLight && !vLight->parallel )
+						{
+							// skeletal models have difficult to compute bounds for surfaces, so use the whole entity
+							const idBounds& casterBounds = tri->staticModelWithJoints ? entityDef->localReferenceBounds : tri->bounds;
+							shadowDrawSurf->shadowMapCulledSides = R_PointLightShadowCulledSides( casterBounds, vEntity->modelMatrix, vLight->globalLightOrigin );
+						}
+
 						// determine which linked list to add the shadow surface to
-						
+
 						//shadowDrawSurf->linkChain = shader->TestMaterialFlag( MF_NOSELFSHADOW ) ? &vLight->localShadows : &vLight->globalShadows;
 						
 						shadowDrawSurf->linkChain = &vLight->globalShadows;

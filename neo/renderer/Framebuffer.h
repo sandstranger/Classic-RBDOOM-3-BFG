@@ -185,6 +185,8 @@ public:
     bool InvalidateAttachments(const GLenum* attachments, GLsizei count);
     static bool InvalidateDrawFramebufferAttachments(const GLenum* attachments, GLsizei count);
     static void InvalidateDefaultFramebufferAttachments();
+    // binds the back buffer and drops all of it, for a pass that overwrites every pixel
+    static void InvalidateDefaultFramebufferForOverwrite();
     static void Unbind();
     static bool IsDefaultFramebufferActive();
 
@@ -250,6 +252,7 @@ private:
 struct globalFramebuffers_t
 {
     Framebuffer* shadowFBO[MAX_SHADOWMAP_RESOLUTIONS];
+    Framebuffer* shadowAtlasFBO;
     Framebuffer* hdrFBO;
 #if defined(USE_HDR_MSAA)
     Framebuffer* hdrNonMSAAFBO;

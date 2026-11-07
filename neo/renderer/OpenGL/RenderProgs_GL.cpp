@@ -433,6 +433,7 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
 
     if ( loaded ) {
         prog.progId = program;
+        prog.committedUniformSerial = 0;
         prog.vertexShaderIndex = vertexShaderIndex;
         prog.fragmentShaderIndex = fragmentShaderIndex;
 
@@ -588,6 +589,7 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
     programName.StripFileExtension();
     prog.name = programName;
     prog.progId = program;
+    prog.committedUniformSerial = 0;
     prog.fragmentShaderIndex = fragmentShaderIndex;
     prog.vertexShaderIndex = vertexShaderIndex;
 
@@ -613,6 +615,20 @@ void idRenderProgManager::CommitUniforms( uint64 stateBits )
 
 	//GL_CheckErrors();
 
+	// The program still holds what it got last time: skip it when no parm it reads changed since.
+	// Most draws only change a few parms, or none at all, after the previous draw.
+	const uint64 committedSerial = prog.committedUniformSerial;
+	if( committedSerial != 0 && committedSerial == uniformSerial )
+	{
+		if( prog.textureLodBiasLocation != -1 && prog.textureLodBias != r_lodBias.GetFloat() )
+		{
+			prog.textureLodBias = r_lodBias.GetFloat();
+			glUniform1f( prog.textureLodBiasLocation, prog.textureLodBias );
+		}
+		return;
+	}
+	prog.committedUniformSerial = uniformSerial;
+
 	ALIGNTYPE16 idVec4 localVectors[RENDERPARM_TOTAL];
 
 	auto commitarray = [&]( idVec4( &vectors )[ RENDERPARM_TOTAL ] , shader_t& shader )
@@ -620,6 +636,26 @@ void idRenderProgManager::CommitUniforms( uint64 stateBits )
 		const int numUniforms = shader.uniforms.Num();
 		if( shader.uniformArray != -1 && numUniforms > 0 )
 		{
+			bool changed = ( committedSerial == 0 );
+			for( int i = 0; i < numUniforms && !changed; ++i )
+			{
+				// RB: HACK rpShadowMatrices[6 * 4]
+				const int parm = shader.uniforms[i];
+				const int numParms = ( parm == RENDERPARM_SHADOW_MATRIX_0_X ) ? ( 6 * 4 ) : 1;
+				for( int j = 0; j < numParms; j++ )
+				{
+					if( uniformChangeSerial[parm + j] > committedSerial )
+					{
+						changed = true;
+						break;
+					}
+				}
+			}
+			if( !changed )
+			{
+				return;
+			}
+
 			int totalUniforms = 0;
 			for( int i = 0; i < numUniforms; ++i )
 			{
@@ -661,6 +697,52 @@ void idRenderProgManager::CommitUniforms( uint64 stateBits )
 
 	//GL_CheckErrors();
 }
+
+#if defined(ANDROID)
+/*
+================================================================================================
+idRenderProgManager::CheckGPUInstancingShaders
+
+The renderprogs come from the game data on the device, not from the engine build. When they are
+older than USE_GPU_INSTANCING the "_instanced" programs read no per instance data, and a batch
+would draw all of its instances where the first one is.
+================================================================================================
+*/
+void idRenderProgManager::CheckGPUInstancingShaders()
+{
+	static const int instancedBuiltins[] =
+	{
+		BUILTIN_AMBIENT_LIGHTING_INSTANCED,
+		BUILTIN_SMALL_GEOMETRY_BUFFER_INSTANCED,
+		BUILTIN_TEXTURE_VERTEXCOLOR_INSTANCED,
+		BUILTIN_INTERACTION_INSTANCED,
+		BUILTIN_INTERACTION_AMBIENT_INSTANCED,
+		BUILTIN_INTERACTION_SHADOW_MAPPING_SPOT_INSTANCED,
+		BUILTIN_INTERACTION_SHADOW_MAPPING_POINT_INSTANCED,
+		BUILTIN_INTERACTION_SHADOW_MAPPING_PARALLEL_INSTANCED,
+		BUILTIN_DEPTH_INSTANCED,
+		BUILTIN_SHADOW_INSTANCED,
+		BUILTIN_BLENDLIGHT_INSTANCED,
+		BUILTIN_FOG_INSTANCED,
+	};
+
+	gpuInstancingShadersReady = true;
+	for( int i = 0; i < ( int )( sizeof( instancedBuiltins ) / sizeof( instancedBuiltins[0] ) ); i++ )
+	{
+		const int progIndex = builtinShaders[ instancedBuiltins[i] ];
+		const renderProg_t* prog = ( progIndex >= 0 && progIndex < renderProgs.Num() ) ? &renderProgs[ progIndex ] : NULL;
+
+		// every instanced vertex shader places the instance with in_InstanceMVPX
+		if( prog == NULL || prog->progId == INVALID_PROGID || glGetAttribLocation( prog->progId, "in_InstanceMVPX" ) == -1 )
+		{
+			gpuInstancingShadersReady = false;
+			idLib::Printf( "GPU instancing disabled: the renderprog %s has no per instance input, the renderprogs predate the engine\n",
+						   prog != NULL ? prog->name.c_str() : "?" );
+			return;
+		}
+	}
+}
+#endif
 
 /*
 ================================================================================================

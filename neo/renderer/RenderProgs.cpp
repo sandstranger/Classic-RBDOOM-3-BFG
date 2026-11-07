@@ -66,6 +66,13 @@ idRenderProgManager::idRenderProgManager()
 */
 idRenderProgManager::idRenderProgManager()
 {
+#if !defined( USE_VULKAN )
+	uniformSerial = 1;
+	for( int i = 0; i < RENDERPARM_TOTAL; i++ )
+	{
+		uniformChangeSerial[i] = 1;
+	}
+#endif
 }
 
 /*
@@ -276,7 +283,11 @@ void idRenderProgManager::Init()
 	
 	r_useHalfLambertLighting.ClearModified();
 	r_useHDR.ClearModified();
-	
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	CheckGPUInstancingShaders();
+#endif
+
 	uniforms.SetNum( RENDERPARM_TOTAL, vec4_zero );
 	
 	if( glConfig.gpuSkinningAvailable )
@@ -343,6 +354,10 @@ void idRenderProgManager::LoadAllShaders()
 		
 		LoadGLSLProgram( i, renderProgs[i].vertexShaderIndex, renderProgs[i].fragmentShaderIndex );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	CheckGPUInstancingShaders();
+#endif
 }
 
 

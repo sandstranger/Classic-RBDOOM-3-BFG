@@ -730,8 +730,22 @@ public:
 #if 0
 	static const char* FindEmbeddedSourceShader( const char* name );
 #endif
-	
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	// False when the renderprogs on the device predate USE_GPU_INSTANCING. The "_instanced"
+	// programs are plain ones then and would draw every instance of a batch on the first one.
+	bool		GPUInstancingShadersReady() const
+	{
+		return gpuInstancingShadersReady;
+	}
+#endif
+
 private:
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void		CheckGPUInstancingShaders();
+	bool		gpuInstancingShadersReady = false;
+#endif
+
 	void		LoadShader( int index, rpStage_t stage );
 	
 	idStr		StripDeadCode( const idStr& in, const char* name, const idStrList& compileMacros, bool builtin );
@@ -970,8 +984,9 @@ private:
 			vertexShaderIndex( -1 ),
 			fragmentShaderIndex( -1 ),
 			textureLodBiasLocation( -1 ),
-			textureLodBias( 0.0f ) {}
-	
+			textureLodBias( 0.0f ),
+			committedUniformSerial( 0 ) {}
+
 		idStr				name;
 		uint				progId;
 		bool				usesJoints;
@@ -982,17 +997,25 @@ private:
 		int					fragmentShaderIndex;
 		int					textureLodBiasLocation;	// TEXTURE_LOD_BIAS_UNIFORM_NAME, -1 if the program has none
 		float				textureLodBias;			// value last set on it
+		uint64				committedUniformSerial;	// uniformSerial when CommitUniforms last uploaded, 0 = never
 	};
 #endif
-	
+
 	void							LoadShader( shader_t& shader );
-	
+
 	int											current;
 	idList<renderProg_t, TAG_RENDER>			renderProgs;
 	idList<shader_t, TAG_RENDER>				shaders;
-	
+
 	idStaticList < idVec4, RENDERPARM_TOTAL >	uniforms;
-	
+
+#if !defined( USE_VULKAN )
+	// GL keeps the uniforms of every program: CommitUniforms uploads a program's
+	// parms only when one of them changed after the program's last upload
+	uint64										uniformSerial;
+	uint64										uniformChangeSerial[RENDERPARM_TOTAL];
+#endif
+
 #if defined( USE_VULKAN )
 	int					counter;
 	int					currentData;

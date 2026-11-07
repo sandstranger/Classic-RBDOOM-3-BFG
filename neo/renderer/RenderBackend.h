@@ -322,7 +322,38 @@ private:
 	// RB
 	void				AmbientPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs, bool fillGbuffer );
 	void				ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side, bool restoreFramebuffer = true );
-	
+
+	// shadow map helpers shared by ShadowMapPass and the shadow atlas
+	void				SetupShadowMapMatrices( const viewLight_t* vLight, int side, idRenderMatrix& lightViewRenderMatrix, idRenderMatrix& lightProjectionRenderMatrix );
+	void				BeginShadowMapSide();
+	void				DrawShadowMapCasters( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side,
+											  const idRenderMatrix& lightViewRenderMatrix, const idRenderMatrix& lightProjectionRenderMatrix );
+
+#if !defined( USE_VULKAN )
+	// tile based GPUs: render the shadow maps of all lights of the frame into one atlas
+	// before any view, so that shadow maps never interrupt the main render pass
+	struct shadowAtlasLight_t
+	{
+		const viewLight_t*	vLight;
+		int					numSides;
+		int					tileSize;			// texels of one side, including the guard border
+		int					tileX[6];
+		int					tileY[6];
+		idRenderMatrix		worldToShadow[6];	// world space -> atlas texture coordinates and depth
+	};
+
+	static const int	MAX_SHADOW_ATLAS_LIGHTS = 64;
+
+	void				ShadowAtlasPass( const emptyCommand_t* cmds );
+	const shadowAtlasLight_t* FindShadowAtlasLight( const viewLight_t* vLight ) const;
+
+	shadowAtlasLight_t	shadowAtlasLights[MAX_SHADOW_ATLAS_LIGHTS];
+	int					numShadowAtlasLights;
+	int					shadowAtlasSize;
+	bool				hdrTargetClearedThisFrame;	// the first HDR view of a frame clears the HDR color
+	bool				skipBackBufferClear;		// a HDR view's tonemap replaces the whole back buffer this frame
+#endif
+
 	void				StencilShadowPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight );
 	void				StencilSelectLight( const viewLight_t* vLight );
 	
@@ -332,6 +363,8 @@ private:
 	void				CalculateAutomaticExposure();
 	void				Tonemap( const viewDef_t* viewDef );
 	void				Bloom( const viewDef_t* viewDef );
+	void				BloomComposite( const viewDef_t* viewDef );
+	idImage*			bloomResultImage;		// Bloom's blurred glare, added by BloomComposite
 	
 	void				DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef );
 	void				DrawScreenSpaceGlobalIllumination( const viewDef_t* _viewDef );

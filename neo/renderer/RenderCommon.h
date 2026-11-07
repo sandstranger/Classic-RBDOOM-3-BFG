@@ -194,6 +194,7 @@ struct drawSurf_t
 	idScreenRect			scissorRect;		// for scissor clipping, local inside renderView viewport
 	int						renderZFail;
 	volatile shadowVolumeState_t shadowVolumeState;
+	int						shadowMapCulledSides;	// point light shadow map sides (bit per cube side) this caster can't reach, 0 = draw it on all of them
 };
 
 // areas have references to hold all the lights and entities in them

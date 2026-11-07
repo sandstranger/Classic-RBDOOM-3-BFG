@@ -1101,6 +1101,15 @@ static bool R_GPUInstanceable( const drawSurf_t* surf, bool allowPerforated = fa
 static bool R_CanBatchGPUInstances( const drawSurf_t* first, const drawSurf_t* candidate,
 		bool requireSameSort = true, bool allowPerforated = false )
 {
+	// The batch builders ask this for every surface up to GPU_INSTANCE_BATCH_SCAN_AHEAD
+	// places ahead, and almost none share the geometry: reject on the drawSurf fields
+	// alone before anything follows the material and space pointers.
+	if( candidate == NULL || first->ambientCache != candidate->ambientCache || first->indexCache != candidate->indexCache
+		|| first->numIndexes != candidate->numIndexes || first->material != candidate->material )
+	{
+		return false;
+	}
+
 	if( !R_GPUInstanceable( first, allowPerforated ) || !R_GPUInstanceable( candidate, allowPerforated )
 		|| ( requireSameSort && first->sort != candidate->sort )
 		|| first->extraGLState != candidate->extraGLState
@@ -1139,7 +1148,7 @@ static void R_FillGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t
 static const int GPU_INSTANCE_BATCH_SCAN_AHEAD = 512;
 static int R_BuildGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs, int firstIndex, const idVec3& viewOrigin, bool* consumed, gpuInstanceData_t* instances, bool allowPerforated = false, const drawSurf_t** instanceSurfs = NULL )
 {
-	if( glConfig.glVersion < 3.2f || firstIndex < 0 || firstIndex >= numDrawSurfs ) return 1;
+	if( glConfig.glVersion < 3.2f || !renderProgManager.GPUInstancingShadersReady() || firstIndex < 0 || firstIndex >= numDrawSurfs ) return 1;
 	const drawSurf_t* first = drawSurfs[firstIndex];
 	if( !R_GPUInstanceable( first, allowPerforated ) ) return 1;
 	R_FillGPUInstanceData( instances[0], first, viewOrigin );
@@ -1204,7 +1213,7 @@ static int R_BuildShadowGPUInstanceBatch( const drawSurf_t* const* drawSurfs, in
 		const idRenderMatrix& lightViewRenderMatrix, const idRenderMatrix& lightProjectionRenderMatrix,
 		const viewLight_t* vLight, int side )
 {
-	if( glConfig.glVersion < 3.2f || firstIndex < 0 || firstIndex >= numDrawSurfs )
+	if( glConfig.glVersion < 3.2f || !renderProgManager.GPUInstancingShadersReady() || firstIndex < 0 || firstIndex >= numDrawSurfs )
 	{
 		return 1;
 	}
@@ -1259,7 +1268,7 @@ static int R_BuildStencilShadowGPUInstanceBatch( const drawSurf_t* const* drawSu
 		int firstIndex, const idVec3& viewOrigin, const idVec3& globalLightOrigin,
 		bool* consumed, gpuInstanceData_t* instances )
 {
-	if( glConfig.glVersion < 3.2f || firstIndex < 0 || firstIndex >= numDrawSurfs ) return 1;
+	if( glConfig.glVersion < 3.2f || !renderProgManager.GPUInstancingShadersReady() || firstIndex < 0 || firstIndex >= numDrawSurfs ) return 1;
 	const drawSurf_t* first = drawSurfs[firstIndex];
 	if( first == NULL || first->space == NULL || first->jointCache != 0 || first->shadowCache == 0
 		|| first->numIndexes <= 0 || first->shadowVolumeState != SHADOWVOLUME_DONE ) return 1;
@@ -2086,21 +2095,78 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 #endif
 	
 	bool lightDepthBoundsDisabled = false;
-	
+
+	// shadow map lookup: world space -> 0..1 shadow map texture space and depth for every side,
+	// the per surface model matrix is applied below
+	const bool useShadowMaps = r_useShadowMapping.GetBool() && vLight->globalShadows != NULL && !lightShader->IsAmbientLight();
+#if !defined(USE_VULKAN)
+	const shadowAtlasLight_t* atlasLight = useShadowMaps ? FindShadowAtlasLight( vLight ) : NULL;
+#endif
+	idRenderMatrix lightWorldToShadow[6];
+	int numShadowSides = 0;
+	if( useShadowMaps )
+	{
+#if !defined(USE_VULKAN)
+		if( atlasLight != NULL )
+		{
+			numShadowSides = atlasLight->numSides;
+			for( int i = 0; i < numShadowSides; i++ )
+			{
+				lightWorldToShadow[i] = atlasLight->worldToShadow[i];
+			}
+		}
+		else
+#endif
+		{
+			// ShadowMapPass left the matrices of this light in shadowV / shadowP
+			if( vLight->parallel )
+			{
+				numShadowSides = r_shadowMapSplits.GetInteger() + 1;
+			}
+			else if( vLight->pointLight )
+			{
+				numShadowSides = 6;
+			}
+			else
+			{
+				numShadowSides = 1;
+			}
+			for( int i = 0; i < numShadowSides; i++ )
+			{
+				idRenderMatrix lightViewProjection;
+				idRenderMatrix::Multiply( shadowP[i], shadowV[i], lightViewProjection );
+				if( vLight->parallel || vLight->pointLight )
+				{
+					idRenderMatrix::Multiply( renderMatrix_clipSpaceToWindowSpace, lightViewProjection, lightWorldToShadow[i] );
+				}
+				else
+				{
+					// the base light projection of a projected light is 0..1 already
+					lightWorldToShadow[i] = lightViewProjection;
+				}
+			}
+		}
+	}
+
 	// RB begin
 	if( r_useShadowMapping.GetBool() )
 	{
 		const static int JITTER_SIZE = 128;
-		
+
 		// default high quality
 		float jitterSampleScale = 1.0f;
 		float shadowMapSamples = r_shadowMapSamples.GetInteger();
-		
+
 		// screen power of two correction factor
 		float screenCorrectionParm[4];
 		screenCorrectionParm[0] = 1.0f / ( JITTER_SIZE * shadowMapSamples ) ;
 		screenCorrectionParm[1] = 1.0f / JITTER_SIZE;
+		// texel size for the PCF taps, the atlas texel is as big as a texel of the light's own resolution
+#if !defined(USE_VULKAN)
+		screenCorrectionParm[2] = ( atlasLight != NULL ) ? 1.0f / shadowAtlasSize : 1.0f / shadowMapResolutions[vLight->shadowLOD];
+#else
 		screenCorrectionParm[2] = 1.0f / shadowMapResolutions[vLight->shadowLOD];
+#endif
 		screenCorrectionParm[3] = vLight->parallel ? r_shadowMapSunDepthBiasScale.GetFloat() : r_shadowMapRegularDepthBiasScale.GetFloat();
 		SetFragmentParm( RENDERPARM_SCREENCORRECTIONFACTOR, screenCorrectionParm ); // rpScreenCorrectionFactor
 		
@@ -2182,7 +2248,16 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 		{
 			// texture 5 will be the shadow maps array
 			GL_SelectTexture( INTERACTION_TEXUNIT_SHADOWMAPS );
-			globalImages->shadowImage[vLight->shadowLOD]->Bind();
+#if !defined(USE_VULKAN)
+			if( atlasLight != NULL )
+			{
+				globalImages->shadowAtlasImage->Bind();
+			}
+			else
+#endif
+			{
+				globalImages->shadowImage[vLight->shadowLOD]->Bind();
+			}
 			
 			// texture 6 will be the jitter texture for soft shadowing
 			GL_SelectTexture( INTERACTION_TEXUNIT_JITTER );
@@ -2213,7 +2288,11 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 		
 		// even if the space does not change between light stages, each light stage may need a different lightTextureMatrix baked in
 		currentSpace = NULL;
-		
+
+		// instanced shadow map batches take world space light parameters, single draws model space ones,
+		// so a change between the two must set them up again even for the same space
+		bool currentSpaceShadowInstanced = false;
+
 		for( int sortedSurfNum = 0; sortedSurfNum < allSurfaces.Num(); sortedSurfNum++ )
 		{
 #if defined(ANDROID) && !defined(USE_VULKAN)
@@ -2379,10 +2458,11 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 			inter.surf = surf;
 			
 			// change the MVP matrix, view/light origin and light projection vectors if needed
-			if( surf->space != currentSpace )
+			if( surf->space != currentSpace || gpuShadowInteractionInstanced != currentSpaceShadowInstanced )
 			{
 				currentSpace = surf->space;
-				
+				currentSpaceShadowInstanced = gpuShadowInteractionInstanced;
+
 				// turn off the light depth bounds test if this model is rendered with a depth hack
 				if( useLightDepthBounds )
 				{
@@ -2476,73 +2556,18 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 				SetVertexParm( RENDERPARM_LIGHTFALLOFF_S, lightProjection[3].ToFloatPtr() );
 				
 				// RB begin
-				if( r_useShadowMapping.GetBool() )
+				for( int i = 0; i < numShadowSides; i++ )
 				{
-					if( vLight->parallel )
+					if( gpuShadowInteractionInstanced )
 					{
-						for( int i = 0; i < ( r_shadowMapSplits.GetInteger() + 1 ); i++ )
-						{
-							idRenderMatrix modelToShadowMatrix;
-							if( gpuShadowInteractionInstanced )
-							{
-								modelToShadowMatrix = shadowV[i];
-							}
-							else
-							{
-								idRenderMatrix::Multiply( shadowV[i], modelMatrix, modelToShadowMatrix );
-							}
-							
-							idRenderMatrix shadowClipMVP;
-							idRenderMatrix::Multiply( shadowP[i], modelToShadowMatrix, shadowClipMVP );
-							
-							idRenderMatrix shadowWindowMVP;
-							idRenderMatrix::Multiply( renderMatrix_clipSpaceToWindowSpace, shadowClipMVP, shadowWindowMVP );
-							
-							SetVertexParms( ( renderParm_t )( RENDERPARM_SHADOW_MATRIX_0_X + i * 4 ), shadowWindowMVP[0], 4 );
-						}
-					}
-					else if( vLight->pointLight )
-					{
-						for( int i = 0; i < 6; i++ )
-						{
-							idRenderMatrix modelToShadowMatrix;
-							if( gpuShadowInteractionInstanced )
-							{
-								modelToShadowMatrix = shadowV[i];
-							}
-							else
-							{
-								idRenderMatrix::Multiply( shadowV[i], modelMatrix, modelToShadowMatrix );
-							}
-							
-							idRenderMatrix shadowClipMVP;
-							idRenderMatrix::Multiply( shadowP[i], modelToShadowMatrix, shadowClipMVP );
-							
-							idRenderMatrix shadowWindowMVP;
-							idRenderMatrix::Multiply( renderMatrix_clipSpaceToWindowSpace, shadowClipMVP, shadowWindowMVP );
-							
-							SetVertexParms( ( renderParm_t )( RENDERPARM_SHADOW_MATRIX_0_X + i * 4 ), shadowWindowMVP[0], 4 );
-						}
+						// the instanced shaders look up world space positions
+						SetVertexParms( ( renderParm_t )( RENDERPARM_SHADOW_MATRIX_0_X + i * 4 ), lightWorldToShadow[i][0], 4 );
 					}
 					else
 					{
-						// spot light
-						
 						idRenderMatrix modelToShadowMatrix;
-						if( gpuShadowInteractionInstanced )
-						{
-							modelToShadowMatrix = shadowV[0];
-						}
-						else
-						{
-							idRenderMatrix::Multiply( shadowV[0], modelMatrix, modelToShadowMatrix );
-						}
-						
-						idRenderMatrix shadowClipMVP;
-						idRenderMatrix::Multiply( shadowP[0], modelToShadowMatrix, shadowClipMVP );
-						
-						SetVertexParms( ( renderParm_t )( RENDERPARM_SHADOW_MATRIX_0_X ), shadowClipMVP[0], 4 );
-						
+						idRenderMatrix::Multiply( lightWorldToShadow[i], modelMatrix, modelToShadowMatrix );
+						SetVertexParms( ( renderParm_t )( RENDERPARM_SHADOW_MATRIX_0_X + i * 4 ), modelToShadowMatrix[0], 4 );
 					}
 				}
 				// RB end
@@ -3676,56 +3701,52 @@ void MatrixLookAtRH( float m[16], const idVec3& eye, const idVec3& dir, const id
 
 /*
 =====================
-idRenderBackend::ShadowMapPass
+idRenderBackend::BeginShadowMapSide
+
+Depth only state every shadow map side starts with
 =====================
 */
-void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side, bool restoreFramebuffer )
+void idRenderBackend::BeginShadowMapSide()
 {
-	if( r_skipShadows.GetBool() )
-	{
-		return;
-	}
-	
-	if( drawSurfs == NULL )
-	{
-		return;
-	}
-	
-	RENDERLOG_PRINTF( "---------- RB_ShadowMapPass( side = %i ) ----------\n", side );
-	
 	renderProgManager.BindShader_Depth();
-	
+
 	GL_SelectTexture( 0 );
-	
+
 	uint64 glState = 0;
-	
+
 	// the actual stencil func will be set in the draw code, but we need to make sure it isn't
 	// disabled here, and that the value will get reset for the interactions without looking
 	// like a no-change-required
 	GL_State( glState | GLS_POLYGON_OFFSET );
-	
+
 	switch( r_shadowMapOccluderFacing.GetInteger() )
 	{
 		case 0:
 			GL_State( glStateBits & ~( GLS_CULL_MASK ) | GLS_CULL_FRONTSIDED );
 			GL_PolygonOffset( r_shadowMapPolygonFactor.GetFloat(), r_shadowMapPolygonOffset.GetFloat() );
 			break;
-			
+
 		case 1:
 			GL_State( glStateBits & ~( GLS_CULL_MASK ) | GLS_CULL_BACKSIDED );
 			GL_PolygonOffset( -r_shadowMapPolygonFactor.GetFloat(), -r_shadowMapPolygonOffset.GetFloat() );
 			break;
-			
+
 		default:
 			GL_State( glStateBits & ~( GLS_CULL_MASK ) | GLS_CULL_TWOSIDED );
 			GL_PolygonOffset( r_shadowMapPolygonFactor.GetFloat(), r_shadowMapPolygonOffset.GetFloat() );
 			break;
 	}
-	
-	idRenderMatrix lightProjectionRenderMatrix;
-	idRenderMatrix lightViewRenderMatrix;
-	
-	
+}
+
+/*
+=====================
+idRenderBackend::SetupShadowMapMatrices
+
+Light view and projection of one shadow map side, also kept in shadowV / shadowP
+=====================
+*/
+void idRenderBackend::SetupShadowMapMatrices( const viewLight_t* vLight, int side, idRenderMatrix& lightViewRenderMatrix, idRenderMatrix& lightProjectionRenderMatrix )
+{
 	if( vLight->parallel && side >= 0 )
 	{
 		assert( side >= 0 && side < 6 );
@@ -4012,28 +4033,20 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 		shadowV[0] = lightViewRenderMatrix;
 		shadowP[0] = lightProjectionRenderMatrix;
 	}
-	
-	
-	// FIXME
-#if !defined(USE_VULKAN)
-	globalFramebuffers.shadowFBO[vLight->shadowLOD]->Bind();
+}
 
-	if( side < 0 )
-	{
-		globalFramebuffers.shadowFBO[vLight->shadowLOD]->AttachImageDepthLayer( globalImages->shadowImage[vLight->shadowLOD], 0 );
-	}
-	else
-	{
-		globalFramebuffers.shadowFBO[vLight->shadowLOD]->AttachImageDepthLayer( globalImages->shadowImage[vLight->shadowLOD], side );
-	}
+/*
+=====================
+idRenderBackend::DrawShadowMapCasters
 
-	globalFramebuffers.shadowFBO[vLight->shadowLOD]->Check();
-
-	GL_ViewportAndScissor( 0, 0, shadowMapResolutions[vLight->shadowLOD], shadowMapResolutions[vLight->shadowLOD] );
-
-
-	glClear( GL_DEPTH_BUFFER_BIT );
-#endif
+Draws the casters of one shadow map side into the bound target and viewport
+=====================
+*/
+void idRenderBackend::DrawShadowMapCasters( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side,
+		const idRenderMatrix& lightViewRenderMatrix, const idRenderMatrix& lightProjectionRenderMatrix )
+{
+	// the front end flags the point light sides a caster can't reach
+	const int culledSideBit = ( vLight->pointLight && !vLight->parallel && side >= 0 ) ? ( 1 << side ) : 0;
 
 	// process the chain of shadows with the current rendering state
 	currentSpace = NULL;
@@ -4042,14 +4055,24 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 	int numShadowDrawSurfs = 0;
 	for( const drawSurf_t* scan = drawSurfs; scan != NULL; scan = scan->nextOnLight )
 	{
-		++numShadowDrawSurfs;
+		if( !( scan->shadowMapCulledSides & culledSideBit ) )
+		{
+			++numShadowDrawSurfs;
+		}
+	}
+	if( numShadowDrawSurfs == 0 )
+	{
+		return;
 	}
 	const drawSurf_t** shadowDrawSurfs = (const drawSurf_t**)_alloca( numShadowDrawSurfs * sizeof( const drawSurf_t* ) );
 	bool* gpuShadowConsumed = (bool*)_alloca( numShadowDrawSurfs * sizeof( bool ) );
 	int shadowArrayIndex = 0;
 	for( const drawSurf_t* scan = drawSurfs; scan != NULL; scan = scan->nextOnLight )
 	{
-		shadowDrawSurfs[shadowArrayIndex++] = scan;
+		if( !( scan->shadowMapCulledSides & culledSideBit ) )
+		{
+			shadowDrawSurfs[shadowArrayIndex++] = scan;
+		}
 	}
 	memset( gpuShadowConsumed, 0, numShadowDrawSurfs * sizeof( bool ) );
 	int gpuShadowBatchCount = 0;
@@ -4064,6 +4087,10 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 #else
 	for( const drawSurf_t* drawSurf = drawSurfs; drawSurf != NULL; drawSurf = drawSurf->nextOnLight )
 	{
+		if( drawSurf->shadowMapCulledSides & culledSideBit )
+		{
+			continue;
+		}
 #endif
 
 #if 1
@@ -4302,7 +4329,60 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 				side, gpuShadowBatchCount, gpuShadowDrawCallsSaved );
 	}
 #endif
-	
+}
+
+/*
+=====================
+idRenderBackend::ShadowMapPass
+
+Renders one side into the per resolution shadow map array right before the
+light's interactions. Only used for lights that didn't get a place in the
+shadow atlas, every call interrupts the main render pass on tile based GPUs.
+=====================
+*/
+void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side, bool restoreFramebuffer )
+{
+	if( r_skipShadows.GetBool() )
+	{
+		return;
+	}
+
+	if( drawSurfs == NULL )
+	{
+		return;
+	}
+
+	RENDERLOG_PRINTF( "---------- RB_ShadowMapPass( side = %i ) ----------\n", side );
+
+	BeginShadowMapSide();
+
+	idRenderMatrix lightProjectionRenderMatrix;
+	idRenderMatrix lightViewRenderMatrix;
+	SetupShadowMapMatrices( vLight, side, lightViewRenderMatrix, lightProjectionRenderMatrix );
+
+	// FIXME
+#if !defined(USE_VULKAN)
+	globalFramebuffers.shadowFBO[vLight->shadowLOD]->Bind();
+
+	if( side < 0 )
+	{
+		globalFramebuffers.shadowFBO[vLight->shadowLOD]->AttachImageDepthLayer( globalImages->shadowImage[vLight->shadowLOD], 0 );
+	}
+	else
+	{
+		globalFramebuffers.shadowFBO[vLight->shadowLOD]->AttachImageDepthLayer( globalImages->shadowImage[vLight->shadowLOD], side );
+	}
+
+	globalFramebuffers.shadowFBO[vLight->shadowLOD]->Check();
+
+	GL_ViewportAndScissor( 0, 0, shadowMapResolutions[vLight->shadowLOD], shadowMapResolutions[vLight->shadowLOD] );
+
+
+	glClear( GL_DEPTH_BUFFER_BIT );
+#endif
+
+	DrawShadowMapCasters( drawSurfs, vLight, side, lightViewRenderMatrix, lightProjectionRenderMatrix );
+
 	// Restore the main target only when requested. For cubemap/directional shadow
 	// sets, the caller keeps the shadow FBO active across all faces/splits and
 	// restores the main target once after the final pass.
@@ -4318,11 +4398,326 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 		}
 	}
 	renderProgManager.Unbind();
-	
+
 	GL_State( GLS_DEFAULT );
-	
+
 	SetFragmentParm( RENDERPARM_ALPHA_TEST, vec4_zero.ToFloatPtr() );
 }
+
+#if !defined( USE_VULKAN )
+
+/*
+==============================================================================================
+
+SHADOW ATLAS
+
+A tile based GPU keeps the color, depth and stencil of the render pass in tile
+memory and writes them out only when the render pass ends. Rendering a light's
+shadow maps right before its interactions ends the main render pass for every
+shadowed light: the whole frame is written to memory, the shadow map rendered
+and the frame read back again.
+
+Instead, the shadow maps of all lights of all views of a frame are rendered
+first, into one depth atlas, in one render pass. Every side of every light is a
+square tile of the light's shadowMapResolutions size. The interaction shaders
+need no change: the atlas is a 2D array with a single layer, so the layer they
+pick from the side index is clamped to it, and each side's matrix already maps
+into that side's tile.
+
+Lights that don't fit keep the per light shadow maps.
+
+==============================================================================================
+*/
+
+idCVar r_shadowAtlasSize( "r_shadowAtlasSize", "2048", CVAR_RENDERER | CVAR_INTEGER, "size of the atlas the shadow maps of all lights are rendered into before the views, so they don't interrupt the main render pass of tile based GPUs; 0 renders every light's shadow maps right before its interactions", 0, 8192 );
+
+// guard texels around every side, the PCF taps of one side never reach the next tile
+static const int SHADOW_ATLAS_TILE_BORDER = 4;
+
+// tiles are allocated in Morton order, which packs squares of descending power of two sizes without gaps
+static int R_MortonCompactBits( int v )
+{
+	v &= 0x55555555;
+	v = ( v ^ ( v >> 1 ) ) & 0x33333333;
+	v = ( v ^ ( v >> 2 ) ) & 0x0f0f0f0f;
+	v = ( v ^ ( v >> 4 ) ) & 0x00ff00ff;
+	v = ( v ^ ( v >> 8 ) ) & 0x0000ffff;
+	return v;
+}
+
+/*
+=====================
+idRenderBackend::FindShadowAtlasLight
+=====================
+*/
+const idRenderBackend::shadowAtlasLight_t* idRenderBackend::FindShadowAtlasLight( const viewLight_t* vLight ) const
+{
+	for( int i = 0; i < numShadowAtlasLights; i++ )
+	{
+		if( shadowAtlasLights[i].vLight == vLight )
+		{
+			return &shadowAtlasLights[i];
+		}
+	}
+	return NULL;
+}
+
+/*
+=====================
+idRenderBackend::ShadowAtlasPass
+
+Runs before the first command of the frame, while nothing is bound that a
+render pass switch would have to write out.
+=====================
+*/
+void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
+{
+	numShadowAtlasLights = 0;
+
+	if( !r_useShadowMapping.GetBool() || r_skipShadows.GetBool() || r_skipInteractions.GetBool() || r_skipRender.GetBool() )
+	{
+		return;
+	}
+
+	// the debug single side mode leaves the other sides as they are, keep it on the per light path
+	if( r_shadowMapSingleSide.GetInteger() != -1 )
+	{
+		return;
+	}
+
+	int atlasSize = r_shadowAtlasSize.GetInteger();
+	if( glConfig.maxTextureSize > 0 )
+	{
+		atlasSize = Min( atlasSize, glConfig.maxTextureSize );
+	}
+	if( atlasSize < shadowMapResolutions[MAX_SHADOWMAP_RESOLUTIONS - 1] )
+	{
+		return;
+	}
+	atlasSize = idMath::FloorPowerOfTwo( atlasSize );
+
+	//-------------------------------------------------
+	// gather the lights that DrawInteractions renders shadow maps for
+	//-------------------------------------------------
+	struct atlasRequest_t
+	{
+		const viewDef_t*	view;
+		const viewLight_t*	vLight;
+		int					size;
+		int					numSides;
+	};
+	atlasRequest_t requests[MAX_SHADOW_ATLAS_LIGHTS];
+	int numRequests = 0;
+	int minSize = shadowMapResolutions[0];
+
+	for( const emptyCommand_t* cmd = cmds; cmd != NULL && numRequests < MAX_SHADOW_ATLAS_LIGHTS; cmd = ( const emptyCommand_t* )cmd->next )
+	{
+		if( cmd->commandId != RC_DRAW_VIEW_3D )
+		{
+			continue;
+		}
+
+		// DrawView skips views without surfaces, and guis don't have lights
+		const viewDef_t* view = ( ( const drawSurfsCommand_t* )cmd )->viewDef;
+		if( view == NULL || view->numDrawSurfs == 0 || view->viewEntitys == NULL )
+		{
+			continue;
+		}
+
+		for( const viewLight_t* vLight = view->viewLights; vLight != NULL && numRequests < MAX_SHADOW_ATLAS_LIGHTS; vLight = vLight->next )
+		{
+			if( vLight->lightShader->IsFogLight() || vLight->lightShader->IsBlendLight() )
+			{
+				continue;
+			}
+			if( vLight->localInteractions == NULL && vLight->globalInteractions == NULL && vLight->translucentInteractions == NULL )
+			{
+				continue;
+			}
+			// ambient lights are drawn without shadows
+			if( vLight->globalShadows == NULL || vLight->lightShader->IsAmbientLight() )
+			{
+				continue;
+			}
+
+			atlasRequest_t& request = requests[numRequests++];
+			request.view = view;
+			request.vLight = vLight;
+			request.size = shadowMapResolutions[vLight->shadowLOD];
+			if( vLight->parallel )
+			{
+				request.numSides = r_shadowMapSplits.GetInteger() + 1;
+			}
+			else if( vLight->pointLight )
+			{
+				request.numSides = 6;
+			}
+			else
+			{
+				request.numSides = 1;
+			}
+			minSize = Min( minSize, request.size );
+		}
+	}
+	if( numRequests == 0 )
+	{
+		return;
+	}
+
+	// largest sides first, so every tile lands aligned to its own size
+	for( int i = 1; i < numRequests; i++ )
+	{
+		const atlasRequest_t request = requests[i];
+		int j = i - 1;
+		for( ; j >= 0 && requests[j].size < request.size; j-- )
+		{
+			requests[j + 1] = requests[j];
+		}
+		requests[j + 1] = request;
+	}
+
+	//-------------------------------------------------
+	// place the tiles
+	//-------------------------------------------------
+	const atlasRequest_t* atlasRequests[MAX_SHADOW_ATLAS_LIGHTS];
+	const int cellsPerRow = atlasSize / minSize;
+	const int totalCells = cellsPerRow * cellsPerRow;
+	int nextCell = 0;
+	int usedWidth = 0;
+	int usedHeight = 0;
+
+	for( int i = 0; i < numRequests; i++ )
+	{
+		const atlasRequest_t& request = requests[i];
+		if( request.size > atlasSize || request.size <= SHADOW_ATLAS_TILE_BORDER * 2 )
+		{
+			continue;
+		}
+
+		const int cellsPerSide = ( request.size / minSize ) * ( request.size / minSize );
+		const int firstCell = ( ( nextCell + cellsPerSide - 1 ) / cellsPerSide ) * cellsPerSide;
+		if( firstCell + cellsPerSide * request.numSides > totalCells )
+		{
+			// no room, this light renders its shadow maps the old way
+			continue;
+		}
+		nextCell = firstCell + cellsPerSide * request.numSides;
+
+		atlasRequests[numShadowAtlasLights] = &request;
+		shadowAtlasLight_t& atlasLight = shadowAtlasLights[numShadowAtlasLights++];
+		atlasLight.vLight = request.vLight;
+		atlasLight.numSides = request.numSides;
+		atlasLight.tileSize = request.size;
+		for( int side = 0; side < request.numSides; side++ )
+		{
+			const int cell = firstCell + side * cellsPerSide;
+			atlasLight.tileX[side] = R_MortonCompactBits( cell ) * minSize;
+			atlasLight.tileY[side] = R_MortonCompactBits( cell >> 1 ) * minSize;
+			usedWidth = Max( usedWidth, atlasLight.tileX[side] + request.size );
+			usedHeight = Max( usedHeight, atlasLight.tileY[side] + request.size );
+		}
+	}
+	if( numShadowAtlasLights == 0 )
+	{
+		return;
+	}
+
+	renderLog.OpenBlock( "RB_ShadowAtlasPass" );
+
+	idImage* atlasImage = globalImages->shadowAtlasImage;
+	if( !atlasImage->IsLoaded() || atlasImage->GetUploadWidth() != atlasSize )
+	{
+		atlasImage->GenerateShadowArray( atlasSize, atlasSize, TF_LINEAR, TR_CLAMP_TO_ZERO_ALPHA, TD_SHADOW_ATLAS );
+	}
+	shadowAtlasSize = atlasSize;
+
+	// one render pass for every shadow map of the frame
+	globalFramebuffers.shadowAtlasFBO->Bind();
+	globalFramebuffers.shadowAtlasFBO->AttachImageDepthLayer( atlasImage, 0 );
+	globalFramebuffers.shadowAtlasFBO->Check();
+
+	// nothing of the previous frame is needed, so nothing gets loaded into the tiles
+	const GLenum depthAttachment[] = { GL_DEPTH_ATTACHMENT };
+	globalFramebuffers.shadowAtlasFBO->InvalidateAttachments( depthAttachment, 1 );
+
+	glBindVertexArray( glConfig.global_vao );
+
+	// depth writes must be on for the clear, the guard borders keep the cleared depth
+	GL_State( GLS_DEFAULT );
+	GL_ViewportAndScissor( 0, 0, usedWidth, usedHeight );
+	glClear( GL_DEPTH_BUFFER_BIT );
+
+	const viewDef_t* savedViewDef = viewDef;
+
+	for( int i = 0; i < numShadowAtlasLights; i++ )
+	{
+		shadowAtlasLight_t& atlasLight = shadowAtlasLights[i];
+		const viewLight_t* vLight = atlasLight.vLight;
+
+		// parallel light cascades follow the camera of their view
+		viewDef = atlasRequests[i]->view;
+
+		renderLog.OpenBlock( vLight->lightShader->GetName() );
+
+		const int innerSize = atlasLight.tileSize - SHADOW_ATLAS_TILE_BORDER * 2;
+		const float tileScale = ( float )innerSize / ( float )atlasSize;
+
+		for( int s = 0; s < atlasLight.numSides; s++ )
+		{
+			// projected lights have a single side that ShadowMapPass calls -1
+			const int side = ( vLight->parallel || vLight->pointLight ) ? s : -1;
+			const int innerX = atlasLight.tileX[s] + SHADOW_ATLAS_TILE_BORDER;
+			const int innerY = atlasLight.tileY[s] + SHADOW_ATLAS_TILE_BORDER;
+
+			BeginShadowMapSide();
+
+			idRenderMatrix lightViewRenderMatrix;
+			idRenderMatrix lightProjectionRenderMatrix;
+			SetupShadowMapMatrices( vLight, side, lightViewRenderMatrix, lightProjectionRenderMatrix );
+
+			GL_ViewportAndScissor( innerX, innerY, innerSize, innerSize );
+
+			DrawShadowMapCasters( vLight->globalShadows, vLight, side, lightViewRenderMatrix, lightProjectionRenderMatrix );
+
+			// world space -> 0..1 shadow map space, like RenderInteractions builds it
+			idRenderMatrix lightViewProjection;
+			idRenderMatrix::Multiply( lightProjectionRenderMatrix, lightViewRenderMatrix, lightViewProjection );
+
+			idRenderMatrix worldToWindow;
+			if( side < 0 )
+			{
+				// the base light projection of a projected light is 0..1 already
+				worldToWindow = lightViewProjection;
+			}
+			else
+			{
+				idRenderMatrix::Multiply( renderMatrix_clipSpaceToWindowSpace, lightViewProjection, worldToWindow );
+			}
+
+			// and 0..1 into this side's tile, before the divide by w
+			const idRenderMatrix tileMatrix(
+				tileScale, 0.0f, 0.0f, ( float )innerX / ( float )atlasSize,
+				0.0f, tileScale, 0.0f, ( float )innerY / ( float )atlasSize,
+				0.0f, 0.0f, 1.0f, 0.0f,
+				0.0f, 0.0f, 0.0f, 1.0f );
+			idRenderMatrix::Multiply( tileMatrix, worldToWindow, atlasLight.worldToShadow[s] );
+		}
+
+		renderLog.CloseBlock();
+	}
+
+	viewDef = savedViewDef;
+
+	renderProgManager.Unbind();
+	GL_State( GLS_DEFAULT );
+	SetFragmentParm( RENDERPARM_ALPHA_TEST, vec4_zero.ToFloatPtr() );
+
+	Framebuffer::Unbind();
+
+	renderLog.CloseBlock();
+}
+
+#endif // !defined( USE_VULKAN )
 
 /*
 ==============================================================================================
@@ -4383,55 +4778,65 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 		// RB: shadow mapping
 		if( r_useShadowMapping.GetBool() )
 		{
-			int	side, sideStop;
-			
-			if( vLight->parallel )
+#if !defined(USE_VULKAN)
+			// lights in the shadow atlas had their shadow maps rendered before the frame
+			const bool shadowMapsInAtlas = ( FindShadowAtlasLight( vLight ) != NULL );
+#else
+			const bool shadowMapsInAtlas = false;
+#endif
+			// ambient lights are drawn without shadows, their shadow maps were never read
+			if( !shadowMapsInAtlas && vLight->globalShadows != NULL && !lightShader->IsAmbientLight() )
 			{
-				side = 0;
-				sideStop = r_shadowMapSplits.GetInteger() + 1;
-			}
-			else if( vLight->pointLight )
-			{
-				if( r_shadowMapSingleSide.GetInteger() != -1 )
+				int	side, sideStop;
+
+				if( vLight->parallel )
 				{
-					side = r_shadowMapSingleSide.GetInteger();
-					sideStop = side + 1;
+					side = 0;
+					sideStop = r_shadowMapSplits.GetInteger() + 1;
+				}
+				else if( vLight->pointLight )
+				{
+					if( r_shadowMapSingleSide.GetInteger() != -1 )
+					{
+						side = r_shadowMapSingleSide.GetInteger();
+						sideStop = side + 1;
+					}
+					else
+					{
+						side = 0;
+						sideStop = 6;
+					}
 				}
 				else
 				{
-					side = 0;
-					sideStop = 6;
+					side = -1;
+					sideStop = 0;
 				}
-			}
-			else
-			{
-				side = -1;
-				sideStop = 0;
-			}
-			
-			for( ; side < sideStop ; side++ )
-			{
-				// Keep the shadow framebuffer bound while rendering all faces/splits for
-				// this light. Switching back to the main target after every face can
-				// force tile GPUs to flush and reload the main framebuffer repeatedly.
-				ShadowMapPass( vLight->globalShadows, vLight, side, false );
-			}
+
+				for( ; side < sideStop ; side++ )
+				{
+					// Keep the shadow framebuffer bound while rendering all faces/splits for
+					// this light. Switching back to the main target after every face can
+					// force tile GPUs to flush and reload the main framebuffer repeatedly.
+					ShadowMapPass( vLight->globalShadows, vLight, side, false );
+				}
 
 #if !defined(USE_VULKAN)
-			// Restore the main render target once, after the complete shadow set.
-			if( r_useHDR.GetBool() )
-			{
-				globalFramebuffers.hdrFBO->Bind();
-			}
-			else
-			{
-				Framebuffer::Unbind();
-			}
+				// Restore the main render target once, after the complete shadow set.
+				if( r_useHDR.GetBool() )
+				{
+					globalFramebuffers.hdrFBO->Bind();
+				}
+				else
+				{
+					Framebuffer::Unbind();
+				}
 #endif
 
-            // go back from light view to default camera view
-			ResetViewportAndScissorToDefaultCamera( _viewDef );
-			
+				// go back from light view to default camera view
+				ResetViewportAndScissorToDefaultCamera( _viewDef );
+			}
+
 			if( vLight->localInteractions != NULL )
 			{
 				renderLog.OpenBlock( "Local Light Interactions" );
@@ -5672,9 +6077,10 @@ void idRenderBackend::Tonemap( const viewDef_t* _viewDef )
 	//postProcessCommand_t* cmd = ( postProcessCommand_t* )data;
 	//const idScreenRect& viewport = cmd->viewDef->viewport;
 	//globalImages->currentRenderImage->CopyFramebuffer( viewport.x1, viewport.y1, viewport.GetWidth(), viewport.GetHeight() );
-	
-	Framebuffer::Unbind();
-	
+
+	// the full screen quad below replaces every pixel of the back buffer
+	Framebuffer::InvalidateDefaultFramebufferForOverwrite();
+
 	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS | GLS_CULL_TWOSIDED );
 	
 	int screenWidth = renderSystem->GetWidth();
@@ -5759,6 +6165,8 @@ void idRenderBackend::Tonemap( const viewDef_t* _viewDef )
 
 void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 {
+	bloomResultImage = NULL;
+
 	if( _viewDef->is2Dgui || !r_useHDR.GetBool() )
 	{
 		return;
@@ -5882,22 +6290,46 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 
 		DrawElementsWithCounters( &unitSquareSurface );
 	}
-	
+
+	// BloomComposite adds it to the back buffer after the tonemap
+	bloomResultImage = globalImages->bloomRenderImage[j % 2];
+
+	renderProgManager.Unbind();
+
+	GL_State( GLS_DEFAULT );
+}
+
+/*
+==================
+idRenderBackend::BloomComposite
+
+Adds the glare Bloom blurred to the back buffer
+==================
+*/
+void idRenderBackend::BloomComposite( const viewDef_t* _viewDef )
+{
+	if( bloomResultImage == NULL )
+	{
+		return;
+	}
+
 	// add filtered glare back to main context
 	Framebuffer::Unbind();
-	
+
 	ResetViewportAndScissorToDefaultCamera( _viewDef );
-	
+
 	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS );
-	
+
 	renderProgManager.BindShader_Screen();
-	
-	globalImages->bloomRenderImage[j % 2]->Bind();
-	
+
+	GL_SelectTexture( 0 );
+	bloomResultImage->Bind();
+	bloomResultImage = NULL;
+
 	DrawElementsWithCounters( &unitSquareSurface );
-	
+
 	renderProgManager.Unbind();
-	
+
 	GL_State( GLS_DEFAULT );
 }
 
@@ -6535,6 +6967,13 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	g_frameFences.BeginFrame();
 	Framebuffer::BeginFrame();
 
+#if !defined( USE_VULKAN )
+	// viewLight_t memory is reused from frame to frame, never match last frame's atlas
+	numShadowAtlasLights = 0;
+	hdrTargetClearedThisFrame = false;
+	skipBackBufferClear = false;
+#endif
+
 	if( cmds->commandId == RC_NOP && !cmds->next )
 	{
 		Framebuffer::EndFrame();
@@ -6556,7 +6995,32 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	
 	// needed for editor rendering
 	GL_SetDefaultState();
-	
+
+#if !defined( USE_VULKAN )
+	// all shadow maps of the frame, before anything is drawn into the views' targets
+	ShadowAtlasPass( cmds );
+
+	// the tonemap of a HDR view draws every pixel of the back buffer, see SetBuffer
+	if( r_useHDR.GetBool() )
+	{
+		for( const emptyCommand_t* cmd = cmds; cmd != NULL; cmd = ( const emptyCommand_t* )cmd->next )
+		{
+			if( cmd->commandId != RC_DRAW_VIEW_3D )
+			{
+				continue;
+			}
+
+			// the views DrawView renders and DrawViewInternal tonemaps
+			const viewDef_t* view = ( ( const drawSurfsCommand_t* )cmd )->viewDef;
+			if( view != NULL && view->numDrawSurfs > 0 && !view->is2Dgui && !( r_skipRender.GetBool() && view->viewEntitys != NULL ) )
+			{
+				skipBackBufferClear = true;
+				break;
+			}
+		}
+	}
+#endif
+
 	for( ; cmds != NULL; cmds = ( const emptyCommand_t* )cmds->next )
 	{
 		switch( cmds->commandId )
@@ -6660,10 +7124,10 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 	
 	// RB begin
 	bool useHDR = r_useHDR.GetBool() && !_viewDef->is2Dgui;
-	
-	// Clear the depth buffer and clear the stencil to 128 for stencil shadows as well as gui masking
-	GL_Clear( false, true, true, STENCIL_SHADOW_TEST_VALUE, 0.0f, 0.0f, 0.0f, 0.0f, useHDR );
-	
+
+#if !defined(USE_VULKAN)
+	// Bind the target first and clear the whole of it in one go: a tile based GPU starts
+	// the render pass from the clear values then, instead of reading the target back in.
 	if( useHDR )
 	{
 		globalFramebuffers.hdrFBO->Bind();
@@ -6672,6 +7136,33 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 	{
 		Framebuffer::Unbind();
 	}
+
+	// SetBuffer only clears the back buffer, the first HDR view of the frame clears the HDR color.
+	// Later views keep it, a mirror's subview leaves its image there.
+	const bool clearColor = useHDR && !hdrTargetClearedThisFrame;
+	if( useHDR )
+	{
+		hdrTargetClearedThisFrame = true;
+	}
+
+	// Clear the depth buffer and clear the stencil to 128 for stencil shadows as well as gui masking.
+	// No view uses the depth or stencil of another view, so the whole target can be cleared.
+	GL_Scissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
+	GL_Clear( clearColor, true, true, STENCIL_SHADOW_TEST_VALUE, 0.0f, 0.0f, 0.0f, 1.0f, false );
+	ResetViewportAndScissorToDefaultCamera( _viewDef );
+#else
+	// Clear the depth buffer and clear the stencil to 128 for stencil shadows as well as gui masking
+	GL_Clear( false, true, true, STENCIL_SHADOW_TEST_VALUE, 0.0f, 0.0f, 0.0f, 0.0f, useHDR );
+
+	if( useHDR )
+	{
+		globalFramebuffers.hdrFBO->Bind();
+	}
+	else
+	{
+		Framebuffer::Unbind();
+	}
+#endif
 	// RB end
 	
 	//GL_CheckErrors();
@@ -6845,6 +7336,12 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 	// RB: convert back from HDR to LDR range
 	if( useHDR )
 	{
+		// Nothing reads the depth and stencil of the view once it is drawn,
+		// don't let the end of the render pass write them out to memory.
+		globalFramebuffers.hdrFBO->Bind();
+		const GLenum hdrDepthStencilAttachment[] = { GL_DEPTH_STENCIL_ATTACHMENT };
+		globalFramebuffers.hdrFBO->InvalidateAttachments( hdrDepthStencilAttachment, 1 );
+
 		/*
 		int x = backEnd.viewDef->viewport.x1;
 		int y = backEnd.viewDef->viewport.y1;
@@ -6914,13 +7411,18 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 		}
 		
 		CalculateAutomaticExposure();
-		
+
+		// The glare is blurred in its own small targets before the tonemap, so the
+		// tonemap and adding the glare share one render pass on the back buffer.
+		// Adding it after the tonemap the old way wrote the back buffer out and read it back.
+		Bloom( _viewDef );
+
 		Tonemap( _viewDef );
+
+		BloomComposite( _viewDef );
 	}
-	
-	Bloom( _viewDef );
 #endif
-	
+
 	renderLog.CloseBlock();
 }
 

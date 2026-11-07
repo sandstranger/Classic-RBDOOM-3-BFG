@@ -295,6 +295,13 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_AMBIENT_LIGHTING_SKINNED );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_AmbientLightingInstanced()
+	{
+		BindShader_Builtin( BUILTIN_AMBIENT_LIGHTING_INSTANCED );
+	}
+#endif
 	
 	void	BindShader_SmallGeometryBuffer()
 	{
@@ -305,6 +312,13 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_SMALL_GEOMETRY_BUFFER_SKINNED );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_SmallGeometryBufferInstanced()
+	{
+		BindShader_Builtin( BUILTIN_SMALL_GEOMETRY_BUFFER_INSTANCED );
+	}
+#endif
 	// RB end
 	
 	void	BindShader_Texture( )
@@ -316,6 +330,13 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_TEXTURE_VERTEXCOLOR );
 	};
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_TextureVertexColorInstanced()
+	{
+		BindShader_Builtin( BUILTIN_TEXTURE_VERTEXCOLOR_INSTANCED );
+	};
+#endif
 	
 	void	BindShader_TextureVertexColor_sRGB()
 	{
@@ -336,6 +357,13 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_INTERACTION );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_InteractionInstanced()
+	{
+		BindShader_Builtin( BUILTIN_INTERACTION_INSTANCED );
+	}
+#endif
 	
 	void	BindShader_InteractionSkinned()
 	{
@@ -346,6 +374,13 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_INTERACTION_AMBIENT );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_InteractionAmbientInstanced()
+	{
+		BindShader_Builtin( BUILTIN_INTERACTION_AMBIENT_INSTANCED );
+	}
+#endif
 	
 	void	BindShader_InteractionAmbientSkinned()
 	{
@@ -382,6 +417,23 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_INTERACTION_SHADOW_MAPPING_PARALLEL_SKINNED );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_Interaction_ShadowMapping_Spot_Instanced()
+	{
+		BindShader_Builtin( BUILTIN_INTERACTION_SHADOW_MAPPING_SPOT_INSTANCED );
+	}
+
+	void	BindShader_Interaction_ShadowMapping_Point_Instanced()
+	{
+		BindShader_Builtin( BUILTIN_INTERACTION_SHADOW_MAPPING_POINT_INSTANCED );
+	}
+
+	void	BindShader_Interaction_ShadowMapping_Parallel_Instanced()
+	{
+		BindShader_Builtin( BUILTIN_INTERACTION_SHADOW_MAPPING_PARALLEL_INSTANCED );
+	}
+#endif
 	// RB end
 	
 	void	BindShader_Environment()
@@ -413,6 +465,13 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_DEPTH_SKINNED );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_DepthInstanced()
+	{
+		BindShader_Builtin( BUILTIN_DEPTH_INSTANCED );
+	}
+#endif
 	
 	void	BindShader_Shadow()
 	{
@@ -423,6 +482,13 @@ public:
 		// RB end
 	}
 	
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_ShadowInstanced()
+	{
+		BindShader_Builtin( BUILTIN_SHADOW_INSTANCED );
+	}
+#endif
+
 	void	BindShader_ShadowSkinned()
 	{
 		// RB: no FFP fragment rendering anymore
@@ -446,11 +512,25 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_BLENDLIGHT );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_BlendLightInstanced()
+	{
+		BindShader_Builtin( BUILTIN_BLENDLIGHT_INSTANCED );
+	}
+#endif
 	
 	void	BindShader_Fog()
 	{
 		BindShader_Builtin( BUILTIN_FOG );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_FogInstanced()
+	{
+		BindShader_Builtin( BUILTIN_FOG_INSTANCED );
+	}
+#endif
 	
 	void	BindShader_FogSkinned()
 	{
@@ -650,8 +730,22 @@ public:
 #if 0
 	static const char* FindEmbeddedSourceShader( const char* name );
 #endif
-	
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	// False when the renderprogs on the device predate USE_GPU_INSTANCING. The "_instanced"
+	// programs are plain ones then and would draw every instance of a batch on the first one.
+	bool		GPUInstancingShadersReady() const
+	{
+		return gpuInstancingShadersReady;
+	}
+#endif
+
 private:
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void		CheckGPUInstancingShaders();
+	bool		gpuInstancingShadersReady = false;
+#endif
+
 	void		LoadShader( int index, rpStage_t stage );
 	
 	idStr		StripDeadCode( const idStr& in, const char* name, const idStrList& compileMacros, bool builtin );
@@ -668,15 +762,28 @@ private:
 		BUILTIN_AMBIENT_LIGHTING_SKINNED,
 		BUILTIN_SMALL_GEOMETRY_BUFFER,
 		BUILTIN_SMALL_GEOMETRY_BUFFER_SKINNED,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_AMBIENT_LIGHTING_INSTANCED,
+		BUILTIN_SMALL_GEOMETRY_BUFFER_INSTANCED,
+#endif
 		// RB end
 		BUILTIN_TEXTURED,
 		BUILTIN_TEXTURE_VERTEXCOLOR,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_TEXTURE_VERTEXCOLOR_INSTANCED,
+#endif
 		BUILTIN_TEXTURE_VERTEXCOLOR_SRGB,
 		BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED,
 		BUILTIN_TEXTURE_TEXGEN_VERTEXCOLOR,
 		BUILTIN_INTERACTION,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_INTERACTION_INSTANCED,
+#endif
 		BUILTIN_INTERACTION_SKINNED,
 		BUILTIN_INTERACTION_AMBIENT,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_INTERACTION_AMBIENT_INSTANCED,
+#endif
 		BUILTIN_INTERACTION_AMBIENT_SKINNED,
 		// RB begin
 		BUILTIN_INTERACTION_SHADOW_MAPPING_SPOT,
@@ -685,6 +792,11 @@ private:
 		BUILTIN_INTERACTION_SHADOW_MAPPING_POINT_SKINNED,
 		BUILTIN_INTERACTION_SHADOW_MAPPING_PARALLEL,
 		BUILTIN_INTERACTION_SHADOW_MAPPING_PARALLEL_SKINNED,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_INTERACTION_SHADOW_MAPPING_SPOT_INSTANCED,
+		BUILTIN_INTERACTION_SHADOW_MAPPING_POINT_INSTANCED,
+		BUILTIN_INTERACTION_SHADOW_MAPPING_PARALLEL_INSTANCED,
+#endif
 		// RB end
 		BUILTIN_ENVIRONMENT,
 		BUILTIN_ENVIRONMENT_SKINNED,
@@ -693,13 +805,25 @@ private:
 		
 		BUILTIN_DEPTH,
 		BUILTIN_DEPTH_SKINNED,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_DEPTH_INSTANCED,
+#endif
 		BUILTIN_SHADOW,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_SHADOW_INSTANCED,
+#endif
 		BUILTIN_SHADOW_SKINNED,
 		BUILTIN_SHADOW_DEBUG,
 		BUILTIN_SHADOW_DEBUG_SKINNED,
 		
 		BUILTIN_BLENDLIGHT,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_BLENDLIGHT_INSTANCED,
+#endif
 		BUILTIN_FOG,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_FOG_INSTANCED,
+#endif
 		BUILTIN_FOG_SKINNED,
 		BUILTIN_SKYBOX,
 		BUILTIN_WOBBLESKY,
@@ -754,6 +878,7 @@ private:
 		BRIGHTPASS,
 		HDR_DEBUG,
 		USE_SRGB,
+		USE_GPU_INSTANCING,
 		
 		MAX_SHADER_MACRO_NAMES,
 	};
@@ -859,8 +984,9 @@ private:
 			vertexShaderIndex( -1 ),
 			fragmentShaderIndex( -1 ),
 			textureLodBiasLocation( -1 ),
-			textureLodBias( 0.0f ) {}
-	
+			textureLodBias( 0.0f ),
+			committedUniformSerial( 0 ) {}
+
 		idStr				name;
 		uint				progId;
 		bool				usesJoints;
@@ -871,17 +997,25 @@ private:
 		int					fragmentShaderIndex;
 		int					textureLodBiasLocation;	// TEXTURE_LOD_BIAS_UNIFORM_NAME, -1 if the program has none
 		float				textureLodBias;			// value last set on it
+		uint64				committedUniformSerial;	// uniformSerial when CommitUniforms last uploaded, 0 = never
 	};
 #endif
-	
+
 	void							LoadShader( shader_t& shader );
-	
+
 	int											current;
 	idList<renderProg_t, TAG_RENDER>			renderProgs;
 	idList<shader_t, TAG_RENDER>				shaders;
-	
+
 	idStaticList < idVec4, RENDERPARM_TOTAL >	uniforms;
-	
+
+#if !defined( USE_VULKAN )
+	// GL keeps the uniforms of every program: CommitUniforms uploads a program's
+	// parms only when one of them changed after the program's last upload
+	uint64										uniformSerial;
+	uint64										uniformChangeSerial[RENDERPARM_TOTAL];
+#endif
+
 #if defined( USE_VULKAN )
 	int					counter;
 	int					currentData;

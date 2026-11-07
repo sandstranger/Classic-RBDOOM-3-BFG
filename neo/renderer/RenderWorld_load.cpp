@@ -129,7 +129,7 @@ idRenderModel* idRenderWorldLocal::ReadBinaryModel( idFile* fileIn )
 	model->InitEmpty( name );
 	if( model->LoadBinaryModel( fileIn, mapTimeStamp ) )
 	{
-		return model;
+return model;
 	}
 	return NULL;
 }
@@ -1067,6 +1067,25 @@ idRenderWorldLocal::AddWorldModelEntities
 */
 void idRenderWorldLocal::AddWorldModelEntities()
 {
+	// Create map-wide, cached batches from matching opaque surfaces across BSP areas.
+	idList<idRenderModel*, TAG_MODEL> staticBatches;
+	R_BuildWorldStaticBatches( localModels, mapName.c_str(), staticBatches );
+	for( int batchIndex = 0; batchIndex < staticBatches.Num(); ++batchIndex )
+	{
+		renderEntity_t parms;
+		memset( &parms, 0, sizeof( parms ) );
+		parms.hModel = staticBatches[batchIndex];
+		parms.bounds = staticBatches[batchIndex]->Bounds();
+		parms.axis[0][0] = 1.0f;
+		parms.axis[1][1] = 1.0f;
+		parms.axis[2][2] = 1.0f;
+		parms.shaderParms[0] = 1.0f;
+		parms.shaderParms[1] = 1.0f;
+		parms.shaderParms[2] = 1.0f;
+		parms.shaderParms[3] = 1.0f;
+		AddEntityDef( &parms );
+	}
+
 	// add the world model for each portal area
 	// we can't just call AddEntityDef, because that would place the references
 	// based on the bounding box, rather than explicitly into the correct area

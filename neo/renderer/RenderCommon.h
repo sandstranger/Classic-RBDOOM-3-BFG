@@ -194,6 +194,12 @@ struct drawSurf_t
 	idScreenRect			scissorRect;		// for scissor clipping, local inside renderView viewport
 	int						renderZFail;
 	volatile shadowVolumeState_t shadowVolumeState;
+	int						shadowMapCulledSides;	// point light shadow map sides (bit per cube side) this caster can't reach, 0 = draw it on all of them
+
+	// a CPU copy of the indexes behind indexCache for static world geometry, NULL otherwise;
+	// the back end merges the draws of these surfaces (see R_WorldMergePass)
+	const triIndex_t*		staticIndexes;
+	int						mergedGroup;			// set by the back end: 0 = drawn on its own
 };
 
 // areas have references to hold all the lights and entities in them
@@ -445,7 +451,10 @@ struct viewEntity_t
 	
 	bool					weaponDepthHack;
 	float					modelDepthHack;
-	
+
+	// an _area model of the world: identity transform, so the surfaces of all of them share one MVP
+	bool					staticWorldArea;
+
 	float					modelMatrix[16];		// local coords to global coords
 	float					modelViewMatrix[16];	// local coords to eye coords
 	

@@ -121,6 +121,14 @@ struct debugPolygon_t
 	int			lifeTime;
 };
 
+struct gpuInstanceData_t
+{
+	float mvp[16];
+	float modelView[16];
+	float localViewOrigin[4];
+	float localLightOrigin[4];
+};
+
 void RB_SetMVP( const idRenderMatrix& mvp );
 void RB_SetVertexColorParms( stageVertexColor_t svc );
 //void RB_GetShaderTextureMatrix( const float* shaderRegisters, const textureStage_t* texture, float matrix[16] );
@@ -227,9 +235,16 @@ struct glContext_t
 
 	tmu_t		tmu[ MAX_MULTITEXTURE_UNITS ];
 	uint64		stencilOperations[ STENCIL_FACE_NUM ];
+	int			activeTextureUnit;		// the unit glActiveTexture selected last, -1 when unknown
 };
 
 extern glContext_t glcontext;
+
+// idImage::Bind skips binding a texture the unit has bound already. Texture binds and
+// deletes outside of it go through these, they drop what Bind knows about the units.
+void GL_InvalidateTextureBindings();
+void R_DirectBindTexture( unsigned int target, unsigned int texture );
+void R_DirectDeleteTextures( int count, const unsigned int* textures );
 
 #endif
 
@@ -252,6 +267,10 @@ public:
 	
 	void				Init();
 	void				Shutdown();
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    // Submit pending MDI commands before any draw state changes.
+    void            FlushMultiDrawBatch();
+#endif
 	
 	void				ExecuteBackEndCommands( const emptyCommand_t* cmds );
 	void				StereoRenderExecuteBackEndCommands( const emptyCommand_t* const allCmds );
@@ -263,8 +282,17 @@ public:
 private:
 	void				DrawFlickerBox();
 	
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void				DrawElementsWithCounters( const drawSurf_t* surf, const gpuInstanceData_t* instances = NULL, int instanceCount = 1 );
+#else
 	void				DrawElementsWithCounters( const drawSurf_t* surf );
+#endif
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void				DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass,
+					const gpuInstanceData_t* instances = NULL, int instanceCount = 1 );
+#else
 	void				DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass );
+#endif
 	
 	void				SetColorMappings();
 	void				ResizeImages();
@@ -292,7 +320,7 @@ private:
 			idVec4 matrix[2], float color[4] );
 			
 	void				DrawInteractions( const viewDef_t* _viewDef );
-	void				DrawSingleInteraction( drawInteraction_t* din );
+	void				DrawSingleInteraction( drawInteraction_t* din, const gpuInstanceData_t* instances = NULL, int instanceCount = 1 );
 	int					DrawShaderPasses( const drawSurf_t* const* const drawSurfs, const int numDrawSurfs,
 										  const float guiStereoScreenOffset, const int stereoEye );
 										  
@@ -301,7 +329,51 @@ private:
 	// RB
 	void				AmbientPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs, bool fillGbuffer );
 	void				ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side, bool restoreFramebuffer = true );
-	
+
+	// shadow map helpers shared by ShadowMapPass and the shadow atlas
+	void				SetupShadowMapMatrices( const viewLight_t* vLight, int side, idRenderMatrix& lightViewRenderMatrix, idRenderMatrix& lightProjectionRenderMatrix );
+	void				BeginShadowMapSide();
+	void				DrawShadowMapCasters( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side,
+											  const idRenderMatrix& lightViewRenderMatrix, const idRenderMatrix& lightProjectionRenderMatrix );
+
+#if !defined( USE_VULKAN )
+	// tile based GPUs: render the shadow maps of all lights of the frame into one atlas
+	// before any view, so that shadow maps never interrupt the main render pass
+	struct shadowAtlasLight_t
+	{
+		const viewLight_t*	vLight;
+		int					numSides;
+		int					tileSize;			// texels of one side, including the guard border
+		int					tileX[6];
+		int					tileY[6];
+		idRenderMatrix		worldToShadow[6];	// world space -> atlas texture coordinates and depth
+	};
+
+	static const int	MAX_SHADOW_ATLAS_LIGHTS = 64;
+
+	void				ShadowAtlasPass( const emptyCommand_t* cmds );
+	const shadowAtlasLight_t* FindShadowAtlasLight( const viewLight_t* vLight ) const;
+
+	shadowAtlasLight_t	shadowAtlasLights[MAX_SHADOW_ATLAS_LIGHTS];
+	int					numShadowAtlasLights;
+	int					shadowAtlasSize;
+	bool				hdrTargetClearedThisFrame;	// the first HDR view of a frame clears the HDR color
+	bool				skipBackBufferClear;		// a HDR view's tonemap replaces the whole back buffer this frame
+#endif
+
+#if defined(ANDROID) && !defined( USE_VULKAN )
+	// world surfaces of several areas drawn with one call, see WorldMergePass
+	void				WorldMergePass( const emptyCommand_t* cmds );
+	void				DrawWorldMergeRange( int firstIndex, int numIndexes );
+	void				BeginWorldMergeGroup( const drawSurf_t* surf );
+
+	// while set, DrawElementsWithCounters draws the merged group of worldMergeSurf in place of worldMergeSurf
+	const drawSurf_t*	worldMergeSurf;
+	int					worldMergeFirstIndex;
+	int					worldMergeNumIndexes;
+	unsigned int		worldMergeIndexBuffer;		// this frame's 32 bit indexes into the static vertex buffer
+#endif
+
 	void				StencilShadowPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight );
 	void				StencilSelectLight( const viewLight_t* vLight );
 	
@@ -311,6 +383,8 @@ private:
 	void				CalculateAutomaticExposure();
 	void				Tonemap( const viewDef_t* viewDef );
 	void				Bloom( const viewDef_t* viewDef );
+	void				BloomComposite( const viewDef_t* viewDef );
+	idImage*			bloomResultImage;		// Bloom's blurred glare, added by BloomComposite
 	
 	void				DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef );
 	void				DrawScreenSpaceGlobalIllumination( const viewDef_t* _viewDef );
@@ -333,6 +407,10 @@ private:
 	void				GL_SeparateStencil( stencilFace_t face, uint64 stencilBits );
 	
 	void				GL_SelectTexture( int unit );
+public:
+	// glActiveTexture for the unit GL_SelectTexture picked, for texture calls of its own after a Bind
+	void				GL_ActivateTextureUnit();
+private:
 //	void				GL_BindTexture( idImage* image );
 
 //	void				GL_CopyFrameBuffer( idImage* image, int x, int y, int imageWidth, int imageHeight );
@@ -441,6 +519,9 @@ public:
 	drawSurf_t			unitSquareSurface;
 	drawSurf_t			zeroOneCubeSurface;
 	drawSurf_t			testImageSurface;
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	unsigned int		gpuInstanceBuffer = 0;
+#endif
 	
 private:
 	uint64				glStateBits;

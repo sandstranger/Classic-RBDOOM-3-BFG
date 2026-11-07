@@ -43,6 +43,8 @@ If you have questions concerning this license or the applicable additional terms
 #if defined(ANDROID) && !defined(USE_VULKAN)
 extern void RB_InitExposureReadback();
 extern void RB_ShutdownExposureReadback();
+extern void RB_ShutdownWorldMerge();
+static void R_ShutdownInstanceStream();
 #endif
 #if ANDROID
 
@@ -65,6 +67,12 @@ idCVar stereoRender_warpParmZ( "stereoRender_warpParmZ", "0", CVAR_RENDERER | CV
 idCVar stereoRender_warpParmW( "stereoRender_warpParmW", "0", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "development parm" );
 idCVar stereoRender_warpTargetFraction( "stereoRender_warpTargetFraction", "1.0", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "fraction of half-width the through-lens view covers" );
 idCVar r_useOpenGLDSA("r_useOpenGLDSA", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "Enable/Disable OpenGL DSA. -1 = Enable based on system detection, 0 = Force to Disable, 1 = Force to Enable", -1, 1);
+#if defined(ANDROID) && !defined(USE_VULKAN)
+idCVar r_useMultiDrawIndirect("r_useMultiDrawIndirect", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL,
+    "Batch compatible GLES indexed draws with GL_EXT_multi_draw_indirect");
+idCVar r_showMultiDrawIndirectStats("r_showMultiDrawIndirectStats", "0", CVAR_RENDERER | CVAR_BOOL,
+    "Print GLES multi-draw-indirect batching statistics each frame");
+#endif
 
 //#ifdef _DEBUG
 //idCVar r_showSwapBuffers("r_showSwapBuffers", "1", CVAR_BOOL, "Show timings from GL_BlockingSwapBuffers");
@@ -87,6 +95,32 @@ glContext_t glcontext;
 static int		swapIndex;		// 0 or 1 into renderSync
 static GLsync	renderSync[2];
 static uintptr_t currentVertOffset = ~0;
+#if defined(ANDROID) && !defined(USE_VULKAN)
+struct drawElementsIndirectCommand_t
+{
+    GLuint count;
+    GLuint instanceCount;
+    GLuint firstIndex;
+    GLint baseVertex;
+    GLuint baseInstance;
+};
+static std::vector<drawElementsIndirectCommand_t> g_multiDrawCommands;
+static GLuint g_multiDrawIndirectBuffer = 0;
+static GLuint g_multiDrawVertexBuffer = 0;
+static GLuint g_multiDrawIndexBuffer = 0;
+static bool g_multiDrawIndirectAvailable = false;
+static int g_multiDrawIndirectBatchCount = 0;
+static int g_multiDrawIndirectDrawCallsSaved = 0;
+static int g_multiDrawIndirectSubmittedCommands = 0;
+static const size_t MAX_GLES_MDI_BATCH_COMMANDS = 256;
+enum multiDrawLayoutKey_t
+{
+    MDI_LAYOUT_NONE = 0,
+    MDI_LAYOUT_DRAW_VERT,
+    MDI_LAYOUT_SHADOW_VERT
+};
+static multiDrawLayoutKey_t g_multiDrawBatchLayout = MDI_LAYOUT_NONE;
+#endif
 static bool gEnableGLSynchronization = false;
 
 #if ANDROID
@@ -421,6 +455,11 @@ static void R_CheckPortableExtensions()
     glConfig.uniformBufferAvailable = true;
     glConfig.gpuSkinningAvailable = true;
     glConfig.fragmentProgramAvailable = true;
+#if !defined(USE_VULKAN)
+    // GLAD defines generated symbols even for extensions the active driver lacks.
+    g_multiDrawIndirectAvailable = false;
+    R_PrintExtensionStatus(g_multiDrawIndirectAvailable, "GL_EXT_multi_draw_indirect");
+#endif
 #endif
 
 	// GL_ARB_seamless_cube_map
@@ -797,19 +836,245 @@ void idRenderBackend::Shutdown()
 {
 	cmdBufferPool.Shutdown();
 #if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+    if (gpuInstanceBuffer != 0)
+    {
+        GLuint buffer = (GLuint)gpuInstanceBuffer;
+        glDeleteBuffers(1, &buffer);
+        gpuInstanceBuffer = 0;
+    }
+    if (g_multiDrawIndirectBuffer != 0)
+    {
+        glDeleteBuffers(1, &g_multiDrawIndirectBuffer);
+        g_multiDrawIndirectBuffer = 0;
+    }
+    g_multiDrawIndirectAvailable = false;
+    g_multiDrawCommands.clear();
 	// Delete PBOs and fences while the GLES context is still alive.
 	RB_ShutdownExposureReadback();
+	// the same for the streaming rings, they must not outlive the context in static destructors
+	RB_ShutdownWorldMerge();
+	R_ShutdownInstanceStream();
 #endif
 	GLimp_Shutdown();
 }
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+/*
+=============================
+idRenderBackend::FlushMultiDrawBatch
+=============================
+*/
+void idRenderBackend::FlushMultiDrawBatch()
+{
+    const size_t commandCount = g_multiDrawCommands.size();
+    if (commandCount == 0)
+    {
+        return;
+    }
+
+    if (commandCount == 1 || !g_multiDrawIndirectAvailable
+        || glMultiDrawElementsIndirectEXT == NULL)
+    {
+        // A one-command batch is cheaper as a normal draw; retain the safe fallback.
+        for (size_t i = 0; i < commandCount; ++i)
+        {
+            const drawElementsIndirectCommand_t& command = g_multiDrawCommands[i];
+            glDrawElementsBaseVertex(GL_TRIANGLES, (GLsizei)command.count, GL_INDEX_TYPE,
+                (const void*)(uintptr_t)(command.firstIndex * sizeof(triIndex_t)), command.baseVertex);
+        }
+    }
+    else
+    {
+        if (g_multiDrawIndirectBuffer == 0)
+        {
+            glGenBuffers(1, &g_multiDrawIndirectBuffer);
+        }
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, g_multiDrawIndirectBuffer);
+        // Orphan old storage so queued commands don't overwrite data the GPU is reading.
+        glBufferData(GL_DRAW_INDIRECT_BUFFER,
+            (GLsizeiptr)(commandCount * sizeof(drawElementsIndirectCommand_t)),
+            g_multiDrawCommands.data(), GL_STREAM_DRAW);
+        glMultiDrawElementsIndirectEXT(GL_TRIANGLES, GL_INDEX_TYPE, NULL,
+            (GLsizei)commandCount, 0);
+
+        ++g_multiDrawIndirectBatchCount;
+        g_multiDrawIndirectDrawCallsSaved += (int)commandCount - 1;
+        g_multiDrawIndirectSubmittedCommands += (int)commandCount;
+    }
+
+    g_multiDrawCommands.clear();
+    g_multiDrawVertexBuffer = 0;
+    g_multiDrawIndexBuffer = 0;
+    g_multiDrawBatchLayout = MDI_LAYOUT_NONE;
+}
+#endif
 
 /*
 =============
 idRenderBackend::DrawElementsWithCounters
 =============
 */
-void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
+#if defined(ANDROID) && !defined(USE_VULKAN)
+/*
+=============
+idRenderBackend::DrawWorldMergeRange
+
+Draws merged world surfaces: 32 bit indexes from this frame's merge buffer
+into the static vertex buffer, with whatever program and state is set up
+=============
+*/
+void idRenderBackend::DrawWorldMergeRange( int firstIndex, int numIndexes )
 {
+	if( numIndexes <= 0 || worldMergeIndexBuffer == 0 )
+	{
+		return;
+	}
+
+	FlushMultiDrawBatch();
+
+	idVertexBuffer* vertexBuffer = &vertexCache.staticData.vertexBuffer;
+
+	renderProgManager.CommitUniforms( glStateBits );
+
+	if( ( GLintptr )currentIndexBuffer != ( GLintptr )worldMergeIndexBuffer || !r_useStateCaching.GetBool() )
+	{
+		glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, worldMergeIndexBuffer );
+		currentIndexBuffer = worldMergeIndexBuffer;
+	}
+
+	// the indexes count from the first vertex of the static buffer
+	if( ( vertexLayout != LAYOUT_DRAW_VERT ) || ( ( GLintptr )currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) ||
+			!r_useStateCaching.GetBool() || ( !isGLES32Version() && currentVertOffset != 0 ) )
+	{
+		glBindBuffer( GL_ARRAY_BUFFER, ( GLintptr )vertexBuffer->GetAPIObject() );
+		currentVertexBuffer = ( GLintptr )vertexBuffer->GetAPIObject();
+
+		glEnableVertexAttribArray( PC_ATTRIB_INDEX_VERTEX );
+		glEnableVertexAttribArray( PC_ATTRIB_INDEX_NORMAL );
+		glEnableVertexAttribArray( PC_ATTRIB_INDEX_COLOR );
+		glEnableVertexAttribArray( PC_ATTRIB_INDEX_COLOR2 );
+		glEnableVertexAttribArray( PC_ATTRIB_INDEX_ST );
+		glEnableVertexAttribArray( PC_ATTRIB_INDEX_TANGENT );
+
+		glVertexAttribPointer( PC_ATTRIB_INDEX_VERTEX, 3, GL_FLOAT, GL_FALSE, sizeof( idDrawVert ), ( void* )( DRAWVERT_XYZ_OFFSET ) );
+		glVertexAttribPointer( PC_ATTRIB_INDEX_NORMAL, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_NORMAL_OFFSET ) );
+		glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_COLOR_OFFSET ) );
+		glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_COLOR2_OFFSET ) );
+		glVertexAttribPointer( PC_ATTRIB_INDEX_ST, 2, GL_HALF_FLOAT, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_ST_OFFSET ) );
+		glVertexAttribPointer( PC_ATTRIB_INDEX_TANGENT, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_TANGENT_OFFSET ) );
+
+		vertexLayout = LAYOUT_DRAW_VERT;
+		if( !isGLES32Version() )
+		{
+			currentVertOffset = 0;
+		}
+	}
+
+	glDrawElements( GL_TRIANGLES, numIndexes, GL_UNSIGNED_INT, ( const void* )( ( uintptr_t )firstIndex * sizeof( uint32 ) ) );
+
+	pc.c_drawElements++;
+	pc.c_drawIndexes += numIndexes;
+}
+
+/*
+=============
+R_StreamInstanceData
+
+Per instance data goes into a persistently mapped ring for the frame, where the
+GPU is done with the slot, instead of a new glBufferData allocation per draw.
+=============
+*/
+static idGLBufferRing*	s_instanceRing = NULL;		// destroyed in idRenderBackend::Shutdown
+static int				s_instanceRingSlot = -1;
+static GLsizeiptr		s_instanceRingUsed = 0;
+static const GLsizeiptr	INSTANCE_RING_SIZE = 1024 * 1024;
+
+static bool R_StreamInstanceData( const void* data, GLsizeiptr bytes, GLuint& buffer, GLintptr& offset )
+{
+	if( !R_HasBufferStorage() || bytes > INSTANCE_RING_SIZE )
+	{
+		return false;
+	}
+	if( s_instanceRing == NULL )
+	{
+		s_instanceRing = new idGLBufferRing;
+		if( !s_instanceRing->Create( GL_COPY_WRITE_BUFFER, INSTANCE_RING_SIZE, true ) || !s_instanceRing->IsPersistent() )
+		{
+			s_instanceRing->Destroy();
+			// keep the object, so the check above fails fast from now on
+			return false;
+		}
+	}
+	if( !s_instanceRing->IsPersistent() )
+	{
+		return false;
+	}
+
+	const int slot = g_frameFences.CurrentSlot();
+	if( slot != s_instanceRingSlot )
+	{
+		s_instanceRingSlot = slot;
+		s_instanceRingUsed = 0;
+	}
+	if( s_instanceRingUsed + bytes > INSTANCE_RING_SIZE )
+	{
+		return false;
+	}
+
+	byte* mapped = ( byte* )s_instanceRing->PersistentPointer( slot );
+	if( mapped == NULL )
+	{
+		return false;
+	}
+	memcpy( mapped + s_instanceRingUsed, data, bytes );
+	s_instanceRing->FlushRange( slot, s_instanceRingUsed, bytes );
+
+	buffer = s_instanceRing->Buffer( slot );
+	offset = s_instanceRingUsed;
+	s_instanceRingUsed += ( bytes + 255 ) & ~( GLsizeiptr )255;
+	return true;
+}
+
+static void R_ShutdownInstanceStream()
+{
+	if( s_instanceRing != NULL )
+	{
+		s_instanceRing->Destroy();
+		delete s_instanceRing;
+		s_instanceRing = NULL;
+	}
+	s_instanceRingSlot = -1;
+	s_instanceRingUsed = 0;
+}
+#endif
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf, const gpuInstanceData_t* instances, int instanceCount )
+#else
+void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
+#endif
+{
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	// the first surface of a merged world group draws the whole group
+	if( worldMergeSurf != NULL && surf == worldMergeSurf )
+	{
+		DrawWorldMergeRange( worldMergeFirstIndex, worldMergeNumIndexes );
+		return;
+	}
+
+    const bool useInstancing = (instances != NULL && instanceCount > 1);
+    const bool useMultiDraw = g_multiDrawIndirectAvailable
+        && r_useMultiDrawIndirect.GetBool()
+        && isGLES32Version()
+        && !r_singleTriangle.GetBool()
+        && !surf->jointCache
+        && !useInstancing;
+    if (!useMultiDraw)
+    {
+        FlushMultiDrawBatch();
+    }
+#endif
 	// get vertex buffer
 	const vertCacheHandle_t vbHandle = surf->ambientCache;
 	idVertexBuffer* vertexBuffer;
@@ -849,6 +1114,16 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 	// RB: 64 bit fixes, changed int to GLintptr
 	const GLintptr indexOffset = ( GLintptr )( ibHandle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
 	// RB end
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    if (useMultiDraw && !g_multiDrawCommands.empty()
+        && (g_multiDrawVertexBuffer != (GLuint)vertexBuffer->GetAPIObject()
+            || g_multiDrawIndexBuffer != (GLuint)indexBuffer->GetAPIObject()
+            || g_multiDrawBatchLayout != MDI_LAYOUT_DRAW_VERT
+            || vertexLayout != LAYOUT_DRAW_VERT))
+    {
+        FlushMultiDrawBatch();
+    }
+#endif
 	
 	RENDERLOG_PRINTF( "Binding Buffers: %p:%i %p:%i\n", vertexBuffer, vertOffset, indexBuffer, indexOffset );
 	
@@ -892,7 +1167,16 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 		glBindBufferRange(GL_UNIFORM_BUFFER, 0, ubo, jointBuffer.GetOffset(), jointBuffer.GetSize());
 	}
 
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    // Uniform writes flush before changing values, so unchanged uniforms can be
+    // uploaded once and shared by all commands in the pending batch.
+    if (!(useMultiDraw && !g_multiDrawCommands.empty()))
+    {
+        renderProgManager.CommitUniforms(glStateBits);
+    }
+#else
 	renderProgManager.CommitUniforms(glStateBits);
+#endif
 #ifndef ANDROID
 	if (glConfig.directStateAccess) {		
 		// RB: 64 bit fixes, changed GLuint to GLintptr
@@ -984,20 +1268,113 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
         }
 	}
 	// RB end
-if (!isGLES32Version()) {
-    glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes, GL_INDEX_TYPE,
-                   (triIndex_t *) indexOffset);
-} else {
-    glDrawElementsBaseVertex(GL_TRIANGLES,
-                             r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
-                             GL_INDEX_TYPE,
-                             (triIndex_t *) indexOffset,
-                             vertOffset / sizeof(idDrawVert));
-}
-
-	// RB: added stats
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	const GLuint mvpAttribs[4] = { 1, 5, 6, 7 };
+	const GLuint modelViewAttribs[4] = { 10, 11, 12, 13 };
+	const GLuint instanceAttribs[10] = { 1, 5, 6, 7, 10, 11, 12, 13, 14, 15 };
+	if (useInstancing)
+	{
+		const GLsizeiptr instanceBytes = sizeof(gpuInstanceData_t) * instanceCount;
+		GLuint instanceBuffer = 0;
+		GLintptr instanceOffset = 0;
+		if (!R_StreamInstanceData(instances, instanceBytes, instanceBuffer, instanceOffset))
+		{
+			// no persistent mapping: a fresh allocation per draw, as before
+			if (gpuInstanceBuffer == 0)
+			{
+				GLuint buffer = 0;
+				glGenBuffers(1, &buffer);
+				gpuInstanceBuffer = buffer;
+			}
+			instanceBuffer = (GLuint)gpuInstanceBuffer;
+			instanceOffset = 0;
+			glBindBuffer(GL_ARRAY_BUFFER, instanceBuffer);
+			glBufferData(GL_ARRAY_BUFFER, instanceBytes, instances, GL_STREAM_DRAW);
+		}
+		glBindBuffer(GL_ARRAY_BUFFER, instanceBuffer);
+		const GLsizei stride = sizeof(gpuInstanceData_t);
+		for (int row = 0; row < 4; ++row)
+		{
+			const GLuint mvpAttrib = mvpAttribs[row];
+			const GLuint modelViewAttrib = modelViewAttribs[row];
+			glEnableVertexAttribArray(mvpAttrib);
+			glVertexAttribPointer(mvpAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(instanceOffset + row * 4 * sizeof(float)));
+			glVertexAttribDivisor(mvpAttrib, 1);
+			glEnableVertexAttribArray(modelViewAttrib);
+			glVertexAttribPointer(modelViewAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(instanceOffset + 16 * sizeof(float) + row * 4 * sizeof(float)));
+			glVertexAttribDivisor(modelViewAttrib, 1);
+		}
+		glEnableVertexAttribArray(14);
+		glVertexAttribPointer(14, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(instanceOffset + 32 * sizeof(float)));
+		glVertexAttribDivisor(14, 1);
+		glEnableVertexAttribArray(15);
+		glVertexAttribPointer(15, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(instanceOffset + 36 * sizeof(float)));
+		glVertexAttribDivisor(15, 1);
+	}
+    if (useMultiDraw)
+    {
+        drawElementsIndirectCommand_t command;
+        command.count = (GLuint)surf->numIndexes;
+        command.instanceCount = 1;
+        command.firstIndex = (GLuint)(indexOffset / sizeof(triIndex_t));
+        command.baseVertex = (GLint)(vertOffset / sizeof(idDrawVert));
+        // EXT_base_instance is optional, so the reserved field must remain zero.
+        command.baseInstance = 0;
+        g_multiDrawCommands.push_back(command);
+        if (g_multiDrawCommands.size() == 1)
+        {
+            g_multiDrawVertexBuffer = (GLuint)vertexBuffer->GetAPIObject();
+            g_multiDrawIndexBuffer = (GLuint)indexBuffer->GetAPIObject();
+            g_multiDrawBatchLayout = MDI_LAYOUT_DRAW_VERT;
+        }
+        pc.c_drawElements++;
+        pc.c_drawIndexes += surf->numIndexes;
+        if (g_multiDrawCommands.size() >= MAX_GLES_MDI_BATCH_COMMANDS)
+        {
+            FlushMultiDrawBatch();
+        }
+        return;
+    }
+	if (useInstancing)
+	{
+		glDrawElementsInstancedBaseVertex(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
+			GL_INDEX_TYPE, (triIndex_t*)indexOffset, instanceCount, vertOffset / sizeof(idDrawVert));
+	}
+	else if (!isGLES32Version())
+	{
+		glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes, GL_INDEX_TYPE, (triIndex_t*)indexOffset);
+	}
+	else
+	{
+		glDrawElementsBaseVertex(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
+			GL_INDEX_TYPE, (triIndex_t*)indexOffset, vertOffset / sizeof(idDrawVert));
+	}
+	if (useInstancing)
+	{
+		for (int i = 0; i < 10; ++i)
+		{
+			const GLuint attrib = instanceAttribs[i];
+			glVertexAttribDivisor(attrib, 0);
+			glDisableVertexAttribArray(attrib);
+		}
+		glBindBuffer(GL_ARRAY_BUFFER, (GLuint)vertexBuffer->GetAPIObject());
+	}
+	pc.c_drawElements++;
+	pc.c_drawIndexes += surf->numIndexes * (useInstancing ? instanceCount : 1);
+#else
+	if (!isGLES32Version())
+	{
+		glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
+			GL_INDEX_TYPE, (triIndex_t*)indexOffset);
+	}
+	else
+	{
+		glDrawElementsBaseVertex(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
+			GL_INDEX_TYPE, (triIndex_t*)indexOffset, vertOffset / sizeof(idDrawVert));
+	}
 	pc.c_drawElements++;
 	pc.c_drawIndexes += surf->numIndexes;
+#endif
 }
 
 
@@ -1016,6 +1393,12 @@ idRenderBackend::GL_StartFrame
 */
 void idRenderBackend::GL_StartFrame()
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+    g_multiDrawIndirectBatchCount = 0;
+    g_multiDrawIndirectDrawCallsSaved = 0;
+    g_multiDrawIndirectSubmittedCommands = 0;
+#endif
 	if (gEnableGLSynchronization && glConfig.syncAvailable && glIsSync(renderSync[swapIndex]))
 	{
 		const auto glSync = renderSync[swapIndex];
@@ -1048,6 +1431,17 @@ idRenderBackend::GL_EndFrame
 */
 void idRenderBackend::GL_EndFrame()
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+    if (r_showMultiDrawIndirectStats.GetBool())
+    {
+        idLib::Printf("GLES MDI: available=%d, batches=%d, submitted draws=%d, draw calls saved=%d\n",
+            g_multiDrawIndirectAvailable ? 1 : 0,
+            g_multiDrawIndirectBatchCount,
+            g_multiDrawIndirectSubmittedCommands,
+            g_multiDrawIndirectDrawCallsSaved);
+    }
+#endif
 	// Fix for the steam overlay not showing up while in game without Shell/Debug/Console/Menu also rendering
 	glColorMask( 1, 1, 1, 1 );
 	
@@ -1064,6 +1458,9 @@ may touch, including the editor.
 */
 void idRenderBackend::GL_SetDefaultState()
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+#endif
 	RENDERLOG_PRINTF( "--- GL_SetDefaultState ---\n" );
 
 #ifndef ANDROID
@@ -1073,6 +1470,7 @@ void idRenderBackend::GL_SetDefaultState()
 #endif
 	// make sure our GL state vector is set correctly
 	memset( &glcontext.tmu, 0, sizeof( glcontext.tmu ) );
+	glcontext.activeTextureUnit = -1;
 	currenttmu = 0;
 	currentVertexBuffer = 0;
 	currentIndexBuffer = 0;
@@ -1161,6 +1559,9 @@ void idRenderBackend::GL_State( uint64 stateBits, bool forceGlState )
 	{
 		return;
 	}
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+#endif
 	
 	//
 	// culling
@@ -1517,6 +1918,44 @@ void idRenderBackend::GL_State( uint64 stateBits, bool forceGlState )
 
 /*
 ====================
+GL_InvalidateTextureBindings
+====================
+*/
+void GL_InvalidateTextureBindings()
+{
+	// no texture is named 0, so nothing matches until bound again
+	memset( glcontext.tmu, 0, sizeof( glcontext.tmu ) );
+}
+
+void R_DirectBindTexture( unsigned int target, unsigned int texture )
+{
+	glBindTexture( target, texture );
+	GL_InvalidateTextureBindings();
+}
+
+void R_DirectDeleteTextures( int count, const unsigned int* textures )
+{
+	// a deleted texture is unbound from every unit, and its name comes back for new textures
+	glDeleteTextures( count, textures );
+	GL_InvalidateTextureBindings();
+}
+
+/*
+====================
+idRenderBackend::GL_ActivateTextureUnit
+====================
+*/
+void idRenderBackend::GL_ActivateTextureUnit()
+{
+	if( glcontext.activeTextureUnit != currenttmu )
+	{
+		glActiveTexture( GL_TEXTURE0 + currenttmu );
+		glcontext.activeTextureUnit = currenttmu;
+	}
+}
+
+/*
+====================
 idRenderBackend::SelectTexture
 ====================
 */
@@ -1547,6 +1986,9 @@ idRenderBackend::GL_Scissor
 */
 void idRenderBackend::GL_Scissor( int x /* left*/, int y /* bottom */, int w, int h )
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+#endif
 	glScissor( x, y, w, h );
 }
 
@@ -1557,6 +1999,9 @@ idRenderBackend::GL_Viewport
 */
 void idRenderBackend::GL_Viewport( int x /* left */, int y /* bottom */, int w, int h )
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+#endif
 	glViewport( x, y, w, h );
 }
 
@@ -1567,6 +2012,12 @@ idRenderBackend::GL_PolygonOffset
 */
 void idRenderBackend::GL_PolygonOffset( float scale, float bias )
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    if (polyOfsScale != scale || polyOfsBias != bias)
+    {
+        FlushMultiDrawBatch();
+    }
+#endif
 	polyOfsScale = scale;
 	polyOfsBias = bias;
 	
@@ -1623,6 +2074,9 @@ idRenderBackend::GL_Clear
 */
 void idRenderBackend::GL_Clear( bool color, bool depth, bool stencil, byte stencilValue, float r, float g, float b, float a, bool clearHDR )
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    FlushMultiDrawBatch();
+#endif
 	int clearFlags = 0;
 	if( color )
 	{
@@ -1721,6 +2175,7 @@ void idRenderBackend::CheckCVars()
 #endif
 				//GK: It sucks but some textures needs to be bound when altering their parameters (so much for DSA)
 				globalImages->images[i]->Bind();
+				GL_ActivateTextureUnit();
 				globalImages->images[i]->SetTexParameters();
 			}
 		}
@@ -1846,8 +2301,27 @@ extern idCVar r_useStencilShadowPreload;
 idRenderBackend::DrawStencilShadowPass
 ==================
 */
+#if defined(ANDROID) && !defined(USE_VULKAN)
+void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass,
+		const gpuInstanceData_t* instances, int instanceCount )
+#else
 void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass )
+#endif
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    const bool useInstancing = instances != NULL && instanceCount > 1 && !drawSurf->jointCache;
+    const bool useMultiDrawShadow = g_multiDrawIndirectAvailable
+        && r_useMultiDrawIndirect.GetBool()
+        && isGLES32Version()
+        && !r_singleTriangle.GetBool()
+        && !drawSurf->jointCache
+        && !useInstancing
+        && (renderZPass || !r_useStencilShadowPreload.GetBool());
+    if (!useMultiDrawShadow)
+    {
+        FlushMultiDrawBatch();
+    }
+#endif
 	// get vertex buffer
 	const vertCacheHandle_t vbHandle = drawSurf->shadowCache;
 	idVertexBuffer* vertexBuffer;
@@ -1885,6 +2359,16 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 		indexBuffer = &vertexCache.frameData[vertexCache.drawListNum].indexBuffer;
 	}
 	const uint64 indexOffset = ( int )( ibHandle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    if (useMultiDrawShadow && !g_multiDrawCommands.empty()
+        && (g_multiDrawVertexBuffer != (GLuint)vertexBuffer->GetAPIObject()
+            || g_multiDrawIndexBuffer != (GLuint)indexBuffer->GetAPIObject()
+            || g_multiDrawBatchLayout != MDI_LAYOUT_SHADOW_VERT
+            || vertexLayout != LAYOUT_DRAW_SHADOW_VERT))
+    {
+        FlushMultiDrawBatch();
+    }
+#endif
 	
 	RENDERLOG_PRINTF( "Binding Buffers: %p %p\n", vertexBuffer, indexBuffer );
 	
@@ -2052,8 +2536,76 @@ if (!isGLES32Version()) {
 	}
 	// RB end
 	
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	const GLuint mvpAttribs[4] = { 1, 5, 6, 7 };
+	const GLuint lightOriginAttrib = 15;
+	if( useInstancing )
+	{
+		const GLsizeiptr instanceBytes = sizeof( gpuInstanceData_t ) * instanceCount;
+		GLuint instanceBuffer = 0;
+		GLintptr instanceOffset = 0;
+		if( !R_StreamInstanceData( instances, instanceBytes, instanceBuffer, instanceOffset ) )
+		{
+			if( gpuInstanceBuffer == 0 )
+			{
+				GLuint buffer = 0;
+				glGenBuffers( 1, &buffer );
+				gpuInstanceBuffer = buffer;
+			}
+			instanceBuffer = (GLuint)gpuInstanceBuffer;
+			instanceOffset = 0;
+			glBindBuffer( GL_ARRAY_BUFFER, instanceBuffer );
+			glBufferData( GL_ARRAY_BUFFER, instanceBytes, instances, GL_STREAM_DRAW );
+		}
+		glBindBuffer( GL_ARRAY_BUFFER, instanceBuffer );
+		const GLsizei stride = sizeof( gpuInstanceData_t );
+		for( int row = 0; row < 4; ++row )
+		{
+			const GLuint attrib = mvpAttribs[row];
+			glEnableVertexAttribArray( attrib );
+			glVertexAttribPointer( attrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)( instanceOffset + row * 4 * sizeof( float ) ) );
+			glVertexAttribDivisor( attrib, 1 );
+		}
+		glEnableVertexAttribArray( lightOriginAttrib );
+		glVertexAttribPointer( lightOriginAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)( instanceOffset + 36 * sizeof( float ) ) );
+		glVertexAttribDivisor( lightOriginAttrib, 1 );
+	}
+#endif
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    if (!(useMultiDrawShadow && !g_multiDrawCommands.empty()))
+    {
+        renderProgManager.CommitUniforms(glStateBits);
+    }
+#else
 	renderProgManager.CommitUniforms( glStateBits );
+#endif
 	
+#if defined(ANDROID) && !defined(USE_VULKAN)
+    if (useMultiDrawShadow)
+    {
+        drawElementsIndirectCommand_t command;
+        command.count = (GLuint)drawSurf->numIndexes;
+        command.instanceCount = 1;
+        command.firstIndex = (GLuint)(indexOffset / sizeof(triIndex_t));
+        command.baseVertex = (GLint)(vertOffset / sizeof(idShadowVert));
+        command.baseInstance = 0;
+        g_multiDrawCommands.push_back(command);
+        if (g_multiDrawCommands.size() == 1)
+        {
+            g_multiDrawVertexBuffer = (GLuint)vertexBuffer->GetAPIObject();
+            g_multiDrawIndexBuffer = (GLuint)indexBuffer->GetAPIObject();
+            g_multiDrawBatchLayout = MDI_LAYOUT_SHADOW_VERT;
+        }
+        pc.c_shadowElements++;
+        pc.c_shadowIndexes += drawSurf->numIndexes;
+        if (g_multiDrawCommands.size() >= MAX_GLES_MDI_BATCH_COMMANDS)
+        {
+            FlushMultiDrawBatch();
+        }
+        return;
+    }
+#endif
 	if( drawSurf->jointCache )
 	{
         if (!isGLES32Version()) {
@@ -2069,20 +2621,33 @@ if (!isGLES32Version()) {
 	}
 	else
 	{
-        if (!isGLES32Version()) {
-            glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-                           GL_INDEX_TYPE, (triIndex_t *) indexOffset);
-        } else {
-            glDrawElementsBaseVertex(GL_TRIANGLES,
-                                     r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-                                     GL_INDEX_TYPE, (triIndex_t *) indexOffset,
-                                     vertOffset / sizeof(idShadowVert));
-        }
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( useInstancing )
+		{
+			glDrawElementsInstancedBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+					GL_INDEX_TYPE, (triIndex_t*)indexOffset, instanceCount, vertOffset / sizeof( idShadowVert ) );
+		}
+		else
+#endif
+		if( !isGLES32Version() )
+		{
+			glDrawElements( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+					GL_INDEX_TYPE, (triIndex_t*)indexOffset );
+		}
+		else
+		{
+			glDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+				GL_INDEX_TYPE, (triIndex_t*)indexOffset, vertOffset / sizeof( idShadowVert ) );
+		}
 	}
 	
 	// RB: added stats
 	pc.c_shadowElements++;
+	#if defined(ANDROID) && !defined(USE_VULKAN)
+	pc.c_shadowIndexes += drawSurf->numIndexes * ( useInstancing ? instanceCount : 1 );
+#else
 	pc.c_shadowIndexes += drawSurf->numIndexes;
+#endif
 	// RB end
 	
 	if( !renderZPass && r_useStencilShadowPreload.GetBool() )
@@ -2105,22 +2670,48 @@ if (!isGLES32Version()) {
 		}
 		else
 		{
-        if (!isGLES32Version()) {
-            glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-                   GL_INDEX_TYPE, (triIndex_t *) indexOffset);
-        }
-        else {
-            glDrawElementsBaseVertex(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-                             GL_INDEX_TYPE, (triIndex_t *) indexOffset,
-                             vertOffset / sizeof(idShadowVert));
-        }
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		if( useInstancing )
+		{
+			glDrawElementsInstancedBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+					GL_INDEX_TYPE, (triIndex_t*)indexOffset, instanceCount, vertOffset / sizeof( idShadowVert ) );
+		}
+		else
+#endif
+		if( !isGLES32Version() )
+		{
+			glDrawElements( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+				GL_INDEX_TYPE, (triIndex_t*)indexOffset );
+		}
+		else
+		{
+			glDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
+				GL_INDEX_TYPE, (triIndex_t*)indexOffset, vertOffset / sizeof( idShadowVert ) );
+		}
     }
 		
 		// RB: added stats
 		pc.c_shadowElements++;
-		pc.c_shadowIndexes += drawSurf->numIndexes;
+		#if defined(ANDROID) && !defined(USE_VULKAN)
+	pc.c_shadowIndexes += drawSurf->numIndexes * ( useInstancing ? instanceCount : 1 );
+#else
+	pc.c_shadowIndexes += drawSurf->numIndexes;
+#endif
 		// RB end
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( useInstancing )
+	{
+		for( int row = 0; row < 4; ++row )
+		{
+			glVertexAttribDivisor( mvpAttribs[row], 0 );
+			glDisableVertexAttribArray( mvpAttribs[row] );
+		}
+		glVertexAttribDivisor( lightOriginAttrib, 0 );
+		glDisableVertexAttribArray( lightOriginAttrib );
+	}
+#endif
 }
 
 /*
@@ -2168,7 +2759,16 @@ void idRenderBackend::SetBuffer( const void* data )
 	RENDERLOG_PRINTF( "---------- RB_SetBuffer ---------- to buffer # %d\n", cmd->buffer );
 	
 	GL_Scissor( 0, 0, tr.GetWidth(), tr.GetHeight() );
-	
+
+	// The HDR color target is cleared by the first HDR view of the frame, when it starts its
+	// render pass. Clearing it here too would be a render pass of its own: on a tile based GPU
+	// that writes the cleared target out, only for the view to read it back in.
+	// The same goes for the back buffer when a HDR view's tonemap replaces all of it.
+	if( skipBackBufferClear )
+	{
+		return;
+	}
+
 	// clear screen for debugging
 	// automatically enable this with several other debug tools
 	// that might leave unrendered portions of the screen
@@ -2182,19 +2782,19 @@ void idRenderBackend::SetBuffer( const void* data )
 				c[1] = c[1] / 255.0f;
 				c[2] = c[2] / 255.0f;
 			}
-			GL_Clear( true, false, false, 0, c[0], c[1], c[2], 1.0f, true );
+			GL_Clear( true, false, false, 0, c[0], c[1], c[2], 1.0f, false );
 		}
 		else if( r_clear.GetInteger() == 2 )
 		{
-			GL_Clear( true, false, false, 0, 0.0f, 0.0f,  0.0f, 1.0f, true );
+			GL_Clear( true, false, false, 0, 0.0f, 0.0f,  0.0f, 1.0f, false );
 		}
 		else if( r_showOverDraw.GetBool() )
 		{
-			GL_Clear( true, false, false, 0, 1.0f, 1.0f, 1.0f, 1.0f, true );
+			GL_Clear( true, false, false, 0, 1.0f, 1.0f, 1.0f, 1.0f, false );
 		}
 		else
 		{
-			GL_Clear( true, false, false, 0, 0.4f, 0.0f, 0.25f, 1.0f, true );
+			GL_Clear( true, false, false, 0, 0.4f, 0.0f, 0.25f, 1.0f, false );
 		}
 	}
 }
@@ -2229,6 +2829,19 @@ idRenderBackend::idRenderBackend()
 {
 	memset( glcontext.tmu, 0, sizeof( glcontext.tmu ) );
 	memset( glcontext.stencilOperations, 0, sizeof( glcontext.stencilOperations ) );
+	glcontext.activeTextureUnit = -1;
+
+	numShadowAtlasLights = 0;
+	shadowAtlasSize = 0;
+	hdrTargetClearedThisFrame = false;
+	skipBackBufferClear = false;
+	bloomResultImage = NULL;
+#if defined(ANDROID)
+	worldMergeSurf = NULL;
+	worldMergeFirstIndex = 0;
+	worldMergeNumIndexes = 0;
+	worldMergeIndexBuffer = 0;
+#endif
 }
 
 /*
@@ -2409,16 +3022,20 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 #endif
 			GL_SelectTexture( 0 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 1 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			DrawElementsWithCounters( &unitSquareSurface );
 #ifndef ANDROID
 			glDrawBuffer( GL_BACK_LEFT );
 #endif
 			GL_SelectTexture( 1 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 0 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			DrawElementsWithCounters( &unitSquareSurface );
 			break;
 			
@@ -2426,15 +3043,19 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 			// HDMI 720P 3D
 			GL_SelectTexture( 0 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 1 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			GL_ViewportAndScissor( 0, 0, 1280, 720 );
 			DrawElementsWithCounters( &unitSquareSurface );
 			
 			GL_SelectTexture( 0 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 1 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_ViewportAndScissor( 0, 750, 1280, 720 );
 			DrawElementsWithCounters( &unitSquareSurface );
 			
@@ -2457,8 +3078,10 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 				renderProgManager.SetRenderParm(RENDERPARM_COLOR, color.ToFloatPtr());
 				GL_SelectTexture(0);
 				stereoRenderImages[0]->Bind();
+				GL_ActivateTextureUnit();
 				GL_SelectTexture(1);
 				stereoRenderImages[1]->Bind();
+				GL_ActivateTextureUnit();
 				GLint xrFBO;
 				xrSystem->StartFrame();
 				glGetIntegerv(GL_FRAMEBUFFER_BINDING, &xrFBO);
@@ -2484,8 +3107,10 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 
 				GL_SelectTexture(0);
 				stereoRenderImages[1]->Bind();
+				GL_ActivateTextureUnit();
 				GL_SelectTexture(1);
 				stereoRenderImages[0]->Bind();
+				GL_ActivateTextureUnit();
 				xrSystem->BindSwapchainImage(1);
 				GL_ViewportAndScissor(0, 0, xrSystem->GetWidth(), xrSystem->GetHeight());
 				DrawElementsWithCounters(&unitSquareSurface);
@@ -2542,6 +3167,7 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 
 				GL_SelectTexture( 0 );
 				stereoRenderImages[0]->Bind();
+				GL_ActivateTextureUnit();
 #ifdef ANDROID //karin: using GL_CLAMP_TO_EDGE instead of GL_CLAMP_TO_BORDER in OpenGLES
                 glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
 				glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
@@ -2562,6 +3188,7 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 				
 				GL_SelectTexture( 0 );
 				stereoRenderImages[1]->Bind();
+				GL_ActivateTextureUnit();
 #ifdef ANDROID //karin: using GL_CLAMP_TO_EDGE instead of GL_CLAMP_TO_BORDER in OpenGLES
                 glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
 				glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
@@ -2579,15 +3206,19 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 
 			GL_SelectTexture( 0 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 1 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_ViewportAndScissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 			DrawElementsWithCounters( &unitSquareSurface );
 
 			GL_SelectTexture( 0 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 1 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			GL_ViewportAndScissor( renderSystem->GetWidth(), 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 			DrawElementsWithCounters( &unitSquareSurface );
 			break;
@@ -2595,15 +3226,19 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 		case STEREO3D_TOP_AND_BOTTOM_COMPRESSED:
 			GL_SelectTexture( 1 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 0 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_ViewportAndScissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 			DrawElementsWithCounters( &unitSquareSurface );
 			
 			GL_SelectTexture( 1 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 0 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			GL_ViewportAndScissor( 0, renderSystem->GetHeight(), renderSystem->GetWidth(), renderSystem->GetHeight() );
 			DrawElementsWithCounters( &unitSquareSurface );
 			break;
@@ -2612,11 +3247,13 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 			// every other scanline
 			GL_SelectTexture( 0 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 			
 			GL_SelectTexture( 1 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 			
@@ -2625,10 +3262,12 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 			DrawElementsWithCounters( &unitSquareSurface );
 			
 			GL_SelectTexture( 0 );
+			GL_ActivateTextureUnit();
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 			
 			GL_SelectTexture( 1 );
+			GL_ActivateTextureUnit();
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 			

@@ -39,10 +39,440 @@ If you have questions concerning this license or the applicable additional terms
 #include "Model_ma.h"
 #include "Model_ColladaParser.h"
 
+#if defined(ANDROID) && !defined(USE_VULKAN)
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_system.h>
+#include <math.h>
+#include <stdint.h>
+#endif
+
 idCVar idRenderModelStatic::r_mergeModelSurfaces( "r_mergeModelSurfaces", "1", CVAR_BOOL | CVAR_RENDERER, "combine model surfaces with the same material" );
 idCVar idRenderModelStatic::r_slopVertex( "r_slopVertex", "0.01", CVAR_RENDERER, "merge xyz coordinates this far apart" );
 idCVar idRenderModelStatic::r_slopTexCoord( "r_slopTexCoord", "0.001", CVAR_RENDERER, "merge texture coordinates this far apart" );
 idCVar idRenderModelStatic::r_slopNormal( "r_slopNormal", "0.02", CVAR_RENDERER, "merge normals that dot less than this" );
+
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+static idCVar r_staticBatching( "r_staticBatching", "1", CVAR_BOOL | CVAR_RENDERER, "Merge the surfaces of a static model that share a material" );
+// The world batches are entities of their own: drawn whenever any area they span is visible, and with
+// shadow volumes of their own on top of the prelight ones. r_mergeWorldSurfaces merges the visible world
+// surfaces every frame instead.
+static idCVar r_staticBatchingWorld( "r_staticBatchingWorld", "0", CVAR_BOOL | CVAR_RENDERER, "at map load, merge the world surfaces of a material across BSP areas into separate batch entities" );
+static idCVar r_staticBatchingDebug( "r_staticBatchingDebug", "1", CVAR_BOOL | CVAR_RENDERER, "Log static batching cache statistics" );
+
+static const uint32_t STATIC_BATCH_CACHE_MAGIC = 0x53424348; // SBCH
+static const uint32_t STATIC_BATCH_CACHE_VERSION = 2;
+static const int STATIC_BATCH_CELL_SIZE = 2048;
+static const int STATIC_BATCH_MAX_VERTS = 60000;
+static const int STATIC_BATCH_MAX_SOURCE_SURFACES = 64;
+static const uint32_t STATIC_BATCH_MAX_SURFACES = 65536;
+static const uint32_t STATIC_BATCH_MAX_MATERIAL_NAME = 1023;
+
+struct staticBatchCacheHeader_t
+{
+	uint32_t magic;
+	uint32_t version;
+	uint64_t sourceHash;
+	uint32_t surfaceCount;
+	uint32_t drawVertSize;
+	uint32_t indexSize;
+};
+
+struct staticBatchCacheSurface_t
+{
+	int32_t id;
+	int32_t numVerts;
+	int32_t numIndexes;
+	uint32_t generateNormals;
+	uint32_t materialNameLength;
+};
+
+struct staticBatchGroupKey_t
+{
+	int cellX;
+	int cellY;
+	int cellZ;
+	int sourceSurfaces;
+	bool canMerge;
+	bool generateNormals;
+};
+
+static void R_StaticBatchHashBytes( uint64_t& hash, const void* data, size_t bytes )
+{
+	const byte* p = (const byte*)data;
+	for( size_t i = 0; i < bytes; ++i )
+	{
+		hash ^= p[i];
+		hash *= 1099511628211ULL;
+	}
+}
+
+template< typename T >
+static void R_StaticBatchHashValue( uint64_t& hash, const T& value )
+{
+	R_StaticBatchHashBytes( hash, &value, sizeof( value ) );
+}
+
+static bool R_StaticBatchComputeSourceHash( const char* modelName, const idList<modelSurface_t, TAG_MODEL>& surfaces, uint64_t& hash )
+{
+	hash = 14695981039346656037ULL;
+	if( modelName == NULL )
+	{
+		return false;
+	}
+
+	R_StaticBatchHashBytes( hash, modelName, strlen( modelName ) + 1 );
+	const uint32_t cacheCellSize = STATIC_BATCH_CELL_SIZE;
+	const uint32_t cacheMaxVerts = STATIC_BATCH_MAX_VERTS;
+	const uint32_t cacheMaxSourceSurfaces = STATIC_BATCH_MAX_SOURCE_SURFACES;
+	R_StaticBatchHashValue( hash, cacheCellSize );
+	R_StaticBatchHashValue( hash, cacheMaxVerts );
+	R_StaticBatchHashValue( hash, cacheMaxSourceSurfaces );
+	const uint32_t surfaceCount = (uint32_t)surfaces.Num();
+	R_StaticBatchHashValue( hash, surfaceCount );
+
+	for( int i = 0; i < surfaces.Num(); ++i )
+	{
+		const modelSurface_t& surface = surfaces[i];
+		const srfTriangles_t* tri = surface.geometry;
+		if( surface.shader == NULL || tri == NULL || tri->verts == NULL || tri->indexes == NULL ||
+			tri->numVerts <= 0 || tri->numIndexes <= 0 )
+		{
+			return false;
+		}
+
+		R_StaticBatchHashValue( hash, surface.id );
+		R_StaticBatchHashBytes( hash, surface.shader->GetName(), strlen( surface.shader->GetName() ) + 1 );
+		const uint32_t coverage = (uint32_t)surface.shader->Coverage();
+		const int32_t deform = (int32_t)surface.shader->Deform();
+		const uint32_t discrete = surface.shader->IsDiscrete() ? 1u : 0u;
+		const uint32_t drawn = surface.shader->IsDrawn() ? 1u : 0u;
+		const uint32_t backSides = surface.shader->ShouldCreateBackSides() ? 1u : 0u;
+		const uint32_t castsShadow = surface.shader->SurfaceCastsShadow() ? 1u : 0u;
+		const uint32_t receivesLighting = surface.shader->ReceivesLighting() ? 1u : 0u;
+		R_StaticBatchHashValue( hash, coverage );
+		R_StaticBatchHashValue( hash, deform );
+		R_StaticBatchHashValue( hash, discrete );
+		R_StaticBatchHashValue( hash, drawn );
+		R_StaticBatchHashValue( hash, backSides );
+		R_StaticBatchHashValue( hash, castsShadow );
+		R_StaticBatchHashValue( hash, receivesLighting );
+		R_StaticBatchHashValue( hash, tri->numVerts );
+		R_StaticBatchHashValue( hash, tri->numIndexes );
+		R_StaticBatchHashValue( hash, tri->generateNormals );
+		R_StaticBatchHashBytes( hash, tri->verts, (size_t)tri->numVerts * sizeof( idDrawVert ) );
+		R_StaticBatchHashBytes( hash, tri->indexes, (size_t)tri->numIndexes * sizeof( triIndex_t ) );
+	}
+	return true;
+}
+
+static bool R_StaticBatchGetCachePath( uint64_t sourceHash, idStr& path )
+{
+	const char* cacheRoot = SDL_GetAndroidCachePath();
+	if( cacheRoot == NULL || cacheRoot[0] == '\0' )
+	{
+		return false;
+	}
+
+	const idStr folder = va( "%s/static_batching", cacheRoot );
+	if( !SDL_CreateDirectory( folder.c_str() ) )
+	{
+		SDL_PathInfo info;
+		if( !SDL_GetPathInfo( folder.c_str(), &info ) || info.type != SDL_PATHTYPE_DIRECTORY )
+		{
+			return false;
+		}
+	}
+
+	path = va( "%s/%016llx.sbc", folder.c_str(), (unsigned long long)sourceHash );
+	return true;
+}
+
+static bool R_StaticBatchReadExact( SDL_IOStream* stream, void* data, size_t bytes )
+{
+	return SDL_ReadIO( stream, data, bytes ) == bytes;
+}
+
+static bool R_StaticBatchWriteExact( SDL_IOStream* stream, const void* data, size_t bytes )
+{
+	return SDL_WriteIO( stream, data, bytes ) == bytes;
+}
+
+static void R_StaticBatchFreeSurfaces( idList<modelSurface_t, TAG_MODEL>& surfaces )
+{
+	for( int i = 0; i < surfaces.Num(); ++i )
+	{
+		if( surfaces[i].geometry != NULL )
+		{
+			R_FreeStaticTriSurf( surfaces[i].geometry );
+			surfaces[i].geometry = NULL;
+		}
+	}
+	surfaces.SetNum( 0 );
+}
+
+static bool R_StaticBatchLoadCache( const char* path, uint64_t sourceHash, idList<modelSurface_t, TAG_MODEL>& loadedSurfaces )
+{
+	SDL_IOStream* stream = SDL_IOFromFile( path, "rb" );
+	if( stream == NULL )
+	{
+		return false;
+	}
+
+	staticBatchCacheHeader_t header;
+	memset( &header, 0, sizeof( header ) );
+	bool valid = R_StaticBatchReadExact( stream, &header, sizeof( header ) ) &&
+		header.magic == STATIC_BATCH_CACHE_MAGIC &&
+		header.version == STATIC_BATCH_CACHE_VERSION &&
+		header.sourceHash == sourceHash &&
+		header.drawVertSize == sizeof( idDrawVert ) &&
+		header.indexSize == sizeof( triIndex_t ) &&
+		header.surfaceCount > 0 && header.surfaceCount <= STATIC_BATCH_MAX_SURFACES;
+
+	for( uint32_t i = 0; valid && i < header.surfaceCount; ++i )
+	{
+		staticBatchCacheSurface_t record;
+		memset( &record, 0, sizeof( record ) );
+		if( !R_StaticBatchReadExact( stream, &record, sizeof( record ) ) ||
+			record.numVerts <= 0 || record.numVerts > STATIC_BATCH_MAX_VERTS ||
+			record.numIndexes < 3 || record.numIndexes > 1200000 ||
+			(record.numIndexes % 3) != 0 ||
+			record.materialNameLength == 0 || record.materialNameLength > STATIC_BATCH_MAX_MATERIAL_NAME )
+		{
+			valid = false;
+			break;
+		}
+
+		char materialName[ STATIC_BATCH_MAX_MATERIAL_NAME + 1 ];
+		if( !R_StaticBatchReadExact( stream, materialName, record.materialNameLength ) )
+		{
+			valid = false;
+			break;
+		}
+		materialName[ record.materialNameLength ] = '\0';
+
+		const idMaterial* shader = declManager->FindMaterial( materialName );
+		if( shader == NULL )
+		{
+			valid = false;
+			break;
+		}
+
+		srfTriangles_t* tri = R_AllocStaticTriSurf();
+		tri->numVerts = record.numVerts;
+		tri->numIndexes = record.numIndexes;
+		tri->generateNormals = (record.generateNormals != 0);
+		R_AllocStaticTriSurfVerts( tri, tri->numVerts );
+		R_AllocStaticTriSurfIndexes( tri, tri->numIndexes );
+
+		const size_t vertexBytes = (size_t)tri->numVerts * sizeof( idDrawVert );
+		const size_t indexBytes = (size_t)tri->numIndexes * sizeof( triIndex_t );
+		if( !R_StaticBatchReadExact( stream, tri->verts, vertexBytes ) ||
+			!R_StaticBatchReadExact( stream, tri->indexes, indexBytes ) )
+		{
+			R_FreeStaticTriSurf( tri );
+			valid = false;
+			break;
+		}
+
+		for( int index = 0; index < tri->numIndexes; ++index )
+		{
+			if( tri->indexes[index] >= tri->numVerts )
+			{
+				valid = false;
+				break;
+			}
+		}
+		if( !valid )
+		{
+			R_FreeStaticTriSurf( tri );
+			break;
+		}
+
+		modelSurface_t surface;
+		surface.id = record.id;
+		surface.shader = shader;
+		surface.geometry = tri;
+		loadedSurfaces.Append( surface );
+	}
+
+	SDL_CloseIO( stream );
+	if( !valid )
+	{
+		R_StaticBatchFreeSurfaces( loadedSurfaces );
+		return false;
+	}
+	return true;
+}
+
+static bool R_StaticBatchSaveCache( const char* path, uint64_t sourceHash, const idList<modelSurface_t, TAG_MODEL>& surfaces )
+{
+	if( surfaces.Num() <= 0 || surfaces.Num() > (int)STATIC_BATCH_MAX_SURFACES )
+	{
+		return false;
+	}
+
+	staticBatchCacheHeader_t header;
+	memset( &header, 0, sizeof( header ) );
+	header.magic = STATIC_BATCH_CACHE_MAGIC;
+	header.version = STATIC_BATCH_CACHE_VERSION;
+	header.sourceHash = sourceHash;
+	header.surfaceCount = (uint32_t)surfaces.Num();
+	header.drawVertSize = sizeof( idDrawVert );
+	header.indexSize = sizeof( triIndex_t );
+
+	const idStr tempPath = va( "%s.tmp", path );
+	SDL_IOStream* stream = SDL_IOFromFile( tempPath.c_str(), "wb" );
+	if( stream == NULL )
+	{
+		return false;
+	}
+
+	bool valid = R_StaticBatchWriteExact( stream, &header, sizeof( header ) );
+	for( int i = 0; valid && i < surfaces.Num(); ++i )
+	{
+		const modelSurface_t& surface = surfaces[i];
+		const srfTriangles_t* tri = surface.geometry;
+		if( surface.shader == NULL || tri == NULL || tri->verts == NULL || tri->indexes == NULL ||
+			tri->numVerts <= 0 || tri->numVerts > STATIC_BATCH_MAX_VERTS ||
+			tri->numIndexes < 3 || tri->numIndexes > 1200000 )
+		{
+			valid = false;
+			break;
+		}
+
+		const char* materialName = surface.shader->GetName();
+		const size_t materialNameLength = strlen( materialName );
+		if( materialNameLength == 0 || materialNameLength > STATIC_BATCH_MAX_MATERIAL_NAME )
+		{
+			valid = false;
+			break;
+		}
+
+		staticBatchCacheSurface_t record;
+		record.id = surface.id;
+		record.numVerts = tri->numVerts;
+		record.numIndexes = tri->numIndexes;
+		record.generateNormals = tri->generateNormals ? 1u : 0u;
+		record.materialNameLength = (uint32_t)materialNameLength;
+		valid = R_StaticBatchWriteExact( stream, &record, sizeof( record ) ) &&
+			R_StaticBatchWriteExact( stream, materialName, materialNameLength ) &&
+			R_StaticBatchWriteExact( stream, tri->verts, (size_t)tri->numVerts * sizeof( idDrawVert ) ) &&
+			R_StaticBatchWriteExact( stream, tri->indexes, (size_t)tri->numIndexes * sizeof( triIndex_t ) );
+	}
+
+	const bool closed = SDL_CloseIO( stream );
+	valid = valid && closed;
+	if( valid && SDL_RenamePath( tempPath.c_str(), path ) )
+	{
+		return true;
+	}
+	SDL_RemovePath( tempPath.c_str() );
+	return false;
+}
+
+static bool R_StaticBatchGetCell( const modelSurface_t& surface, staticBatchGroupKey_t& key )
+{
+	const srfTriangles_t* tri = surface.geometry;
+	if( surface.shader == NULL || tri == NULL || tri->verts == NULL || tri->indexes == NULL ||
+		tri->numVerts <= 0 || tri->numIndexes <= 0 ||
+		!surface.shader->IsDrawn() ||
+		surface.shader->Coverage() != MC_OPAQUE ||
+		surface.shader->Deform() != DFRM_NONE ||
+		surface.shader->IsDiscrete() )
+	{
+		key.canMerge = false;
+		return false;
+	}
+
+	idBounds bounds;
+	bounds.Clear();
+	for( int i = 0; i < tri->numVerts; ++i )
+	{
+		bounds.AddPoint( tri->verts[i].xyz );
+	}
+
+	const float scale = 1.0f / (float)STATIC_BATCH_CELL_SIZE;
+	key.cellX = (int)floorf( ( bounds[0][0] + bounds[1][0] ) * 0.5f * scale );
+	key.cellY = (int)floorf( ( bounds[0][1] + bounds[1][1] ) * 0.5f * scale );
+	key.cellZ = (int)floorf( ( bounds[0][2] + bounds[1][2] ) * 0.5f * scale );
+	key.canMerge = true;
+	key.generateNormals = tri->generateNormals;
+	return true;
+}
+
+static int R_StaticBatchMergeSurfaces( idList<modelSurface_t, TAG_MODEL>& surfaces )
+{
+	const int originalSurfaceCount = surfaces.Num();
+	idList<modelSurface_t, TAG_MODEL> mergedSurfaces;
+	idList<staticBatchGroupKey_t, TAG_MODEL> groupKeys;
+	int mergedCount = 0;
+
+	for( int i = 0; i < originalSurfaceCount; ++i )
+	{
+		modelSurface_t surface = surfaces[i];
+		staticBatchGroupKey_t key;
+		memset( &key, 0, sizeof( key ) );
+		R_StaticBatchGetCell( surface, key );
+		key.sourceSurfaces = 1;
+
+		bool merged = false;
+		if( key.canMerge && surface.geometry->indexes != NULL && surface.geometry->numIndexes > 0 &&
+			surface.geometry->numVerts <= STATIC_BATCH_MAX_VERTS )
+		{
+			for( int j = 0; j < mergedSurfaces.Num(); ++j )
+			{
+				if( !groupKeys[j].canMerge ||
+					groupKeys[j].sourceSurfaces >= STATIC_BATCH_MAX_SOURCE_SURFACES ||
+					mergedSurfaces[j].shader != surface.shader ||
+					groupKeys[j].cellX != key.cellX || groupKeys[j].cellY != key.cellY || groupKeys[j].cellZ != key.cellZ ||
+					groupKeys[j].generateNormals != key.generateNormals )
+				{
+					continue;
+				}
+
+				srfTriangles_t* target = mergedSurfaces[j].geometry;
+				if( target == NULL ||
+					target->numVerts + surface.geometry->numVerts > STATIC_BATCH_MAX_VERTS ||
+					target->numIndexes + surface.geometry->numIndexes > 1200000 )
+				{
+					continue;
+				}
+
+				srfTriangles_t* combined = R_MergeTriangles( target, surface.geometry );
+				if( combined == NULL )
+				{
+					continue;
+				}
+				combined->generateNormals = target->generateNormals;
+				R_FreeStaticTriSurf( target );
+				R_FreeStaticTriSurf( surface.geometry );
+				mergedSurfaces[j].geometry = combined;
+				++groupKeys[j].sourceSurfaces;
+				merged = true;
+				++mergedCount;
+				break;
+			}
+		}
+
+		if( !merged )
+		{
+			mergedSurfaces.Append( surface );
+			groupKeys.Append( key );
+		}
+	}
+
+	if( mergedCount > 0 )
+	{
+		surfaces.SetNum( 0 );
+		for( int i = 0; i < mergedSurfaces.Num(); ++i )
+		{
+			surfaces.Append( mergedSurfaces[i] );
+		}
+	}
+	return mergedCount;
+}
+#endif
 
 static const byte BRM_VERSION = 108;
 static const unsigned int BRM_MAGIC = ( 'B' << 24 ) | ( 'R' << 16 ) | ( 'M' << 8 ) | BRM_VERSION;
@@ -1101,6 +1531,382 @@ int idRenderModelStatic::NearestJoint( int surfaceNum, int a, int b, int c ) con
 //=====================================================================
 
 
+
+void idRenderModelStatic::ApplyStaticBatching( bool rebuildDerived )
+{
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( !r_staticBatching.GetBool() || fastLoad || isStaticWorldModel || surfaces.Num() == 0 )
+	{
+		return;
+	}
+
+	// Binary .bproc maps contain surfaces that have already passed through
+	// FinishSurfaces(). Only world-area geometry is eligible on this path.
+	if( rebuildDerived && !isStaticWorldModel )
+	{
+		return;
+	}
+
+	const bool report = r_staticBatchingDebug.GetBool() && ( rebuildDerived || isStaticWorldModel );
+	if( report )
+	{
+		common->Printf( "Static batching evaluating: %s (%d surfaces)\n", name.c_str(), surfaces.Num() );
+	}
+
+	if( surfaces.Num() < 2 )
+	{
+		if( report )
+		{
+			common->Printf( "Static batching skipped: %s (%d surfaces, nothing to merge)\n", name.c_str(), surfaces.Num() );
+		}
+		return;
+	}
+
+	bool rebuildAllDerived = false;
+	bool rebuildMergedDerived = false;
+
+	uint64_t sourceHash = 0;
+	const bool sourceCanBeCached = R_StaticBatchComputeSourceHash( name.c_str(), surfaces, sourceHash );
+	idStr cachePath;
+	const bool cachePathReady = sourceCanBeCached && R_StaticBatchGetCachePath( sourceHash, cachePath );
+	idList<modelSurface_t, TAG_MODEL> cachedSurfaces;
+	bool cacheHit = false;
+
+	if( cachePathReady )
+	{
+		cacheHit = R_StaticBatchLoadCache( cachePath.c_str(), sourceHash, cachedSurfaces );
+	}
+
+	if( cacheHit )
+	{
+		rebuildAllDerived = true;
+		const int oldSurfaceCount = surfaces.Num();
+		R_StaticBatchFreeSurfaces( surfaces );
+		for( int i = 0; i < cachedSurfaces.Num(); ++i )
+		{
+			surfaces.Append( cachedSurfaces[i] );
+		}
+		cachedSurfaces.SetNum( 0 );
+
+		if( r_staticBatchingDebug.GetBool() )
+		{
+			common->Printf( "Static batching cache hit: %s (%d -> %d surfaces)\n", name.c_str(), oldSurfaceCount, surfaces.Num() );
+		}
+	}
+	else
+	{
+		const int oldSurfaceCount = surfaces.Num();
+		const int mergedCount = R_StaticBatchMergeSurfaces( surfaces );
+		rebuildMergedDerived = mergedCount > 0;
+		if( mergedCount > 0 )
+		{
+			bool saved = false;
+			if( cachePathReady )
+			{
+				saved = R_StaticBatchSaveCache( cachePath.c_str(), sourceHash, surfaces );
+			}
+			if( r_staticBatchingDebug.GetBool() )
+			{
+				common->Printf( "Static batching generated: %s (%d -> %d surfaces), cache %s\n",
+					name.c_str(), oldSurfaceCount, surfaces.Num(), saved ? "saved" : "unavailable" );
+			}
+		}
+		else if( r_staticBatchingDebug.GetBool() )
+		{
+			common->Printf( "Static batching skipped: %s (%d surfaces, no compatible merges)\n",
+				name.c_str(), oldSurfaceCount );
+		}
+	}
+	if( rebuildDerived && ( rebuildAllDerived || rebuildMergedDerived ) )
+	{
+		for( int i = 0; i < surfaces.Num(); ++i )
+		{
+			srfTriangles_t* tri = surfaces[i].geometry;
+			if( tri == NULL )
+			{
+				continue;
+			}
+
+			// Cache payloads and newly merged triangles only contain vertices
+			// and indexes. Rebuild silhouette, tangent and bound data for them.
+			if( rebuildAllDerived || tri->silIndexes == NULL )
+			{
+				R_CleanupTriangles( tri, tri->generateNormals, true, surfaces[i].shader->UseUnsmoothedTangents() );
+			}
+		}
+	}
+#endif
+}
+
+
+void R_BuildWorldStaticBatches( idList<idRenderModel*, TAG_MODEL>& localModels, const char* mapName, idList<idRenderModel*, TAG_MODEL>& outBatches )
+{
+	outBatches.SetNum( 0 );
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	// InitFromMap can reuse an already-loaded map without rebuilding its geometry.
+	// In that case the original area surfaces are already disabled and these batch
+	// models are the persistent representation that must be registered again.
+	for( int i = 0; i < localModels.Num(); ++i )
+	{
+		if( localModels[i] != NULL && idStr::Cmpn( localModels[i]->Name(), "_staticbatch_", 13 ) == 0 )
+		{
+			outBatches.Append( localModels[i] );
+		}
+	}
+	if( outBatches.Num() > 0 || !r_staticBatching.GetBool() || !r_staticBatchingWorld.GetBool() )
+	{
+		return;
+	}
+
+	struct worldBatchGroup_t
+	{
+		const idMaterial* shader;
+		staticBatchGroupKey_t key;
+		int sourceCount;
+		int totalVerts;
+		int totalIndexes;
+	};
+
+	struct worldBatchSource_t
+	{
+		idRenderModelStatic* model;
+		int surfaceIndex;
+		int groupIndex;
+	};
+
+	idList<worldBatchGroup_t, TAG_MODEL> groups;
+	idList<worldBatchSource_t, TAG_MODEL> sources;
+	int eligibleSurfaces = 0;
+	int batchedSourceSurfaces = 0;
+	int cacheHits = 0;
+	int cacheMisses = 0;
+
+	// The BSP compiler already groups surfaces by material inside each _area.
+	// Build new batches across all areas so repeated materials can share one draw.
+	for( int modelIndex = 0; modelIndex < localModels.Num(); ++modelIndex )
+	{
+		idRenderModel* baseModel = localModels[modelIndex];
+		if( baseModel == NULL || !baseModel->IsStaticWorldModel() ||
+			idStr::Cmpn( baseModel->Name(), "_area", 5 ) != 0 )
+		{
+			continue;
+		}
+
+		idRenderModelStatic* areaModel = static_cast<idRenderModelStatic*>( baseModel );
+		for( int surfaceIndex = 0; surfaceIndex < areaModel->surfaces.Num(); ++surfaceIndex )
+		{
+			const modelSurface_t& surface = areaModel->surfaces[surfaceIndex];
+			staticBatchGroupKey_t key;
+			memset( &key, 0, sizeof( key ) );
+
+			if( !R_StaticBatchGetCell( surface, key ) ||
+				surface.shader->ShouldCreateBackSides() ||
+				surface.shader->IsLOD() ||
+				idStr::Icmp( surface.shader->GetName(), "textures/smf/portal_sky" ) == 0 ||
+				surface.geometry->numVerts > STATIC_BATCH_MAX_VERTS ||
+				surface.geometry->numIndexes > 1200000 )
+			{
+				continue;
+			}
+
+			++eligibleSurfaces;
+			int groupIndex = -1;
+			for( int i = 0; i < groups.Num(); ++i )
+			{
+				worldBatchGroup_t& group = groups[i];
+				if( group.shader != surface.shader ||
+					group.key.cellX != key.cellX || group.key.cellY != key.cellY || group.key.cellZ != key.cellZ ||
+					group.key.generateNormals != key.generateNormals ||
+					group.sourceCount >= STATIC_BATCH_MAX_SOURCE_SURFACES ||
+					group.totalVerts + surface.geometry->numVerts > STATIC_BATCH_MAX_VERTS ||
+					group.totalIndexes + surface.geometry->numIndexes > 1200000 )
+				{
+					continue;
+				}
+				groupIndex = i;
+				break;
+			}
+
+			if( groupIndex < 0 )
+			{
+				worldBatchGroup_t newGroup;
+				memset( &newGroup, 0, sizeof( newGroup ) );
+				newGroup.shader = surface.shader;
+				newGroup.key = key;
+				groupIndex = groups.Append( newGroup );
+			}
+
+			worldBatchGroup_t& group = groups[groupIndex];
+			++group.sourceCount;
+			group.totalVerts += surface.geometry->numVerts;
+			group.totalIndexes += surface.geometry->numIndexes;
+
+			worldBatchSource_t source;
+			source.model = areaModel;
+			source.surfaceIndex = surfaceIndex;
+			source.groupIndex = groupIndex;
+			sources.Append( source );
+		}
+	}
+
+	int createdBatches = 0;
+	for( int groupIndex = 0; groupIndex < groups.Num(); ++groupIndex )
+	{
+		const worldBatchGroup_t& group = groups[groupIndex];
+		if( group.sourceCount < 2 )
+		{
+			continue;
+		}
+
+		// Hash the existing CPU meshes first. On a cache hit, do not duplicate or merge them.
+		idList<modelSurface_t, TAG_MODEL> hashSurfaces;
+		for( int i = 0; i < sources.Num(); ++i )
+		{
+			if( sources[i].groupIndex != groupIndex )
+			{
+				continue;
+			}
+			modelSurface_t hashSurface = sources[i].model->surfaces[sources[i].surfaceIndex];
+			hashSurface.id = sources[i].surfaceIndex; // stable ID; BSP proc surface IDs are not always initialized
+			hashSurfaces.Append( hashSurface );
+		}
+
+		if( hashSurfaces.Num() != group.sourceCount )
+		{
+			continue;
+		}
+
+		idStr batchKey = va( "%s|world-static-batch|%s|cell:%d:%d:%d|normals:%d|group:%d",
+			mapName != NULL ? mapName : "", group.shader->GetName(),
+			group.key.cellX, group.key.cellY, group.key.cellZ,
+			group.key.generateNormals ? 1 : 0, groupIndex );
+
+		uint64_t sourceHash = 0;
+		const bool canHash = R_StaticBatchComputeSourceHash( batchKey.c_str(), hashSurfaces, sourceHash );
+		idStr cachePath;
+		const bool cachePathReady = canHash && R_StaticBatchGetCachePath( sourceHash, cachePath );
+		idList<modelSurface_t, TAG_MODEL> batchSurfaces;
+		bool cacheHit = false;
+		if( cachePathReady )
+		{
+			cacheHit = R_StaticBatchLoadCache( cachePath.c_str(), sourceHash, batchSurfaces );
+		}
+
+		bool cacheSaved = false;
+		if( cacheHit )
+		{
+			++cacheHits;
+		}
+		else
+		{
+			// Cache miss: now allocate independent geometry that the merge helper can own.
+			idList<modelSurface_t, TAG_MODEL> sourceCopies;
+			for( int i = 0; i < sources.Num(); ++i )
+			{
+				if( sources[i].groupIndex != groupIndex )
+				{
+					continue;
+				}
+
+				const modelSurface_t& original = sources[i].model->surfaces[sources[i].surfaceIndex];
+				const srfTriangles_t* originalTri = original.geometry;
+				srfTriangles_t* copyTri = R_AllocStaticTriSurf();
+				copyTri->numVerts = originalTri->numVerts;
+				copyTri->numIndexes = originalTri->numIndexes;
+				copyTri->generateNormals = originalTri->generateNormals;
+				R_AllocStaticTriSurfVerts( copyTri, copyTri->numVerts );
+				R_AllocStaticTriSurfIndexes( copyTri, copyTri->numIndexes );
+				memcpy( copyTri->verts, originalTri->verts, (size_t)copyTri->numVerts * sizeof( idDrawVert ) );
+				memcpy( copyTri->indexes, originalTri->indexes, (size_t)copyTri->numIndexes * sizeof( triIndex_t ) );
+
+				modelSurface_t copiedSurface = original;
+				copiedSurface.id = sources[i].surfaceIndex;
+				copiedSurface.geometry = copyTri;
+				sourceCopies.Append( copiedSurface );
+			}
+
+			if( sourceCopies.Num() != group.sourceCount )
+			{
+				R_StaticBatchFreeSurfaces( sourceCopies );
+				continue;
+			}
+
+			const int mergedCount = R_StaticBatchMergeSurfaces( sourceCopies );
+			if( mergedCount <= 0 || sourceCopies.Num() != 1 )
+			{
+				R_StaticBatchFreeSurfaces( sourceCopies );
+				R_StaticBatchFreeSurfaces( batchSurfaces );
+				if( r_staticBatchingDebug.GetBool() )
+				{
+					common->Printf( "Static batching skipped: world %s / %s (%d surfaces, merge failed)\n",
+						mapName != NULL ? mapName : "<unknown>", group.shader->GetName(), group.sourceCount );
+				}
+				continue;
+			}
+
+			batchSurfaces.Append( sourceCopies[0] );
+			sourceCopies.SetNum( 0 ); // transfer ownership to batchSurfaces
+			if( cachePathReady )
+			{
+				cacheSaved = R_StaticBatchSaveCache( cachePath.c_str(), sourceHash, batchSurfaces );
+			}
+			++cacheMisses;
+		}
+
+		if( batchSurfaces.Num() != 1 || batchSurfaces[0].geometry == NULL )
+		{
+			R_StaticBatchFreeSurfaces( batchSurfaces );
+			continue;
+		}
+
+		idStr batchModelName = va( "_staticbatch_%016llx", (unsigned long long)sourceHash );
+		idRenderModel* batchModel = renderModelManager->AllocModel();
+		batchModel->InitEmpty( batchModelName.c_str() );
+		batchModel->AddSurface( batchSurfaces[0] );
+		batchSurfaces.SetNum( 0 ); // transfer ownership of the geometry to the model
+		batchModel->FinishSurfaces();
+		renderModelManager->AddModel( batchModel );
+		localModels.Append( batchModel );
+		outBatches.Append( batchModel );
+
+		// Keep BSP references and area bounds intact, but disable source draw calls.
+		for( int i = 0; i < sources.Num(); ++i )
+		{
+			if( sources[i].groupIndex == groupIndex )
+			{
+				modelSurface_t& original = sources[i].model->surfaces[sources[i].surfaceIndex];
+				if( original.geometry != NULL )
+				{
+					original.geometry->numIndexes = 0;
+				}
+			}
+		}
+		batchedSourceSurfaces += group.sourceCount;
+		++createdBatches;
+
+		if( r_staticBatchingDebug.GetBool() )
+		{
+			if( cacheHit )
+			{
+				common->Printf( "Static batching cache hit: %s (%d -> 1 surfaces)\n",
+					batchKey.c_str(), group.sourceCount );
+			}
+			else
+			{
+				common->Printf( "Static batching generated: %s (%d -> 1 surfaces), cache %s\n",
+					batchKey.c_str(), group.sourceCount, cacheSaved ? "saved" : "unavailable" );
+			}
+		}
+	}
+
+	if( r_staticBatchingDebug.GetBool() )
+	{
+		common->Printf( "Static batching world summary: %s, eligible=%d, batched=%d, batches=%d, cacheHits=%d, cacheMisses=%d\n",
+			mapName != NULL ? mapName : "<unknown>", eligibleSurfaces, batchedSourceSurfaces, createdBatches, cacheHits, cacheMisses );
+	}
+#endif
+}
+
 /*
 ================
 idRenderModelStatic::FinishSurfaces
@@ -1130,7 +1936,7 @@ void idRenderModelStatic::FinishSurfaces()
 {
 	int			i;
 	int			totalVerts, totalIndexes;
-	
+
 	hasDrawingSurfaces = false;
 	hasInteractingSurfaces = false;
 	hasShadowCastingSurfaces = false;
@@ -1184,7 +1990,14 @@ void idRenderModelStatic::FinishSurfaces()
 		}
 	}
 	
+
+	ApplyStaticBatching( false );
+
+
+	numOriginalSurfaces = surfaces.Num();
+
 	// duplicate and reverse triangles for two sided bump mapped surfaces
+
 	// note that this won't catch surfaces that have their shaders dynamically
 	// changed, and won't work with animated models.
 	// It is better to create completely separate surfaces, rather than

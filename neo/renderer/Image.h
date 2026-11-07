@@ -231,6 +231,7 @@ typedef enum
 	TD_DEPTH_STENCIL,       // depth buffer and stencil buffer
 	TD_HIGHQUALITY_CUBE,
 	//SP End
+	TD_SHADOW_ATLAS,		// single layer 2D depth array that holds the shadow maps of all lights of a frame
 } textureUsage_t;
 
 typedef enum
@@ -556,6 +557,7 @@ public:
 	idImage* 			fogEnterImage;				// adjust fogImage alpha based on terminator plane
 	// RB begin
 	idImage*			shadowImage[5];
+	idImage*			shadowAtlasImage;			// shadow maps of all lights of a frame, see idRenderBackend::ShadowAtlasPass
 	idImage*			jitterImage1;				// shadow jitter
 	idImage*			jitterImage4;
 	idImage*			jitterImage16;

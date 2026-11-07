@@ -66,6 +66,13 @@ idRenderProgManager::idRenderProgManager()
 */
 idRenderProgManager::idRenderProgManager()
 {
+#if !defined( USE_VULKAN )
+	uniformSerial = 1;
+	for( int i = 0; i < RENDERPARM_TOTAL; i++ )
+	{
+		uniformChangeSerial[i] = 1;
+	}
+#endif
 }
 
 /*
@@ -128,16 +135,29 @@ void idRenderProgManager::Init()
 		{ BUILTIN_AMBIENT_LIGHTING_SKINNED, "ambient_lighting", "_skinned", IDBIT( USE_GPU_SKINNING ), true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_SMALL_GEOMETRY_BUFFER, "gbuffer", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_SMALL_GEOMETRY_BUFFER_SKINNED, "gbuffer", "_skinned", IDBIT( USE_GPU_SKINNING ), true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		{ BUILTIN_AMBIENT_LIGHTING_INSTANCED, "ambient_lighting", "_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_SMALL_GEOMETRY_BUFFER_INSTANCED, "gbuffer", "_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#endif
 		// RB end
 		{ BUILTIN_TEXTURED, "texture.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_TEXTURE_VERTEXCOLOR, "texture_color.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		{ BUILTIN_TEXTURE_VERTEXCOLOR_INSTANCED, "texture_color.vfp", "_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#endif
 		{ BUILTIN_TEXTURE_VERTEXCOLOR_SRGB, "texture_color.vfp", "_SRGB", IDBIT( USE_SRGB ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED, "texture_color_skinned.vfp", "", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_TEXTURE_TEXGEN_VERTEXCOLOR, "texture_color_texgen.vfp", "",  0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		// RB begin
 		{ BUILTIN_INTERACTION, "interaction.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		{ BUILTIN_INTERACTION_INSTANCED, "interaction.vfp", "_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#endif
 		{ BUILTIN_INTERACTION_SKINNED, "interaction", "_skinned", IDBIT( USE_GPU_SKINNING ), true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_INTERACTION_AMBIENT, "interactionAmbient.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		{ BUILTIN_INTERACTION_AMBIENT_INSTANCED, "interactionAmbient.vfp", "_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#endif
 		{ BUILTIN_INTERACTION_AMBIENT_SKINNED, "interactionAmbient_skinned.vfp", "", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_INTERACTION_SHADOW_MAPPING_SPOT, "interactionSM", "_spot", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_INTERACTION_SHADOW_MAPPING_SPOT_SKINNED, "interactionSM", "_spot_skinned", IDBIT( USE_GPU_SKINNING ), true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
@@ -145,6 +165,11 @@ void idRenderProgManager::Init()
 		{ BUILTIN_INTERACTION_SHADOW_MAPPING_POINT_SKINNED, "interactionSM", "_point_skinned", IDBIT( USE_GPU_SKINNING ) | IDBIT( LIGHT_POINT ), true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_INTERACTION_SHADOW_MAPPING_PARALLEL, "interactionSM", "_parallel", IDBIT( LIGHT_PARALLEL ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_INTERACTION_SHADOW_MAPPING_PARALLEL_SKINNED, "interactionSM", "_parallel_skinned", IDBIT( USE_GPU_SKINNING ) | IDBIT( LIGHT_PARALLEL ), true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		{ BUILTIN_INTERACTION_SHADOW_MAPPING_SPOT_INSTANCED, "interactionSM", "_spot_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_INTERACTION_SHADOW_MAPPING_POINT_INSTANCED, "interactionSM", "_point_instanced", IDBIT( USE_GPU_INSTANCING ) | IDBIT( LIGHT_POINT ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_INTERACTION_SHADOW_MAPPING_PARALLEL_INSTANCED, "interactionSM", "_parallel_instanced", IDBIT( USE_GPU_INSTANCING ) | IDBIT( LIGHT_PARALLEL ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#endif
 		// RB end
 		{ BUILTIN_ENVIRONMENT, "environment.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_ENVIRONMENT_SKINNED, "environment_skinned.vfp", "",  0, true , SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT},
@@ -153,15 +178,27 @@ void idRenderProgManager::Init()
 		
 		{ BUILTIN_DEPTH, "depth.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_DEPTH_SKINNED, "depth_skinned.vfp", "", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		{ BUILTIN_DEPTH_INSTANCED, "depth.vfp", "_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#endif
 		
 		{ BUILTIN_SHADOW, "shadow.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_SHADOW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		{ BUILTIN_SHADOW_INSTANCED, "shadow.vfp", "_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_SHADOW_VERT },
+#endif
 		{ BUILTIN_SHADOW_SKINNED, "shadow_skinned.vfp", "", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_SHADOW_VERT_SKINNED },
 		
 		{ BUILTIN_SHADOW_DEBUG, "shadowDebug.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_SHADOW_DEBUG_SKINNED, "shadowDebug_skinned.vfp", "", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		
 		{ BUILTIN_BLENDLIGHT, "blendlight.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		{ BUILTIN_BLENDLIGHT_INSTANCED, "blendlight.vfp", "_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#endif
 		{ BUILTIN_FOG, "fog.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		{ BUILTIN_FOG_INSTANCED, "fog.vfp", "_instanced", IDBIT( USE_GPU_INSTANCING ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#endif
 		{ BUILTIN_FOG_SKINNED, "fog_skinned.vfp", "", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_SKYBOX, "skybox.vfp", "",  0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_WOBBLESKY, "wobblesky.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
@@ -246,7 +283,11 @@ void idRenderProgManager::Init()
 	
 	r_useHalfLambertLighting.ClearModified();
 	r_useHDR.ClearModified();
-	
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	CheckGPUInstancingShaders();
+#endif
+
 	uniforms.SetNum( RENDERPARM_TOTAL, vec4_zero );
 	
 	if( glConfig.gpuSkinningAvailable )
@@ -313,6 +354,10 @@ void idRenderProgManager::LoadAllShaders()
 		
 		LoadGLSLProgram( i, renderProgs[i].vertexShaderIndex, renderProgs[i].fragmentShaderIndex );
 	}
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	CheckGPUInstancingShaders();
+#endif
 }
 
 

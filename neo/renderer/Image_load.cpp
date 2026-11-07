@@ -128,6 +128,7 @@ ID_INLINE void idImage::DeriveOpts()
 				// sp end
 
 			case TD_SHADOW_ARRAY:
+			case TD_SHADOW_ATLAS:
 				opts.format = FMT_SHADOW_ARRAY;
 				break;
 

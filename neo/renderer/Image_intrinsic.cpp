@@ -575,6 +575,13 @@ static void R_CreateShadowMapImage_Res4( idImage* image )
 	image->GenerateShadowArray( size, size, TF_LINEAR, TR_CLAMP_TO_ZERO_ALPHA, TD_SHADOW_ARRAY );
 }
 
+// a placeholder until the back end needs the atlas, it resizes the image to r_shadowAtlasSize then
+static void R_CreateShadowAtlasImage( idImage* image )
+{
+	const int size = shadowMapResolutions[MAX_SHADOWMAP_RESOLUTIONS - 1];
+	image->GenerateShadowArray( size, size, TF_LINEAR, TR_CLAMP_TO_ZERO_ALPHA, TD_SHADOW_ATLAS );
+}
+
 const static int JITTER_SIZE = 128;
 static void R_CreateJitterImage16( idImage* image )
 {
@@ -876,7 +883,8 @@ void idImageManager::CreateIntrinsicImages()
 	shadowImage[2] = ImageFromFunction( va( "_shadowMapArray2_%i", shadowMapResolutions[2] ), R_CreateShadowMapImage_Res2 );
 	shadowImage[3] = ImageFromFunction( va( "_shadowMapArray3_%i", shadowMapResolutions[3] ), R_CreateShadowMapImage_Res3 );
 	shadowImage[4] = ImageFromFunction( va( "_shadowMapArray4_%i", shadowMapResolutions[4] ), R_CreateShadowMapImage_Res4 );
-	
+	shadowAtlasImage = ImageFromFunction( "_shadowAtlas", R_CreateShadowAtlasImage );
+
 	jitterImage1 = globalImages->ImageFromFunction( "_jitter1", R_CreateJitterImage1 );
 	jitterImage4 = globalImages->ImageFromFunction( "_jitter4", R_CreateJitterImage4 );
 	jitterImage16 = globalImages->ImageFromFunction( "_jitter16", R_CreateJitterImage16 );

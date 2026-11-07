@@ -195,6 +195,7 @@ public:
 	// This does not need to be called if none of the surfaces added with AddSurface require
 	// light interaction, and all the triangles are already well formed.
 	virtual void				FinishSurfaces() = 0;
+	virtual void				ApplyStaticBatching( bool ) {}
 	
 	// frees all the data, but leaves the class around for dangling references,
 	// which can regenerate the data with LoadModel()
@@ -325,5 +326,8 @@ public:
 		return true;
 	};
 };
+
+// Build cached world-space static batches from BSP area models.
+void R_BuildWorldStaticBatches( idList<idRenderModel*, TAG_MODEL>& localModels, const char* mapName, idList<idRenderModel*, TAG_MODEL>& outBatches );
 
 #endif /* !__MODEL_H__ */

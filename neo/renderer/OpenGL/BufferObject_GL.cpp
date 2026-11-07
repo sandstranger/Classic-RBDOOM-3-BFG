@@ -188,6 +188,23 @@ void idGLBufferRing::Unmap(int slot) {
     glUnmapBuffer(target_);
 }
 
+void idGLBufferRing::Unmap(int slot, GLsizeiptr writtenBytes) {
+    if (persistent_) {
+        FlushRange(slot, 0, writtenBytes);
+        return;
+    }
+    glBindBuffer(target_, buffers[slot]);
+    glUnmapBuffer(target_);
+}
+
+void idGLBufferRing::FlushRange(int slot, GLsizeiptr offset, GLsizeiptr length) {
+    if (!persistent_ || coherent_ || length <= 0) {
+        return;
+    }
+    glBindBuffer(target_, buffers[slot]);
+    glFlushMappedBufferRange(target_, offset, length);
+}
+
 GLuint idGLBufferRing::Buffer(int slot) const {
     return buffers[slot];
 }

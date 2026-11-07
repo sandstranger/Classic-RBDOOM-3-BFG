@@ -147,7 +147,7 @@ RenderTarget RenderTargetPool::CreateRenderTarget(const RenderTargetDesc& desc,c
     RenderTarget rt;rt.desc=desc;rt.debugName=name;rt.attachmentRefs=0;
     GLint oldFbo=0,oldTex=0;glGetIntegerv(GL_FRAMEBUFFER_BINDING,&oldFbo);glGetIntegerv(GL_TEXTURE_BINDING_2D,&oldTex);
     glGenTextures(1,&rt.textureID);if(!rt.textureID)return rt;
-    glBindTexture(GL_TEXTURE_2D,rt.textureID);
+    R_DirectBindTexture(GL_TEXTURE_2D,rt.textureID);
     glTexStorage2D(GL_TEXTURE_2D,desc.levels,desc.internalFormat,desc.width,desc.height);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAX_LEVEL,desc.levels-1);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
@@ -162,7 +162,7 @@ RenderTarget RenderTargetPool::CreateRenderTarget(const RenderTargetDesc& desc,c
     }
     else glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,rt.textureID,0);
     GLenum status=glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    glBindFramebuffer(GL_FRAMEBUFFER,oldFbo);glBindTexture(GL_TEXTURE_2D,oldTex);
+    glBindFramebuffer(GL_FRAMEBUFFER,oldFbo);R_DirectBindTexture(GL_TEXTURE_2D,oldTex);
     if(status!=GL_FRAMEBUFFER_COMPLETE)
     {
         common->Warning("RenderTargetPool::CreateRenderTarget(%s): incomplete FBO 0x%X",name.c_str(),status);
@@ -178,7 +178,7 @@ bool RenderTargetPool::CanReuse(const RenderTarget& rt,const RenderTargetDesc& d
 }
 void RenderTargetPool::DestroyRenderTarget(RenderTarget& rt)
 {
-    if(rt.textureID){glDeleteTextures(1,&rt.textureID);rt.textureID=0;}
+    if(rt.textureID){R_DirectDeleteTextures(1,&rt.textureID);rt.textureID=0;}
     if(rt.fboID){glDeleteFramebuffers(1,&rt.fboID);rt.fboID=0;}
     rt.attachmentRefs=0;
 }
@@ -252,6 +252,27 @@ void Framebuffer::Init()
         glReadBuffer(GL_NONE);
 #endif
     }
+
+    // depth only target for the shadow atlas, the back end attaches the atlas image every frame
+    globalFramebuffers.shadowAtlasFBO = new Framebuffer("_shadowAtlas", shadowMapResolutions[0], shadowMapResolutions[0]);
+#ifndef ANDROID
+    if (!glConfig.directStateAccess)
+    {
+        globalFramebuffers.shadowAtlasFBO->Bind();
+        glDrawBuffers(0, NULL);
+    }
+    else
+    {
+        glNamedFramebufferDrawBuffers(globalFramebuffers.shadowAtlasFBO->frameBuffer, 0, NULL);
+    }
+#else
+    {
+        globalFramebuffers.shadowAtlasFBO->Bind();
+        GLenum drawBuffers[] = { GL_NONE };
+        glDrawBuffers(1, drawBuffers);
+        glReadBuffer(GL_NONE);
+    }
+#endif
 #ifndef _WIN32
     int screenWidth = renderSystem->GetWidth() > 0 ? renderSystem->GetWidth() : 1280;
     int screenHeight = renderSystem->GetHeight() > 0 ? renderSystem->GetHeight() : 720;
@@ -474,6 +495,9 @@ void Framebuffer::Bind()
 
     if (currentBoundFramebuffer != this)
     {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+        tr.backend.FlushMultiDrawBatch();
+#endif
         glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer);
         currentBoundFramebuffer = this;
     }
@@ -541,6 +565,9 @@ void Framebuffer::Unbind()
 
     if (currentBoundFramebuffer != nullptr)
     {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+        tr.backend.FlushMultiDrawBatch();
+#endif
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
         currentBoundFramebuffer = nullptr;
@@ -572,6 +599,29 @@ void Framebuffer::InvalidateDefaultFramebufferAttachments()
 #endif
 }
 
+void Framebuffer::InvalidateDefaultFramebufferForOverwrite()
+{
+    Unbind();
+#if defined(ANDROID)
+    if (!r_useTileBasedOptimizations.GetBool())
+    {
+        return;
+    }
+
+    // The next draw covers the whole back buffer, so a tile based GPU
+    // must not read the old color, depth or stencil back into its tiles.
+    const GLenum attachments[] = { GL_COLOR, GL_DEPTH, GL_STENCIL };
+    if (glInvalidateFramebuffer != nullptr)
+    {
+        glInvalidateFramebuffer(GL_FRAMEBUFFER, 3, attachments);
+    }
+    else if (GLAD_GL_EXT_discard_framebuffer && glDiscardFramebufferEXT != nullptr)
+    {
+        glDiscardFramebufferEXT(GL_FRAMEBUFFER, 3, attachments);
+    }
+#endif
+}
+
 bool Framebuffer::IsDefaultFramebufferActive()
 {
     return (currentBoundFramebuffer == nullptr);
@@ -596,7 +646,7 @@ void Framebuffer::AddColorBuffer(int format, int index, int multiSamples)
         glGenTextures(1, &colorTextures[index]);
     }
 
-    glBindTexture(GL_TEXTURE_2D, colorTextures[index]);
+    R_DirectBindTexture(GL_TEXTURE_2D, colorTextures[index]);
     if (useMSAA)
     {
         glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0 + index,GL_TEXTURE_2D,colorTextures[index],0,multiSamples);
@@ -628,7 +678,7 @@ void Framebuffer::AddDepthBuffer(int format, int multiSamples)
         glGenTextures(1, &depthTexture);
     }
 
-    glBindTexture(GL_TEXTURE_2D, depthTexture);
+    R_DirectBindTexture(GL_TEXTURE_2D, depthTexture);
 
     if (useMSAA)
     {
@@ -707,7 +757,7 @@ void Framebuffer::AttachImage2D(int target, const idImage* image, int index, int
 #if ANDROID
     if (colorTextures[index] != 0 && colorTextures[index] != image->texnum)
     {
-        glDeleteTextures(1, &colorTextures[index]);
+        R_DirectDeleteTextures(1, &colorTextures[index]);
         colorTextures[index] = 0;
     }
 #endif
@@ -742,7 +792,7 @@ void Framebuffer::AttachImageDepth(int target, const idImage* image)
     // AddDepthBuffer's temporary texture is superseded by the idImage depth attachment.
     if (depthTexture != 0 && depthTexture != image->texnum)
     {
-        glDeleteTextures(1, &depthTexture);
+        R_DirectDeleteTextures(1, &depthTexture);
         depthTexture = 0;
     }
 #endif
@@ -947,14 +997,14 @@ void Framebuffer::PurgeFramebuffer()
             renderTargetPool.ReleaseAttachmentRef(attachedImageColorTextures[i]);
             attachedImageColorTextures[i]=0;
         }
-        if(colorTextures[i]){glDeleteTextures(1,&colorTextures[i]);colorTextures[i]=0;}
+        if(colorTextures[i]){R_DirectDeleteTextures(1,&colorTextures[i]);colorTextures[i]=0;}
     }
     if(attachedImageDepthTexture)
     {
         renderTargetPool.ReleaseAttachmentRef(attachedImageDepthTexture);
         attachedImageDepthTexture=0;
     }
-    if(depthTexture){glDeleteTextures(1,&depthTexture);depthTexture=0;}
+    if(depthTexture){R_DirectDeleteTextures(1,&depthTexture);depthTexture=0;}
     if(depthBuffer){glDeleteRenderbuffers(1,&depthBuffer);depthBuffer=0;}
     if(stencilBuffer){glDeleteRenderbuffers(1,&stencilBuffer);stencilBuffer=0;}
 }

@@ -2854,6 +2854,7 @@ void idRenderBackend::DBG_ShowShadowMaps()
 		
 		GL_SelectTexture( 0 );
 		image->Bind();
+		GL_ActivateTextureUnit();
 		glTexParameteri( GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_MODE, GL_NONE );
 		
 		

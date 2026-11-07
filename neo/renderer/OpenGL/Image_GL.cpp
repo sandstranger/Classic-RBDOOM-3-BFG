@@ -327,20 +327,22 @@ void idImage::Bind() {
 
     const int texUnit = tr.backend.GetCurrentTextureUnit();
 
-
-    tmu_t *tmu = &glcontext.tmu[texUnit];
-
     // what the unit has bound, as far as Bind knows: binds and deletes elsewhere drop it
-    // (R_DirectBindTexture, R_DirectDeleteTextures), so does every new frame
-    uint* currentMap;
-    if (opts.textureType == TT_CUBIC) {
-        currentMap = &tmu->currentCubeMap;
-    } else if (opts.textureType == TT_2D_ARRAY) {
-        currentMap = &tmu->current2DArray;
-    } else {
-        currentMap = &tmu->current2DMap;
+    // (R_DirectBindTexture, R_DirectDeleteTextures), so does every new frame;
+    // units past the cache are bound every time
+    uint uncachedMap = TEXTURE_NOT_LOADED;
+    uint* currentMap = &uncachedMap;
+    if (texUnit >= 0 && texUnit < MAX_MULTITEXTURE_UNITS) {
+        tmu_t *tmu = &glcontext.tmu[texUnit];
+        if (opts.textureType == TT_CUBIC) {
+            currentMap = &tmu->currentCubeMap;
+        } else if (opts.textureType == TT_2D_ARRAY) {
+            currentMap = &tmu->current2DArray;
+        } else {
+            currentMap = &tmu->current2DMap;
+        }
     }
-    if (*currentMap != texnum || !r_useStateCaching.GetBool()) {
+    if (*currentMap != texnum || currentMap == &uncachedMap || !r_useStateCaching.GetBool()) {
 #if defined(ANDROID) && !defined(USE_VULKAN)
         tr.backend.FlushMultiDrawBatch();
 #endif

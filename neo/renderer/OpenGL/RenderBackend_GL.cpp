@@ -922,19 +922,21 @@ idRenderBackend::DrawElementsWithCounters
 =============
 idRenderBackend::DrawWorldMergeRange
 
-Draws merged surfaces: 32 bit indexes from this frame's merge buffer into the
-static or the baked vertex buffer, with whatever program and state is set up
+Draws merged world surfaces: 32 bit indexes from this frame's merge buffer
+into the static vertex buffer, with whatever program and state is set up
 =============
 */
-void idRenderBackend::DrawWorldMergeRange( int firstIndex, int numIndexes, unsigned int vertexBuffer )
+void idRenderBackend::DrawWorldMergeRange( int firstIndex, int numIndexes )
 {
-	if( numIndexes <= 0 || worldMergeIndexBuffer == 0 || vertexBuffer == 0 )
+	if( numIndexes <= 0 || worldMergeIndexBuffer == 0 )
 	{
 		return;
 	}
-	
+
 	FlushMultiDrawBatch();
-	
+
+	idVertexBuffer* vertexBuffer = &vertexCache.staticData.vertexBuffer;
+
 	renderProgManager.CommitUniforms( glStateBits );
 
 	if( ( GLintptr )currentIndexBuffer != ( GLintptr )worldMergeIndexBuffer || !r_useStateCaching.GetBool() )
@@ -943,12 +945,12 @@ void idRenderBackend::DrawWorldMergeRange( int firstIndex, int numIndexes, unsig
 		currentIndexBuffer = worldMergeIndexBuffer;
 	}
 
-	// the indexes count from the first vertex of the buffer
-	if( ( vertexLayout != LAYOUT_DRAW_VERT ) || ( ( GLintptr )currentVertexBuffer != ( GLintptr )vertexBuffer ) ||
+	// the indexes count from the first vertex of the static buffer
+	if( ( vertexLayout != LAYOUT_DRAW_VERT ) || ( ( GLintptr )currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) ||
 			!r_useStateCaching.GetBool() || ( !isGLES32Version() && currentVertOffset != 0 ) )
 	{
-		glBindBuffer( GL_ARRAY_BUFFER, vertexBuffer );
-		currentVertexBuffer = vertexBuffer;
+		glBindBuffer( GL_ARRAY_BUFFER, ( GLintptr )vertexBuffer->GetAPIObject() );
+		currentVertexBuffer = ( GLintptr )vertexBuffer->GetAPIObject();
 
 		glEnableVertexAttribArray( PC_ATTRIB_INDEX_VERTEX );
 		glEnableVertexAttribArray( PC_ATTRIB_INDEX_NORMAL );
@@ -1059,7 +1061,7 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 	// the first surface of a merged world group draws the whole group
 	if( worldMergeSurf != NULL && surf == worldMergeSurf )
 	{
-		DrawWorldMergeRange( worldMergeFirstIndex, worldMergeNumIndexes, worldMergeVertexBuffer );
+		DrawWorldMergeRange( worldMergeFirstIndex, worldMergeNumIndexes );
 		return;
 	}
 
@@ -2840,7 +2842,6 @@ idRenderBackend::idRenderBackend()
 	worldMergeSurf = NULL;
 	worldMergeFirstIndex = 0;
 	worldMergeNumIndexes = 0;
-	worldMergeVertexBuffer = 0;
 	worldMergeIndexBuffer = 0;
 #endif
 }

@@ -196,8 +196,8 @@ struct drawSurf_t
 	volatile shadowVolumeState_t shadowVolumeState;
 	int						shadowMapCulledSides;	// point light shadow map sides (bit per cube side) this caster can't reach, 0 = draw it on all of them
 
-	// a CPU copy of the indexes behind indexCache for static geometry, NULL otherwise;
-	// the back end merges the draws of these surfaces (see idRenderBackend::WorldMergePass)
+	// a CPU copy of the indexes behind indexCache for static world geometry, NULL otherwise;
+	// the back end merges the draws of these surfaces (see R_WorldMergePass)
 	const triIndex_t*		staticIndexes;
 	int						mergedGroup;			// set by the back end: 0 = drawn on its own
 };
@@ -454,8 +454,6 @@ struct viewEntity_t
 
 	// an _area model of the world: identity transform, so the surfaces of all of them share one MVP
 	bool					staticWorldArea;
-	// an entity with a static model: the back end may copy it to world space and merge it like the world
-	bool					staticModel;
 
 	float					modelMatrix[16];		// local coords to global coords
 	float					modelViewMatrix[16];	// local coords to eye coords
@@ -1012,9 +1010,6 @@ extern idCVar r_useLightDepthBounds;		// use depth bounds test on lights to redu
 extern idCVar r_useShadowDepthBounds;		// use depth bounds test on individual shadows to reduce shadow fill
 // RB begin
 extern idCVar r_useShadowMapping;			// use shadow mapping instead of stencil shadows
-
-// bumped whenever static models may have been freed: the back end drops what it derived from them
-extern int r_staticGeometryGeneration;
 extern idCVar r_useHalfLambertLighting;		// use Half-Lambert lighting instead of classic Lambert
 extern idCVar r_useHDR;
 extern idCVar r_useSRGB;

@@ -457,9 +457,7 @@ static void R_CheckPortableExtensions()
     glConfig.fragmentProgramAvailable = true;
 #if !defined(USE_VULKAN)
     // GLAD defines generated symbols even for extensions the active driver lacks.
-    g_multiDrawIndirectAvailable = GLAD_GL_EXT_multi_draw_indirect != 0
-        && glMultiDrawElementsIndirectEXT != NULL
-        && glConfig.drawElementsBaseVertexAvailable;
+    g_multiDrawIndirectAvailable = false;
     R_PrintExtensionStatus(g_multiDrawIndirectAvailable, "GL_EXT_multi_draw_indirect");
 #endif
 #endif

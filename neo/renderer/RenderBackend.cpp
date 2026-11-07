@@ -1381,59 +1381,71 @@ static bool R_GPUShaderPassMaterialInstanceable( const idMaterial* material )
 
 WORLD SURFACE MERGING
 
-dmap gives every BSP area its own model with one surface per material, so the
-visible world costs a draw call per area and material in the depth pass, in the
-ambient pass, for every light and every shadow map side, even where the areas
-share their materials. All area models have the identity transform and keep
-their geometry in the static vertex buffer: any set of their surfaces can be
-drawn with one call once their indexes sit next to each other, rebased to the
-start of that buffer.
+dmap gives every BSP area its own model with one surface per material, and every
+func_static is an entity of its own, so the visible world costs a draw call per
+area, prop and material in the depth pass, in the ambient pass, for every light,
+fog light and shadow map side, even where they all share a material.
 
-Before the first command of a frame WorldMergePass collects, for every 3D view
-- the opaque world surfaces, ordered by material: the depth pass draws all of
-  them with one call, the ambient pass one call per material
-- per light, the lit world surfaces of the same material: one interaction draw
-  per material instead of one per area
-- per light shadow map side, the opaque world casters: one draw
-and writes their 32 bit indexes into one buffer for the frame. Only surfaces
-the front end put into the view or the light are merged, so nothing is drawn
-that wasn't drawn before, and the old static batching's merged entities, which
-were drawn whenever any area they spanned was visible and added shadow volumes
-on top of the prelight ones, are not needed.
+All area models have the identity transform and keep their geometry in the static
+vertex buffer: any set of their surfaces can be drawn with one call once their
+indexes sit next to each other, rebased to the start of that buffer. The static
+models of entities that stand still are copied to world space once, into the baked
+vertex buffer, and are merged the same way there.
+
+Before the first command of a frame WorldMergePass collects for every 3D view
+- the opaque world and baked surfaces, ordered by material: the depth pass draws
+  each buffer's surfaces with one call, the ambient pass one call per material
+- per light, the lit surfaces of a material on more than one area or prop
+- per fog and blend light, all of its surfaces: their drawing ignores the material
+- per light shadow map side, the opaque casters
+and writes their 32 bit indexes into one buffer for the frame. Only surfaces the
+front end put into the view or the light are merged, so nothing is drawn that
+wasn't drawn before.
 
 ==============================================================================================
 */
 
 idCVar r_mergeWorldSurfaces( "r_mergeWorldSurfaces", "1", CVAR_RENDERER | CVAR_BOOL, "draw the visible world surfaces of a material together: in the depth and ambient passes, for each light and each shadow map side" );
 idCVar r_mergeWorldSurfacesDebug( "r_mergeWorldSurfacesDebug", "0", CVAR_RENDERER | CVAR_BOOL, "print what WorldMergePass merged every frame" );
+idCVar r_bakeStaticModels( "r_bakeStaticModels", "1", CVAR_RENDERER | CVAR_BOOL, "copy the static models of entities that stand still to world space, so their draws merge with each other like the world's" );
 
 static const int WORLD_MERGE_SHADOW_CASTER = 0x7fffffff;	// drawSurf_t::mergedGroup of a caster drawn with its light's merged casters
 static const int WORLD_MERGE_MIN_RING_SIZE = 1024 * 1024;
 static const int WORLD_MERGE_MAX_RING_SIZE = 16 * 1024 * 1024;
 static const int WORLD_MERGE_MAX_GROUPS = 4096;
+static const int WORLD_MERGE_MAX_SUBSTITUTES = 2048;
 static const int WORLD_MERGE_MAX_VIEWS = 16;
 static const int WORLD_MERGE_MAX_CASTER_LIGHTS = 128;
+
+enum worldMergeKind_t
+{
+	WORLD_MERGE_WORLD,		// _area surfaces, from the static vertex buffer
+	WORLD_MERGE_BAKED,		// static models of entities, from their world space copies in the baked vertex buffer
+	WORLD_MERGE_KINDS
+};
 
 struct worldMergeGroup_t
 {
 	int					firstIndex;		// in the merge buffer of the frame
 	int					numIndexes;
+	int					kind;
 	int					drawnStamp;		// the pass that drew the group already
+	const drawSurf_t*	substitute;		// baked groups: the first member, set up with a world area's space
 };
 
 struct worldMergeView_t
 {
 	const viewDef_t*	viewDef;
-	const viewEntity_t*	space;			// any of the view's world areas, they share the MVP
-	int					firstIndex;		// all opaque world surfaces of the view
-	int					numIndexes;
+	const viewEntity_t*	space;			// one of the view's world areas: identity transform
+	int					firstIndex[WORLD_MERGE_KINDS];	// all opaque surfaces of the view
+	int					numIndexes[WORLD_MERGE_KINDS];
 };
 
 struct worldMergeCasters_t
 {
 	const viewLight_t*	vLight;
-	int					firstIndex[6];	// per shadow map side, a projected light only has the first
-	int					numIndexes[6];
+	int					firstIndex[WORLD_MERGE_KINDS][6];	// per shadow map side, a projected light only has the first
+	int					numIndexes[WORLD_MERGE_KINDS][6];
 };
 
 struct worldMergeWriter_t
@@ -1444,9 +1456,18 @@ struct worldMergeWriter_t
 	int					wanted;			// what all merges of the frame needed, the buffer grows to it
 };
 
+// a candidate surface and its first vertex in the buffer of its kind
+struct worldMergeSurf_t
+{
+	const drawSurf_t*	surf;
+	uint32				baseVertex;
+};
+
 // plain arrays: nothing here may run a destructor at exit()
 static worldMergeGroup_t	s_worldMergeGroups[WORLD_MERGE_MAX_GROUPS];
 static int					s_numWorldMergeGroups;
+static drawSurf_t			s_worldMergeSubstitutes[WORLD_MERGE_MAX_SUBSTITUTES];
+static int					s_numWorldMergeSubstitutes;
 static worldMergeView_t		s_worldMergeViews[WORLD_MERGE_MAX_VIEWS];
 static int					s_numWorldMergeViews;
 static worldMergeCasters_t	s_worldMergeCasters[WORLD_MERGE_MAX_CASTER_LIGHTS];
@@ -1456,10 +1477,304 @@ static idGLBufferRing*		s_worldMergeRing;			// allocated on first use, destroyed
 static int					s_worldMergeRingSize;		// bytes per frame slot
 static int					s_worldMergeWantedBytes;
 
+/*
+==============================================================================================
+
+BAKED STATIC MODELS
+
+A static model surface of an entity, copied to world space with the transform of
+the entity. The copy is made once an entity was seen with the same transform in
+two frames in a row, so moving entities never fill the buffer. Everything is
+dropped when the static models may change (a level load).
+
+==============================================================================================
+*/
+
+struct bakedSurf_t
+{
+	const srfTriangles_t*	tri;			// NULL: free slot
+	vertCacheHandle_t		ambientCache;	// the static cache of tri when it was copied, a tri allocated later at the same address has another
+	float					modelMatrix[16];
+	int						firstVertex;	// in the baked vertex buffer
+};
+
+struct bakeRequest_t
+{
+	const srfTriangles_t*	tri;
+	const float*			modelMatrix;
+	uint32					hash;
+};
+
+static const int BAKE_TABLE_SIZE = 8192;				// power of two, open addressing
+static const int BAKE_MAX_SURFACES = BAKE_TABLE_SIZE * 3 / 4;
+static const int BAKE_MAX_VERTEXES = 256 * 1024;		// 8 MB of idDrawVerts
+static const int BAKE_MAX_PENDING = 1024;
+
+static bakedSurf_t*			s_bakeTable;				// allocated on first use, never freed: no destructor at exit()
+static int					s_numBakedSurfs;
+static unsigned int			s_bakedVertexBuffer;		// destroyed by RB_ShutdownWorldMerge
+static int					s_bakedVertexesUsed;
+static int					s_bakeGeneration = -1;
+static bakeRequest_t		s_bakePending[2][BAKE_MAX_PENDING];	// seen once, by frame parity
+static int					s_numBakePending[2];
+static int					s_bakeFrame;
+static bakeRequest_t		s_bakeRequests[BAKE_MAX_PENDING];	// to copy this frame
+static int					s_numBakeRequests;
+static bool					s_useBakedSurfs;			// this frame's merges take baked surfaces
+
+// a word at a time, each shifted down after the multiply: the matrices are often round
+// numbers, whose bits are all high, and the table is indexed with the low bits
+static uint32 R_BakeHashWord( uint32 hash, uint32 word )
+{
+	hash = ( hash ^ word ) * 0x9E3779B1u;
+	return hash ^ ( hash >> 15 );
+}
+
+static uint32 R_BakeHash( const srfTriangles_t* tri, const float* modelMatrix )
+{
+	const uint64 pointer = ( uint64 )( uintptr_t )tri;
+	uint32 hash = R_BakeHashWord( 2166136261u, ( uint32 )pointer );
+	hash = R_BakeHashWord( hash, ( uint32 )( pointer >> 32 ) );
+	uint32 words[16];
+	memcpy( words, modelMatrix, sizeof( words ) );
+	for( int i = 0; i < 16; i++ )
+	{
+		hash = R_BakeHashWord( hash, words[i] );
+	}
+	return hash;
+}
+
+static const bakedSurf_t* R_FindBakedSurf( const srfTriangles_t* tri, const float* modelMatrix, uint32 hash )
+{
+	if( s_bakeTable == NULL )
+	{
+		return NULL;
+	}
+	for( int probe = 0; probe < BAKE_TABLE_SIZE; probe++ )
+	{
+		const bakedSurf_t& baked = s_bakeTable[( hash + probe ) & ( BAKE_TABLE_SIZE - 1 )];
+		if( baked.tri == NULL )
+		{
+			return NULL;
+		}
+		if( baked.tri == tri && baked.ambientCache == tri->ambientCache && memcmp( baked.modelMatrix, modelMatrix, sizeof( baked.modelMatrix ) ) == 0 )
+		{
+			return &baked;
+		}
+}
+	return NULL;
+}
+
+// a rotation and a translation: normals and tangents stay valid after a plain rotation
+static bool R_BakeableTransform( const float* m )
+{
+	if( m[3] != 0.0f || m[7] != 0.0f || m[11] != 0.0f || m[15] != 1.0f )
+	{
+		return false;
+	}
+	const idVec3 x( m[0], m[1], m[2] );
+	const idVec3 y( m[4], m[5], m[6] );
+	const idVec3 z( m[8], m[9], m[10] );
+	const float epsilon = 1e-3f;
+	if( idMath::Fabs( x.LengthSqr() - 1.0f ) > epsilon || idMath::Fabs( y.LengthSqr() - 1.0f ) > epsilon || idMath::Fabs( z.LengthSqr() - 1.0f ) > epsilon )
+	{
+		return false;
+	}
+	if( idMath::Fabs( x * y ) > epsilon || idMath::Fabs( y * z ) > epsilon || idMath::Fabs( z * x ) > epsilon )
+	{
+		return false;
+	}
+	// a mirror would flip the bitangents
+	return ( x.Cross( y ) * z ) > 0.0f;
+}
+
+// only models loaded with the level have static caches: their vertexes are final, and
+// models made during the game (broken glass) rebuild their surfaces at the same addresses
+static bool R_BakeCandidate( const drawSurf_t* surf )
+{
+	return surf->space != NULL && surf->space->staticModel && surf->staticIndexes != NULL && surf->numIndexes > 0
+		   && surf->frontEndGeo != NULL && surf->frontEndGeo->verts != NULL && surf->frontEndGeo->numVerts > 0
+		   && vertexCache.CacheIsStatic( surf->frontEndGeo->ambientCache )
+		   && surf->jointCache == 0 && surf->material != NULL && surf->material->Deform() == DFRM_NONE
+		   && surf->material->Coverage() != MC_TRANSLUCENT;	// translucent surfaces are never merged
+}
+
+static bool R_FindBakeRequest( const bakeRequest_t* list, int num, const srfTriangles_t* tri, const float* modelMatrix, uint32 hash )
+{
+	for( int i = 0; i < num; i++ )
+	{
+		if( list[i].hash == hash && list[i].tri == tri && memcmp( list[i].modelMatrix, modelMatrix, 16 * sizeof( float ) ) == 0 )
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+// the pending lists keep pointers to last frame's matrices, compare those by hash only
+static bool R_FindPending( const bakeRequest_t* list, int num, const srfTriangles_t* tri, uint32 hash )
+{
+	for( int i = 0; i < num; i++ )
+	{
+		if( list[i].hash == hash && list[i].tri == tri )
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+// a surface of a static model: copied this frame if its entity stood still since the last one
+static void R_RequestBake( const drawSurf_t* surf )
+{
+	if( !R_BakeCandidate( surf ) )
+	{
+		return;
+	}
+	const srfTriangles_t* tri = surf->frontEndGeo;
+	const float* modelMatrix = surf->space->modelMatrix;
+	const uint32 hash = R_BakeHash( tri, modelMatrix );
+	if( R_FindBakedSurf( tri, modelMatrix, hash ) != NULL || R_FindBakeRequest( s_bakeRequests, s_numBakeRequests, tri, modelMatrix, hash ) )
+	{
+		return;
+	}
+	if( !R_BakeableTransform( modelMatrix ) )
+	{
+		return;
+	}
+
+	const int current = s_bakeFrame & 1;
+	if( R_FindPending( s_bakePending[current ^ 1], s_numBakePending[current ^ 1], tri, hash ) )
+	{
+		if( s_numBakeRequests < BAKE_MAX_PENDING )
+		{
+			bakeRequest_t& request = s_bakeRequests[s_numBakeRequests++];
+			request.tri = tri;
+			request.modelMatrix = modelMatrix;
+			request.hash = hash;
+		}
+	}
+	else if( !R_FindPending( s_bakePending[current], s_numBakePending[current], tri, hash ) && s_numBakePending[current] < BAKE_MAX_PENDING )
+	{
+		bakeRequest_t& pending = s_bakePending[current][s_numBakePending[current]++];
+		pending.tri = tri;
+		pending.modelMatrix = NULL;
+		pending.hash = hash;
+	}
+}
+
+static void R_RequestBakes( const drawSurf_t* chain )
+{
+	for( const drawSurf_t* surf = chain; surf != NULL; surf = surf->nextOnLight )
+	{
+		R_RequestBake( surf );
+	}
+}
+
+// writes the world space copies of this frame's requests into the baked vertex buffer
+static void R_BakeRequestedSurfs()
+{
+	if( s_numBakeRequests == 0 )
+	{
+		return;
+	}
+
+	int numVerts = 0;
+	int numFit = 0;
+	for( ; numFit < s_numBakeRequests; numFit++ )
+	{
+		const int surfVerts = s_bakeRequests[numFit].tri->numVerts;
+		if( s_bakedVertexesUsed + numVerts + surfVerts > BAKE_MAX_VERTEXES || s_numBakedSurfs + numFit + 1 > BAKE_MAX_SURFACES )
+		{
+			break;
+		}
+		numVerts += surfVerts;
+	}
+	if( numFit == 0 )
+	{
+		return;
+	}
+
+	if( s_bakeTable == NULL )
+	{
+		s_bakeTable = new bakedSurf_t[BAKE_TABLE_SIZE];
+		memset( s_bakeTable, 0, BAKE_TABLE_SIZE * sizeof( bakedSurf_t ) );
+	}
+	if( s_bakedVertexBuffer == 0 )
+	{
+		GLuint buffer = 0;
+		glGenBuffers( 1, &buffer );
+		glBindBuffer( GL_COPY_WRITE_BUFFER, buffer );
+		glBufferData( GL_COPY_WRITE_BUFFER, BAKE_MAX_VERTEXES * sizeof( idDrawVert ), NULL, GL_STATIC_DRAW );
+		glBindBuffer( GL_COPY_WRITE_BUFFER, 0 );
+		s_bakedVertexBuffer = buffer;
+		idLib::Printf( "Static model baking: %d KB vertex buffer\n", ( int )( BAKE_MAX_VERTEXES * sizeof( idDrawVert ) / 1024 ) );
+	}
+
+	// the new range is used by no draw yet, no need to wait for the GPU
+	glBindBuffer( GL_COPY_WRITE_BUFFER, s_bakedVertexBuffer );
+	idDrawVert* out = ( idDrawVert* )glMapBufferRange( GL_COPY_WRITE_BUFFER, s_bakedVertexesUsed * sizeof( idDrawVert ), numVerts * sizeof( idDrawVert ),
+					  GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_UNSYNCHRONIZED_BIT );
+	if( out == NULL )
+	{
+		glBindBuffer( GL_COPY_WRITE_BUFFER, 0 );
+		return;
+	}
+
+	for( int i = 0; i < numFit; i++ )
+	{
+		const bakeRequest_t& request = s_bakeRequests[i];
+		const srfTriangles_t* tri = request.tri;
+		const float* m = request.modelMatrix;
+
+		for( int v = 0; v < tri->numVerts; v++ )
+		{
+			const idDrawVert& in = tri->verts[v];
+			idDrawVert baked = in;
+
+			// R_LocalPointToGlobal, and the rotation alone for the tangent space
+			const idVec3& p = in.xyz;
+			baked.xyz.x = p.x * m[0] + p.y * m[4] + p.z * m[8] + m[12];
+			baked.xyz.y = p.x * m[1] + p.y * m[5] + p.z * m[9] + m[13];
+			baked.xyz.z = p.x * m[2] + p.y * m[6] + p.z * m[10] + m[14];
+
+			// raw, like the vertex programs read them; the [3] bytes (polarity) are kept
+			const idVec3 n = in.GetNormalRaw();
+			baked.SetNormal( n.x * m[0] + n.y * m[4] + n.z * m[8], n.x * m[1] + n.y * m[5] + n.z * m[9], n.x * m[2] + n.y * m[6] + n.z * m[10] );
+			const idVec3 t = in.GetTangentRaw();
+			baked.SetTangent( t.x * m[0] + t.y * m[4] + t.z * m[8], t.x * m[1] + t.y * m[5] + t.z * m[9], t.x * m[2] + t.y * m[6] + t.z * m[10] );
+
+			// written once, the mapping is write combined
+			out[v] = baked;
+		}
+
+		// into the table
+		for( int probe = 0; probe < BAKE_TABLE_SIZE; probe++ )
+		{
+			bakedSurf_t& slot = s_bakeTable[( request.hash + probe ) & ( BAKE_TABLE_SIZE - 1 )];
+			if( slot.tri == NULL )
+			{
+				slot.tri = tri;
+				slot.ambientCache = tri->ambientCache;
+				memcpy( slot.modelMatrix, m, sizeof( slot.modelMatrix ) );
+				slot.firstVertex = s_bakedVertexesUsed;
+				break;
+			}
+		}
+		s_numBakedSurfs++;
+		s_bakedVertexesUsed += tri->numVerts;
+		out += tri->numVerts;
+	}
+
+	glUnmapBuffer( GL_COPY_WRITE_BUFFER );
+	glBindBuffer( GL_COPY_WRITE_BUFFER, 0 );
+}
+
 // nothing of the last frame may be found by a frame WorldMergePass doesn't run for
 static void R_ResetWorldMerge()
 {
 	s_numWorldMergeGroups = 0;
+	s_numWorldMergeSubstitutes = 0;
 	s_numWorldMergeViews = 0;
 	s_numWorldMergeCasters = 0;
 }
@@ -1473,26 +1788,62 @@ void RB_ShutdownWorldMerge()
 		s_worldMergeRing = NULL;
 	}
 	s_worldMergeRingSize = 0;
-	s_numWorldMergeGroups = 0;
-	s_numWorldMergeViews = 0;
-	s_numWorldMergeCasters = 0;
+
+	if( s_bakedVertexBuffer != 0 )
+	{
+		GLuint buffer = s_bakedVertexBuffer;
+		glDeleteBuffers( 1, &buffer );
+		s_bakedVertexBuffer = 0;
+	}
+	if( s_bakeTable != NULL )
+	{
+		memset( s_bakeTable, 0, BAKE_TABLE_SIZE * sizeof( bakedSurf_t ) );
+	}
+	s_numBakedSurfs = 0;
+	s_bakedVertexesUsed = 0;
+	s_numBakePending[0] = s_numBakePending[1] = 0;
+	s_bakeGeneration = -1;
+
+	R_ResetWorldMerge();
 }
 
-// static world area geometry with a CPU copy of the indexes it draws
-static bool R_WorldMergeable( const drawSurf_t* surf )
+// which buffer surf merges into, -1 if it doesn't, and its first vertex there
+static int R_WorldMergeKind( const drawSurf_t* surf, uint32& baseVertex )
 {
-	if( surf->staticIndexes == NULL || surf->numIndexes <= 0 || surf->space == NULL || !surf->space->staticWorldArea
+	if( surf->staticIndexes == NULL || surf->numIndexes <= 0 || surf->space == NULL
 			|| surf->jointCache != 0 || surf->material == NULL
-			|| !vertexCache.CacheIsStatic( surf->ambientCache ) || !vertexCache.CacheIsStatic( surf->indexCache )
 			|| surf->shadowVolumeState != SHADOWVOLUME_DONE
 			|| surf->material->Deform() != DFRM_NONE || surf->material->TestMaterialFlag( MF_POLYGONOFFSET ) )
 	{
-		return false;
+		return -1;
 	}
 
-	// the merged indexes count idDrawVerts from the start of the static vertex buffer
-	const int vertOffset = ( int )( surf->ambientCache >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
-	return ( vertOffset % ( int )sizeof( idDrawVert ) ) == 0;
+	if( surf->space->staticWorldArea )
+	{
+		// the merged indexes count idDrawVerts from the start of the static vertex buffer
+		if( !vertexCache.CacheIsStatic( surf->ambientCache ) || !vertexCache.CacheIsStatic( surf->indexCache ) )
+		{
+			return -1;
+		}
+		const int vertOffset = ( int )( surf->ambientCache >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
+		if( ( vertOffset % ( int )sizeof( idDrawVert ) ) != 0 )
+		{
+			return -1;
+		}
+		baseVertex = ( uint32 )( vertOffset / sizeof( idDrawVert ) );
+		return WORLD_MERGE_WORLD;
+	}
+
+	if( s_useBakedSurfs && R_BakeCandidate( surf ) )
+	{
+const bakedSurf_t* baked = R_FindBakedSurf( surf->frontEndGeo, surf->space->modelMatrix, R_BakeHash( surf->frontEndGeo, surf->space->modelMatrix ) );
+		if( baked != NULL )
+		{
+			baseVertex = ( uint32 )baked->firstVertex;
+			return WORLD_MERGE_BAKED;
+		}
+	}
+	return -1;
 }
 
 // surfaces drawn with exactly the same material state
@@ -1513,14 +1864,14 @@ static bool R_WorldMergeSameMaterial( const drawSurf_t* a, const drawSurf_t* b )
 	return memcmp( a->shaderRegisters, b->shaderRegisters, a->material->GetNumRegisters() * sizeof( float ) ) == 0;
 }
 
-// the indexes of the surfaces, rebased to the start of the static vertex buffer
-static int R_WorldMergeWrite( uint32* out, const drawSurf_t* const* surfs, int numSurfs )
+// the indexes of the surfaces, rebased to the start of their buffer
+static int R_WorldMergeWrite( uint32* out, const worldMergeSurf_t* surfs, int numSurfs )
 {
 	int written = 0;
 	for( int i = 0; i < numSurfs; i++ )
 	{
-		const drawSurf_t* surf = surfs[i];
-		const uint32 baseVertex = ( uint32 )( ( ( surf->ambientCache >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK ) / sizeof( idDrawVert ) );
+		const drawSurf_t* surf = surfs[i].surf;
+		const uint32 baseVertex = surfs[i].baseVertex;
 		const triIndex_t* in = surf->staticIndexes;
 		uint32* dst = out + written;
 		const int numIndexes = surf->numIndexes;
@@ -1537,40 +1888,49 @@ static int R_WorldMergeWrite( uint32* out, const drawSurf_t* const* surfs, int n
 =====================
 R_WorldMergeGroups
 
-Groups the surfaces by material and writes every group with at least minGroupSize
-surfaces that still fits, consecutively. A surface of a written group gets the
-group in drawSurf_t::mergedGroup.
+Groups surfaces of one kind by material, or all of them when the drawing ignores
+the material, and writes every group with at least minGroupSize surfaces that
+still fits, consecutively. Members of a written group get it in mergedGroup.
+Baked groups get a substitute: the first member with worldSpace for its space.
 =====================
 */
-static void R_WorldMergeGroups( worldMergeWriter_t& writer, const drawSurf_t** surfs, int numSurfs, int minGroupSize, int& firstIndex, int& numIndexes )
+static void R_WorldMergeGroups( worldMergeWriter_t& writer, const worldMergeSurf_t* surfs, int numSurfs, int kind,
+								int minGroupSize, bool byMaterial, const viewEntity_t* worldSpace, int& firstIndex, int& numIndexes )
 {
 	firstIndex = writer.used;
 	numIndexes = 0;
+	if( numSurfs <= 0 )
+	{
+		return;
+	}
 
 	int* groupOf = ( int* )_alloca( numSurfs * sizeof( int ) );
 	const drawSurf_t** groupFirst = ( const drawSurf_t** )_alloca( numSurfs * sizeof( const drawSurf_t* ) );
 	int* groupSurfs = ( int* )_alloca( numSurfs * sizeof( int ) );
 	int* groupIndexes = ( int* )_alloca( numSurfs * sizeof( int ) );
-	const drawSurf_t** members = ( const drawSurf_t** )_alloca( numSurfs * sizeof( const drawSurf_t* ) );
+	worldMergeSurf_t* members = ( worldMergeSurf_t* )_alloca( numSurfs * sizeof( worldMergeSurf_t ) );
 	int numGroups = 0;
 
 	for( int i = 0; i < numSurfs; i++ )
 	{
 		int group = 0;
-		while( group < numGroups && !R_WorldMergeSameMaterial( groupFirst[group], surfs[i] ) )
+		if( byMaterial )
 		{
-			group++;
+			while( group < numGroups && !R_WorldMergeSameMaterial( groupFirst[group], surfs[i].surf ) )
+			{
+				group++;
+			}
 		}
 		if( group == numGroups )
 		{
-			groupFirst[group] = surfs[i];
+			groupFirst[group] = surfs[i].surf;
 			groupSurfs[group] = 0;
 			groupIndexes[group] = 0;
 			numGroups++;
 		}
 		groupOf[i] = group;
 		groupSurfs[group]++;
-		groupIndexes[group] += surfs[i]->numIndexes;
+		groupIndexes[group] += surfs[i].surf->numIndexes;
 	}
 
 	for( int group = 0; group < numGroups; group++ )
@@ -1586,6 +1946,11 @@ static void R_WorldMergeGroups( worldMergeWriter_t& writer, const drawSurf_t** s
 			// these surfaces are drawn one by one as before
 			continue;
 		}
+		const bool needsSubstitute = ( kind != WORLD_MERGE_WORLD );
+		if( needsSubstitute && ( worldSpace == NULL || s_numWorldMergeSubstitutes == WORLD_MERGE_MAX_SUBSTITUTES ) )
+		{
+			continue;
+		}
 
 		int numMembers = 0;
 		for( int i = 0; i < numSurfs; i++ )
@@ -1596,75 +1961,168 @@ static void R_WorldMergeGroups( worldMergeWriter_t& writer, const drawSurf_t** s
 			}
 		}
 
-		worldMergeGroup_t& mergeGroup = s_worldMergeGroups[s_numWorldMergeGroups++];
+		const int groupNumber = ++s_numWorldMergeGroups;	// mergedGroup is one based
+		worldMergeGroup_t& mergeGroup = s_worldMergeGroups[groupNumber - 1];
 		mergeGroup.firstIndex = writer.used;
 		mergeGroup.numIndexes = R_WorldMergeWrite( writer.indexes + writer.used, members, numMembers );
+		mergeGroup.kind = kind;
 		mergeGroup.drawnStamp = 0;
+		mergeGroup.substitute = NULL;
 		writer.used += mergeGroup.numIndexes;
 		numIndexes += mergeGroup.numIndexes;
 
 		for( int i = 0; i < numMembers; i++ )
 		{
-			const_cast<drawSurf_t*>( members[i] )->mergedGroup = s_numWorldMergeGroups;
+			const_cast<drawSurf_t*>( members[i].surf )->mergedGroup = groupNumber;
+		}
+
+		if( needsSubstitute )
+		{
+			// the passes set up a member with its entity's transform, the copies are in world space
+			drawSurf_t& substitute = s_worldMergeSubstitutes[s_numWorldMergeSubstitutes++];
+			substitute = *members[0].surf;
+			substitute.space = worldSpace;
+			substitute.nextOnLight = NULL;
+			mergeGroup.substitute = &substitute;
 		}
 	}
 }
 
-// the lit world surfaces of a light chain, merged per material
-static void R_WorldMergeInteractions( worldMergeWriter_t& writer, const drawSurf_t* chain )
+// the mergeable surfaces of a list, sorted out by kind
+static int R_WorldMergeCollect( const drawSurf_t* const* surfs, int numSurfs, const drawSurf_t* chain, bool opaqueOnly,
+								worldMergeSurf_t* out[WORLD_MERGE_KINDS], int numOut[WORLD_MERGE_KINDS] )
 {
-	int numChain = 0;
-	for( const drawSurf_t* surf = chain; surf != NULL; surf = surf->nextOnLight )
+	numOut[WORLD_MERGE_WORLD] = 0;
+	numOut[WORLD_MERGE_BAKED] = 0;
+	int total = 0;
+
+	for( int i = 0; ; i++ )
 	{
-		numChain++;
+		const drawSurf_t* surf;
+		if( surfs != NULL )
+		{
+			if( i >= numSurfs )
+			{
+				break;
+			}
+			surf = surfs[i];
+		}
+		else
+		{
+			if( chain == NULL )
+			{
+				break;
+			}
+			surf = chain;
+			chain = chain->nextOnLight;
+		}
+
+		if( opaqueOnly && ( surf->material == NULL || surf->material->Coverage() != MC_OPAQUE || surf->material->GetSort() == SS_SUBVIEW ) )
+		{
+			continue;
+		}
+
+		uint32 baseVertex = 0;
+		const int kind = R_WorldMergeKind( surf, baseVertex );
+		if( kind < 0 )
+		{
+			continue;
+		}
+		worldMergeSurf_t& candidate = out[kind][numOut[kind]++];
+		candidate.surf = surf;
+		candidate.baseVertex = baseVertex;
+		total++;
 	}
-	if( numChain < 2 )
+	return total;
+}
+
+static int R_ChainLength( const drawSurf_t* chain )
+{
+	int length = 0;
+	for( ; chain != NULL; chain = chain->nextOnLight )
+	{
+		length++;
+	}
+	return length;
+}
+
+// the surfaces of a light chain: per material for interactions, all together for fog and blend lights
+static void R_WorldMergeLightChain( worldMergeWriter_t& writer, const drawSurf_t* chain, bool byMaterial, const viewEntity_t* worldSpace )
+{
+	const int length = R_ChainLength( chain );
+	if( length < 2 )
 	{
 		return;
 	}
 
-	const drawSurf_t** candidates = ( const drawSurf_t** )_alloca( numChain * sizeof( const drawSurf_t* ) );
-	int numCandidates = 0;
-	for( const drawSurf_t* surf = chain; surf != NULL; surf = surf->nextOnLight )
-	{
-		if( R_WorldMergeable( surf ) )
-		{
-			candidates[numCandidates++] = surf;
-		}
-	}
+	worldMergeSurf_t* candidates[WORLD_MERGE_KINDS];
+	candidates[WORLD_MERGE_WORLD] = ( worldMergeSurf_t* )_alloca( length * sizeof( worldMergeSurf_t ) );
+	candidates[WORLD_MERGE_BAKED] = ( worldMergeSurf_t* )_alloca( length * sizeof( worldMergeSurf_t ) );
+	int numCandidates[WORLD_MERGE_KINDS];
+	R_WorldMergeCollect( NULL, 0, chain, false, candidates, numCandidates );
 
-	if( numCandidates >= 2 )
+	for( int kind = 0; kind < WORLD_MERGE_KINDS; kind++ )
 	{
-		// a material lit on one area only keeps its own draw
-		int firstIndex, numIndexes;
-		R_WorldMergeGroups( writer, candidates, numCandidates, 2, firstIndex, numIndexes );
+		if( numCandidates[kind] >= 2 )
+		{
+			// a material lit on one area or prop only keeps its own draw
+			int firstIndex, numIndexes;
+			R_WorldMergeGroups( writer, candidates[kind], numCandidates[kind], kind, 2, byMaterial, worldSpace, firstIndex, numIndexes );
+		}
 	}
 }
 
-// the opaque world casters of a light's shadow map sides
+// fog and blend lights draw two chains with the same state: one group over both
+static void R_WorldMergeTwoChains( worldMergeWriter_t& writer, const drawSurf_t* chain1, const drawSurf_t* chain2, const viewEntity_t* worldSpace )
+{
+	const int length = R_ChainLength( chain1 ) + R_ChainLength( chain2 );
+	if( length < 2 )
+	{
+		return;
+	}
+
+	worldMergeSurf_t* candidates[WORLD_MERGE_KINDS];
+	candidates[WORLD_MERGE_WORLD] = ( worldMergeSurf_t* )_alloca( length * sizeof( worldMergeSurf_t ) );
+	candidates[WORLD_MERGE_BAKED] = ( worldMergeSurf_t* )_alloca( length * sizeof( worldMergeSurf_t ) );
+	int numCandidates[WORLD_MERGE_KINDS] = { 0, 0 };
+
+	worldMergeSurf_t* chainCandidates[WORLD_MERGE_KINDS];
+	int numChainCandidates[WORLD_MERGE_KINDS];
+	const drawSurf_t* chains[2] = { chain1, chain2 };
+	for( int c = 0; c < 2; c++ )
+	{
+		chainCandidates[WORLD_MERGE_WORLD] = candidates[WORLD_MERGE_WORLD] + numCandidates[WORLD_MERGE_WORLD];
+		chainCandidates[WORLD_MERGE_BAKED] = candidates[WORLD_MERGE_BAKED] + numCandidates[WORLD_MERGE_BAKED];
+		R_WorldMergeCollect( NULL, 0, chains[c], false, chainCandidates, numChainCandidates );
+		numCandidates[WORLD_MERGE_WORLD] += numChainCandidates[WORLD_MERGE_WORLD];
+		numCandidates[WORLD_MERGE_BAKED] += numChainCandidates[WORLD_MERGE_BAKED];
+	}
+
+	for( int kind = 0; kind < WORLD_MERGE_KINDS; kind++ )
+	{
+		if( numCandidates[kind] >= 2 )
+		{
+			int firstIndex, numIndexes;
+			R_WorldMergeGroups( writer, candidates[kind], numCandidates[kind], kind, 2, false, worldSpace, firstIndex, numIndexes );
+		}
+	}
+}
+
+// the opaque casters of a light's shadow map sides
 static void R_WorldMergeCasters( worldMergeWriter_t& writer, const viewLight_t* vLight )
 {
-	int numChain = 0;
-	for( const drawSurf_t* surf = vLight->globalShadows; surf != NULL; surf = surf->nextOnLight )
-	{
-		numChain++;
-	}
-	if( numChain < 2 || s_numWorldMergeCasters == WORLD_MERGE_MAX_CASTER_LIGHTS )
+	const int length = R_ChainLength( vLight->globalShadows );
+	if( length < 2 || s_numWorldMergeCasters == WORLD_MERGE_MAX_CASTER_LIGHTS )
 	{
 		return;
 	}
 
 	// alpha tested casters need their own texture state
-	const drawSurf_t** casters = ( const drawSurf_t** )_alloca( numChain * sizeof( const drawSurf_t* ) );
-	int numCasters = 0;
-	for( const drawSurf_t* surf = vLight->globalShadows; surf != NULL; surf = surf->nextOnLight )
-	{
-		if( surf->material != NULL && surf->material->Coverage() == MC_OPAQUE && R_WorldMergeable( surf ) )
-		{
-			casters[numCasters++] = surf;
-		}
-	}
-	if( numCasters < 2 )
+	worldMergeSurf_t* casters[WORLD_MERGE_KINDS];
+	casters[WORLD_MERGE_WORLD] = ( worldMergeSurf_t* )_alloca( length * sizeof( worldMergeSurf_t ) );
+	casters[WORLD_MERGE_BAKED] = ( worldMergeSurf_t* )_alloca( length * sizeof( worldMergeSurf_t ) );
+	int numCasters[WORLD_MERGE_KINDS];
+	if( R_WorldMergeCollect( NULL, 0, vLight->globalShadows, true, casters, numCasters ) < 2 )
 	{
 		return;
 	}
@@ -1682,13 +2140,16 @@ static void R_WorldMergeCasters( worldMergeWriter_t& writer, const viewLight_t* 
 
 	// all sides fit, or the light keeps drawing its casters one by one
 	int total = 0;
-	for( int side = 0; side < numSides; side++ )
+	for( int kind = 0; kind < WORLD_MERGE_KINDS; kind++ )
 	{
-		for( int i = 0; i < numCasters; i++ )
+		for( int side = 0; side < numSides; side++ )
 		{
-			if( !pointLightSides || !( casters[i]->shadowMapCulledSides & ( 1 << side ) ) )
+			for( int i = 0; i < numCasters[kind]; i++ )
 			{
-				total += casters[i]->numIndexes;
+				if( !pointLightSides || !( casters[kind][i].surf->shadowMapCulledSides & ( 1 << side ) ) )
+				{
+					total += casters[kind][i].surf->numIndexes;
+				}
 			}
 		}
 	}
@@ -1701,31 +2162,34 @@ static void R_WorldMergeCasters( worldMergeWriter_t& writer, const viewLight_t* 
 	worldMergeCasters_t& merged = s_worldMergeCasters[s_numWorldMergeCasters++];
 	merged.vLight = vLight;
 
-	const drawSurf_t** sideCasters = ( const drawSurf_t** )_alloca( numCasters * sizeof( const drawSurf_t* ) );
-	for( int side = 0; side < 6; side++ )
+	worldMergeSurf_t* sideCasters = ( worldMergeSurf_t* )_alloca( length * sizeof( worldMergeSurf_t ) );
+	for( int kind = 0; kind < WORLD_MERGE_KINDS; kind++ )
 	{
-		merged.firstIndex[side] = writer.used;
-		merged.numIndexes[side] = 0;
-		if( side >= numSides )
+		for( int side = 0; side < 6; side++ )
 		{
-			continue;
-		}
-
-		int numSideCasters = 0;
-		for( int i = 0; i < numCasters; i++ )
-		{
-			if( !pointLightSides || !( casters[i]->shadowMapCulledSides & ( 1 << side ) ) )
+			merged.firstIndex[kind][side] = writer.used;
+			merged.numIndexes[kind][side] = 0;
+			if( side >= numSides )
 			{
-				sideCasters[numSideCasters++] = casters[i];
+				continue;
 			}
-		}
-		merged.numIndexes[side] = R_WorldMergeWrite( writer.indexes + writer.used, sideCasters, numSideCasters );
-		writer.used += merged.numIndexes[side];
-	}
 
-	for( int i = 0; i < numCasters; i++ )
-	{
-		const_cast<drawSurf_t*>( casters[i] )->mergedGroup = WORLD_MERGE_SHADOW_CASTER;
+			int numSideCasters = 0;
+			for( int i = 0; i < numCasters[kind]; i++ )
+			{
+				if( !pointLightSides || !( casters[kind][i].surf->shadowMapCulledSides & ( 1 << side ) ) )
+				{
+					sideCasters[numSideCasters++] = casters[kind][i];
+				}
+			}
+			merged.numIndexes[kind][side] = R_WorldMergeWrite( writer.indexes + writer.used, sideCasters, numSideCasters );
+			writer.used += merged.numIndexes[kind][side];
+		}
+
+		for( int i = 0; i < numCasters[kind]; i++ )
+		{
+			const_cast<drawSurf_t*>( casters[kind][i].surf )->mergedGroup = WORLD_MERGE_SHADOW_CASTER;
+		}
 	}
 }
 
@@ -1753,6 +2217,19 @@ static const worldMergeCasters_t* R_FindWorldMergeCasters( const viewLight_t* vL
 	return NULL;
 }
 
+// any world area entity of the view: its transform is the identity the merged surfaces are drawn with
+static const viewEntity_t* R_WorldSpaceOfView( const viewDef_t* view )
+{
+	for( const viewEntity_t* vEntity = view->viewEntitys; vEntity != NULL; vEntity = vEntity->next )
+	{
+		if( vEntity->staticWorldArea )
+		{
+			return vEntity;
+		}
+	}
+	return NULL;
+}
+
 /*
 =====================
 idRenderBackend::WorldMergePass
@@ -1760,9 +2237,7 @@ idRenderBackend::WorldMergePass
 */
 void idRenderBackend::WorldMergePass( const emptyCommand_t* cmds )
 {
-	s_numWorldMergeGroups = 0;
-	s_numWorldMergeViews = 0;
-	s_numWorldMergeCasters = 0;
+	R_ResetWorldMerge();
 	worldMergeSurf = NULL;
 	worldMergeIndexBuffer = 0;
 
@@ -1784,6 +2259,66 @@ void idRenderBackend::WorldMergePass( const emptyCommand_t* cmds )
 	{
 		return;
 	}
+
+	//-------------------------------------------------
+	// world space copies of the static models that stood still
+	//-------------------------------------------------
+	if( s_bakeGeneration != r_staticGeometryGeneration )
+	{
+		// the models the copies were made from may be gone
+		if( s_bakeTable != NULL )
+		{
+			memset( s_bakeTable, 0, BAKE_TABLE_SIZE * sizeof( bakedSurf_t ) );
+		}
+		if( s_bakedVertexBuffer != 0 )
+		{
+			// the last frames may still draw the old copies: the new ones go to new storage,
+			// they are written without waiting for the GPU
+			glBindBuffer( GL_COPY_WRITE_BUFFER, s_bakedVertexBuffer );
+			glBufferData( GL_COPY_WRITE_BUFFER, BAKE_MAX_VERTEXES * sizeof( idDrawVert ), NULL, GL_STATIC_DRAW );
+			glBindBuffer( GL_COPY_WRITE_BUFFER, 0 );
+		}
+		s_numBakedSurfs = 0;
+		s_bakedVertexesUsed = 0;
+		s_numBakePending[0] = s_numBakePending[1] = 0;
+		s_bakeGeneration = r_staticGeometryGeneration;
+	}
+
+	s_bakeFrame++;
+	s_numBakePending[s_bakeFrame & 1] = 0;
+	s_numBakeRequests = 0;
+	if( r_bakeStaticModels.GetBool() )
+	{
+		for( const emptyCommand_t* cmd = cmds; cmd != NULL; cmd = ( const emptyCommand_t* )cmd->next )
+		{
+			if( cmd->commandId != RC_DRAW_VIEW_3D )
+			{
+				continue;
+			}
+			const viewDef_t* view = ( ( const drawSurfsCommand_t* )cmd )->viewDef;
+			if( view == NULL || view->viewEntitys == NULL || view->numDrawSurfs == 0 )
+			{
+				continue;
+			}
+			for( int i = 0; i < view->numDrawSurfs; i++ )
+			{
+				R_RequestBake( view->drawSurfs[i] );
+			}
+			for( const viewLight_t* vLight = view->viewLights; vLight != NULL; vLight = vLight->next )
+			{
+				R_RequestBakes( vLight->localInteractions );
+				R_RequestBakes( vLight->globalInteractions );
+				R_RequestBakes( vLight->globalShadows );
+			}
+		}
+		R_BakeRequestedSurfs();
+	}
+	// r_bakeStaticModels 0 stops drawing the copies made already too
+	s_useBakedSurfs = r_bakeStaticModels.GetBool() && s_bakedVertexBuffer != 0 && s_numBakedSurfs > 0;
+
+	//-------------------------------------------------
+	// the merged indexes
+	//-------------------------------------------------
 
 	// the buffer grows to what the frames need
 	const int wantedSize = Min( Max( WORLD_MERGE_MIN_RING_SIZE, idMath::CeilPowerOfTwo( s_worldMergeWantedBytes ) ), WORLD_MERGE_MAX_RING_SIZE );
@@ -1838,43 +2373,47 @@ void idRenderBackend::WorldMergePass( const emptyCommand_t* cmds )
 			continue;
 		}
 
-		// the opaque world surfaces of the view, for the depth and the ambient pass
-		const drawSurf_t** candidates = ( const drawSurf_t** )_alloca( view->numDrawSurfs * sizeof( const drawSurf_t* ) );
-		int numCandidates = 0;
-		const viewEntity_t* worldSpace = NULL;
-		for( int i = 0; i < view->numDrawSurfs; i++ )
+		// baked surfaces are set up with the identity transform of a world area
+		const viewEntity_t* worldSpace = R_WorldSpaceOfView( view );
+
+		// the opaque surfaces of the view, for the depth and the ambient pass
+		worldMergeSurf_t* candidates[WORLD_MERGE_KINDS];
+		candidates[WORLD_MERGE_WORLD] = ( worldMergeSurf_t* )_alloca( view->numDrawSurfs * sizeof( worldMergeSurf_t ) );
+		candidates[WORLD_MERGE_BAKED] = ( worldMergeSurf_t* )_alloca( view->numDrawSurfs * sizeof( worldMergeSurf_t ) );
+		int numCandidates[WORLD_MERGE_KINDS];
+		R_WorldMergeCollect( view->drawSurfs, view->numDrawSurfs, NULL, true, candidates, numCandidates );
+
+		worldMergeView_t mergeView;
+		mergeView.viewDef = view;
+		mergeView.space = worldSpace;
+		bool anyMerged = false;
+		for( int kind = 0; kind < WORLD_MERGE_KINDS; kind++ )
 		{
-			const drawSurf_t* surf = view->drawSurfs[i];
-			if( surf->material != NULL && surf->material->Coverage() == MC_OPAQUE && surf->material->GetSort() != SS_SUBVIEW && R_WorldMergeable( surf ) )
+			mergeView.firstIndex[kind] = 0;
+			mergeView.numIndexes[kind] = 0;
+			if( numCandidates[kind] >= 2 && worldSpace != NULL )
 			{
-				candidates[numCandidates++] = surf;
-				worldSpace = surf->space;
+				R_WorldMergeGroups( writer, candidates[kind], numCandidates[kind], kind, 1, true, worldSpace, mergeView.firstIndex[kind], mergeView.numIndexes[kind] );
+				anyMerged |= ( mergeView.numIndexes[kind] > 0 );
 			}
 		}
-		if( numCandidates >= 2 )
+		if( anyMerged )
 		{
-			int firstIndex, numIndexes;
-			R_WorldMergeGroups( writer, candidates, numCandidates, 1, firstIndex, numIndexes );
-			if( numIndexes > 0 )
-			{
-				worldMergeView_t& mergeView = s_worldMergeViews[s_numWorldMergeViews++];
-				mergeView.viewDef = view;
-				mergeView.space = worldSpace;
-				mergeView.firstIndex = firstIndex;
-				mergeView.numIndexes = numIndexes;
-			}
+			s_worldMergeViews[s_numWorldMergeViews++] = mergeView;
 		}
 
-		// the lights, as DrawInteractions draws them
+		// the lights, as DrawInteractions, FogAllLights and the shadow maps draw them
 		for( const viewLight_t* vLight = view->viewLights; vLight != NULL; vLight = vLight->next )
 		{
 			if( vLight->lightShader->IsFogLight() || vLight->lightShader->IsBlendLight() )
 			{
+				// the material plays no part in fog and blend light drawing
+				R_WorldMergeTwoChains( writer, vLight->globalInteractions, vLight->localInteractions, worldSpace );
 				continue;
 			}
 
-			R_WorldMergeInteractions( writer, vLight->localInteractions );
-			R_WorldMergeInteractions( writer, vLight->globalInteractions );
+			R_WorldMergeLightChain( writer, vLight->localInteractions, true, worldSpace );
+			R_WorldMergeLightChain( writer, vLight->globalInteractions, true, worldSpace );
 
 			if( mergeCasters && vLight->globalShadows != NULL && !vLight->lightShader->IsAmbientLight() )
 			{
@@ -1889,27 +2428,43 @@ void idRenderBackend::WorldMergePass( const emptyCommand_t* cmds )
 
 	if( r_mergeWorldSurfacesDebug.GetBool() )
 	{
-		idLib::Printf( "World surface merging: %d views, %d material groups, %d lights' casters, %d of %d indexes fit\n",
-					   s_numWorldMergeViews, s_numWorldMergeGroups, s_numWorldMergeCasters, writer.used, writer.wanted );
+		idLib::Printf( "World surface merging: %d views, %d groups, %d lights' casters, %d of %d indexes fit, %d props baked (%d vertexes)\n",
+					   s_numWorldMergeViews, s_numWorldMergeGroups, s_numWorldMergeCasters, writer.used, writer.wanted,
+					   s_numBakedSurfs, s_bakedVertexesUsed );
 	}
+}
+
+// the vertex buffer a merged kind is drawn from
+static unsigned int R_WorldMergeVertexBuffer( int kind )
+{
+	if( kind == WORLD_MERGE_BAKED )
+	{
+		return s_bakedVertexBuffer;
+	}
+	return ( unsigned int )vertexCache.staticData.vertexBuffer.GetAPIObject();
 }
 
 /*
 =====================
 idRenderBackend::BeginWorldMergeGroup
 
-The next draws of surf draw its whole merged group
+The next draws of the returned surface draw the whole merged group of surf.
+The passes set the surface up in place of surf: a baked group returns its
+substitute, which has the world space of the copies.
 =====================
 */
-void idRenderBackend::BeginWorldMergeGroup( const drawSurf_t* surf )
+const drawSurf_t* idRenderBackend::BeginWorldMergeGroup( const drawSurf_t* surf )
 {
 	const worldMergeGroup_t& group = s_worldMergeGroups[surf->mergedGroup - 1];
-	worldMergeSurf = surf;
+	const drawSurf_t* drawn = ( group.substitute != NULL ) ? group.substitute : surf;
+	worldMergeSurf = drawn;
 	worldMergeFirstIndex = group.firstIndex;
 	worldMergeNumIndexes = group.numIndexes;
+	worldMergeVertexBuffer = R_WorldMergeVertexBuffer( group.kind );
+	return drawn;
 }
 
-// a member of one of this frame's merged material groups
+// a member of one of this frame's merged groups
 static bool R_IsWorldMergeGroupMember( const drawSurf_t* surf )
 {
 	return surf->mergedGroup > 0 && surf->mergedGroup <= s_numWorldMergeGroups;
@@ -2283,12 +2838,15 @@ void idRenderBackend::FillDepthBufferFast( drawSurf_t** drawSurfs, int numDrawSu
 	if( mergedView != NULL )
 	{
 		renderLog.OpenBlock( "Merged World Surfaces" );
-
+		
 		renderProgManager.BindShader_Depth();
 		RB_SetMVP( mergedView->space->mvp );
 		currentSpace = mergedView->space;
-		DrawWorldMergeRange( mergedView->firstIndex, mergedView->numIndexes );
-
+		for( int kind = 0; kind < WORLD_MERGE_KINDS; kind++ )
+		{
+			DrawWorldMergeRange( mergedView->firstIndex[kind], mergedView->numIndexes[kind], R_WorldMergeVertexBuffer( kind ) );
+		}
+		
 		renderLog.CloseBlock();
 	}
 #endif
@@ -2881,13 +3439,15 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 
 		for( int sortedSurfNum = 0; sortedSurfNum < allSurfaces.Num(); sortedSurfNum++ )
 		{
+			// a merged group is set up with the surface BeginWorldMergeGroup returns
+			const drawSurf_t* mergedSurf = NULL;
 #if defined(ANDROID) && !defined(USE_VULKAN)
 			if( gpuInteractionConsumed[sortedSurfNum] )
 			{
 				continue;
 			}
 
-			// a merged world surface draws all of its material group this light reaches
+			// a merged surface draws all of its material group this light reaches
 			worldMergeSurf = NULL;
 			if( R_WorldMergeSkip( allSurfaces[ sortedSurfNum ] ) )
 			{
@@ -2895,7 +3455,7 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 			}
 			if( R_IsWorldMergeGroupMember( allSurfaces[ sortedSurfNum ] ) )
 			{
-				BeginWorldMergeGroup( allSurfaces[ sortedSurfNum ] );
+				mergedSurf = BeginWorldMergeGroup( allSurfaces[ sortedSurfNum ] );
 			}
 
 			gpuInstanceData_t gpuInteractionInstances[MAX_GPU_INSTANCES_PER_DRAW];
@@ -2903,7 +3463,7 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 			const gpuInstanceData_t* gpuInteractionInstanceData = NULL;
 			int gpuInteractionInstanceCount = 1;
 #endif
-			const drawSurf_t* const surf = allSurfaces[ sortedSurfNum ];
+			const drawSurf_t* const surf = ( mergedSurf != NULL ) ? mergedSurf : allSurfaces[ sortedSurfNum ];
 			bool gpuShadowInteractionInstanced = false;
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
@@ -3481,7 +4041,7 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 		}
 		if( R_IsWorldMergeGroupMember( drawSurf ) )
 		{
-			BeginWorldMergeGroup( drawSurf );
+			drawSurf = BeginWorldMergeGroup( drawSurf );
 		}
 #endif
 
@@ -4672,7 +5232,8 @@ void idRenderBackend::DrawShadowMapCasters( const drawSurf_t* drawSurfs, const v
 	// the opaque world casters of this side with one call, in the identity transform of the world areas
 	const worldMergeCasters_t* mergedCasters = R_FindWorldMergeCasters( vLight );
 	const int mergedSide = ( side < 0 ) ? 0 : side;
-	if( mergedCasters != NULL && mergedSide < 6 && mergedCasters->numIndexes[mergedSide] > 0 )
+	if( mergedCasters != NULL && mergedSide < 6
+			&& ( mergedCasters->numIndexes[WORLD_MERGE_WORLD][mergedSide] > 0 || mergedCasters->numIndexes[WORLD_MERGE_BAKED][mergedSide] > 0 ) )
 	{
 		idRenderMatrix clipMVP;
 		idRenderMatrix::Multiply( lightProjectionRenderMatrix, lightViewRenderMatrix, clipMVP );
@@ -4689,7 +5250,10 @@ void idRenderBackend::DrawShadowMapCasters( const drawSurf_t* drawSurfs, const v
 		}
 		
 		renderProgManager.BindShader_Depth();
-		DrawWorldMergeRange( mergedCasters->firstIndex[mergedSide], mergedCasters->numIndexes[mergedSide] );
+		for( int kind = 0; kind < WORLD_MERGE_KINDS; kind++ )
+		{
+			DrawWorldMergeRange( mergedCasters->firstIndex[kind][mergedSide], mergedCasters->numIndexes[kind][mergedSide], R_WorldMergeVertexBuffer( kind ) );
+		}
 	}
 	
 	int numShadowDrawSurfs = 0;
@@ -6152,6 +6716,19 @@ void idRenderBackend::T_BlendLight( const drawSurf_t* drawSurfs, const viewLight
 		}
 		
 #if defined(ANDROID) && !defined(USE_VULKAN)
+		// a merged surface draws all surfaces of its group, whatever their material
+		worldMergeSurf = NULL;
+		if( R_WorldMergeSkip( drawSurf ) )
+		{
+			continue;
+		}
+		if( R_IsWorldMergeGroupMember( drawSurf ) )
+		{
+			drawSurf = BeginWorldMergeGroup( drawSurf );
+		}
+#endif
+		
+#if defined(ANDROID) && !defined(USE_VULKAN)
 		if( glConfig.glVersion >= 3.2f && !drawSurf->jointCache )
 		{
 			blendInstanceCount = R_BuildGPUInstanceBatch( blendBatchSurfs, numBlendSurfs, blendIndex,
@@ -6284,10 +6861,17 @@ void idRenderBackend::BlendLight( const drawSurf_t* drawSurfs, const drawSurf_t*
 		lightColor[3] = regs[ stage->color.registers[3] ];
 		GL_Color( lightColor );
 		
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		// a merged group spans both chains, it is drawn once per stage
+		++s_worldMergeStamp;
+#endif
 		T_BlendLight( drawSurfs, vLight );
 		T_BlendLight( drawSurfs2, vLight );
 	}
 	
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	worldMergeSurf = NULL;
+#endif
 	GL_SelectTexture( 0 );
 	
 	renderProgManager.Unbind();
@@ -6348,6 +6932,19 @@ void idRenderBackend::T_BasicFog( const drawSurf_t* drawSurfs, const idPlane fog
 			continue;	// !@# FIXME: find out why this is sometimes being hit!
 			// temporarily jump over the scissor and draw so the gl error callback doesn't get hit
 		}
+		
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		// a merged surface draws all surfaces of its group, whatever their material
+		worldMergeSurf = NULL;
+		if( R_WorldMergeSkip( drawSurf ) )
+		{
+			continue;
+		}
+		if( R_IsWorldMergeGroupMember( drawSurf ) )
+		{
+			drawSurf = BeginWorldMergeGroup( drawSurf );
+		}
+#endif
 		
 #if defined(ANDROID) && !defined(USE_VULKAN)
 		if( inverseBaseLightProject == NULL && glConfig.glVersion >= 3.2f && !drawSurf->jointCache )
@@ -6520,8 +7117,15 @@ void idRenderBackend::FogPass( const drawSurf_t* drawSurfs,  const drawSurf_t* d
 	
 	// draw it
 	GL_State( GLS_DEPTHMASK | GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA | GLS_DEPTHFUNC_EQUAL );
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	// a merged group spans both chains, it is drawn once
+	++s_worldMergeStamp;
+#endif
 	T_BasicFog( drawSurfs, fogPlanes, NULL );
 	T_BasicFog( drawSurfs2, fogPlanes, NULL );
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	worldMergeSurf = NULL;
+#endif
 	
 	// the light frustum bounding planes aren't in the depth buffer, so use depthfunc_less instead
 	// of depthfunc_equal

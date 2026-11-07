@@ -594,6 +594,9 @@ void idRenderModelManagerLocal::ReloadModels( bool forceAll )
 	
 	R_FreeDerivedData();
 	
+	// static models may be loaded again
+	r_staticGeometryGeneration++;
+	
 	// skip the default model at index 0
 	for( int i = 1; i < models.Num(); i++ )
 	{

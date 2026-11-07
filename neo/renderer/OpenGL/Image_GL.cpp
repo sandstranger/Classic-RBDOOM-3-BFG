@@ -330,15 +330,17 @@ void idImage::Bind() {
 
     tmu_t *tmu = &glcontext.tmu[texUnit];
 
-    uint currentMap = 0;
+    // what the unit has bound, as far as Bind knows: binds and deletes elsewhere drop it
+    // (R_DirectBindTexture, R_DirectDeleteTextures), so does every new frame
+    uint* currentMap;
     if (opts.textureType == TT_CUBIC) {
-        currentMap = tmu->currentCubeMap;
+        currentMap = &tmu->currentCubeMap;
     } else if (opts.textureType == TT_2D_ARRAY) {
-        currentMap = tmu->current2DArray;
+        currentMap = &tmu->current2DArray;
     } else {
-        currentMap = tmu->current2DMap;
+        currentMap = &tmu->current2DMap;
     }
-    if (currentMap != texnum) {
+    if (*currentMap != texnum || !r_useStateCaching.GetBool()) {
 #if defined(ANDROID) && !defined(USE_VULKAN)
         tr.backend.FlushMultiDrawBatch();
 #endif
@@ -366,9 +368,15 @@ void idImage::Bind() {
                     target = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
                     break;
             }
-            glActiveTexture(GL_TEXTURE0 + texUnit);
+            // the unit is only selected for a bind, code that works on the bound
+            // texture itself calls idRenderBackend::GL_ActivateTextureUnit
+            if (glcontext.activeTextureUnit != texUnit) {
+                glActiveTexture(GL_TEXTURE0 + texUnit);
+                glcontext.activeTextureUnit = texUnit;
+            }
             glBindTexture(target, texnum);
         }
+        *currentMap = texnum;
     }
 
 }
@@ -412,14 +420,14 @@ void idImage::CopyFramebufferLegacy(int x, int y, int imageWidth, int imageHeigh
         opts.height = imageHeight;
         opts.format = desiredFormat;
 
-        glBindTexture(target, texnum);
+        R_DirectBindTexture(target, texnum);
         glCopyTexImage2D(target, 0, GL_RGBA8, x, y, imageWidth, imageHeight, 0);
         glTexParameterf(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameterf(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameterf(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameterf(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     } else {
-        glBindTexture(target, texnum);
+        R_DirectBindTexture(target, texnum);
         glCopyTexSubImage2D(target, 0, 0, 0, x, y, imageWidth, imageHeight);
     }
 }
@@ -451,7 +459,7 @@ void idImage::CopyFramebufferDSA(int x, int y, int imageWidth, int imageHeight, 
     glTextureParameterf(texnum, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTextureParameterf(texnum, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 #else
-    glBindTexture(GL_TEXTURE_2D, texnum);
+    R_DirectBindTexture(GL_TEXTURE_2D, texnum);
 
     glCopyTexSubImage2D(
             GL_TEXTURE_2D,
@@ -494,7 +502,7 @@ void idImage::CopyDepthbuffer(int x, int y, int imageWidth, int imageHeight) {
     if (!glConfig.directStateAccess)
 #endif
     {
-        glBindTexture((opts.textureType == TT_CUBIC) ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, texnum);
+        R_DirectBindTexture((opts.textureType == TT_CUBIC) ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, texnum);
 
         opts.width = imageWidth;
         opts.height = imageHeight;
@@ -597,7 +605,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
         target = uploadTarget = GL_TEXTURE_2D;
     }
 
-    glBindTexture(target, texnum);
+    R_DirectBindTexture(target, texnum);
 
     if (pixelPitch != 0) {
         glPixelStorei(GL_UNPACK_ROW_LENGTH, pixelPitch);
@@ -895,7 +903,7 @@ void idImage::SetSamplerState(textureFilter_t tf, textureRepeat_t tr) {
     filter = tf;
     repeat = tr;
     if (!glConfig.directStateAccess) {
-        glBindTexture((opts.textureType == TT_CUBIC) ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, texnum);
+        R_DirectBindTexture((opts.textureType == TT_CUBIC) ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D, texnum);
     }
     SetTexParameters();
 
@@ -1595,7 +1603,7 @@ void idImage::AllocImage() {
         texnum=Framebuffer::renderTargetPool.Acquire(GetName(),d);
         if(texnum){renderTargetPoolAllocated=true;allocatedFromPool=true;}
     }
-    if(allocatedFromPool)glBindTexture(target,texnum);
+    if(allocatedFromPool)R_DirectBindTexture(target,texnum);
     else
 #endif
 #ifndef ANDROID
@@ -1604,7 +1612,7 @@ void idImage::AllocImage() {
     {
         glGenTextures(1, (GLuint *) &texnum);
         assert(texnum != TEXTURE_NOT_LOADED);
-        glBindTexture(target, texnum);
+        R_DirectBindTexture(target, texnum);
         if (opts.textureType == TT_2D_ARRAY) {
 #ifndef ANDROID
             glTexImage3D(uploadTarget, 0, internalFormat, w, h, numSides, 0, dataFormat, GL_UNSIGNED_BYTE, NULL);
@@ -1760,7 +1768,7 @@ void idImage::PurgeImage() {
         if(renderTargetPoolAllocated) {
             Framebuffer::renderTargetPool.Release(GetName());
             renderTargetPoolAllocated=false;
-        } else glDeleteTextures(1,(GLuint *)&texnum);
+        } else R_DirectDeleteTextures(1,(GLuint *)&texnum);
         texnum=TEXTURE_NOT_LOADED;
     }
 

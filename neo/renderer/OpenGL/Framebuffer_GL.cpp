@@ -147,7 +147,7 @@ RenderTarget RenderTargetPool::CreateRenderTarget(const RenderTargetDesc& desc,c
     RenderTarget rt;rt.desc=desc;rt.debugName=name;rt.attachmentRefs=0;
     GLint oldFbo=0,oldTex=0;glGetIntegerv(GL_FRAMEBUFFER_BINDING,&oldFbo);glGetIntegerv(GL_TEXTURE_BINDING_2D,&oldTex);
     glGenTextures(1,&rt.textureID);if(!rt.textureID)return rt;
-    glBindTexture(GL_TEXTURE_2D,rt.textureID);
+    R_DirectBindTexture(GL_TEXTURE_2D,rt.textureID);
     glTexStorage2D(GL_TEXTURE_2D,desc.levels,desc.internalFormat,desc.width,desc.height);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAX_LEVEL,desc.levels-1);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
@@ -162,7 +162,7 @@ RenderTarget RenderTargetPool::CreateRenderTarget(const RenderTargetDesc& desc,c
     }
     else glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,rt.textureID,0);
     GLenum status=glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    glBindFramebuffer(GL_FRAMEBUFFER,oldFbo);glBindTexture(GL_TEXTURE_2D,oldTex);
+    glBindFramebuffer(GL_FRAMEBUFFER,oldFbo);R_DirectBindTexture(GL_TEXTURE_2D,oldTex);
     if(status!=GL_FRAMEBUFFER_COMPLETE)
     {
         common->Warning("RenderTargetPool::CreateRenderTarget(%s): incomplete FBO 0x%X",name.c_str(),status);
@@ -178,7 +178,7 @@ bool RenderTargetPool::CanReuse(const RenderTarget& rt,const RenderTargetDesc& d
 }
 void RenderTargetPool::DestroyRenderTarget(RenderTarget& rt)
 {
-    if(rt.textureID){glDeleteTextures(1,&rt.textureID);rt.textureID=0;}
+    if(rt.textureID){R_DirectDeleteTextures(1,&rt.textureID);rt.textureID=0;}
     if(rt.fboID){glDeleteFramebuffers(1,&rt.fboID);rt.fboID=0;}
     rt.attachmentRefs=0;
 }
@@ -646,7 +646,7 @@ void Framebuffer::AddColorBuffer(int format, int index, int multiSamples)
         glGenTextures(1, &colorTextures[index]);
     }
 
-    glBindTexture(GL_TEXTURE_2D, colorTextures[index]);
+    R_DirectBindTexture(GL_TEXTURE_2D, colorTextures[index]);
     if (useMSAA)
     {
         glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0 + index,GL_TEXTURE_2D,colorTextures[index],0,multiSamples);
@@ -678,7 +678,7 @@ void Framebuffer::AddDepthBuffer(int format, int multiSamples)
         glGenTextures(1, &depthTexture);
     }
 
-    glBindTexture(GL_TEXTURE_2D, depthTexture);
+    R_DirectBindTexture(GL_TEXTURE_2D, depthTexture);
 
     if (useMSAA)
     {
@@ -757,7 +757,7 @@ void Framebuffer::AttachImage2D(int target, const idImage* image, int index, int
 #if ANDROID
     if (colorTextures[index] != 0 && colorTextures[index] != image->texnum)
     {
-        glDeleteTextures(1, &colorTextures[index]);
+        R_DirectDeleteTextures(1, &colorTextures[index]);
         colorTextures[index] = 0;
     }
 #endif
@@ -792,7 +792,7 @@ void Framebuffer::AttachImageDepth(int target, const idImage* image)
     // AddDepthBuffer's temporary texture is superseded by the idImage depth attachment.
     if (depthTexture != 0 && depthTexture != image->texnum)
     {
-        glDeleteTextures(1, &depthTexture);
+        R_DirectDeleteTextures(1, &depthTexture);
         depthTexture = 0;
     }
 #endif
@@ -997,14 +997,14 @@ void Framebuffer::PurgeFramebuffer()
             renderTargetPool.ReleaseAttachmentRef(attachedImageColorTextures[i]);
             attachedImageColorTextures[i]=0;
         }
-        if(colorTextures[i]){glDeleteTextures(1,&colorTextures[i]);colorTextures[i]=0;}
+        if(colorTextures[i]){R_DirectDeleteTextures(1,&colorTextures[i]);colorTextures[i]=0;}
     }
     if(attachedImageDepthTexture)
     {
         renderTargetPool.ReleaseAttachmentRef(attachedImageDepthTexture);
         attachedImageDepthTexture=0;
     }
-    if(depthTexture){glDeleteTextures(1,&depthTexture);depthTexture=0;}
+    if(depthTexture){R_DirectDeleteTextures(1,&depthTexture);depthTexture=0;}
     if(depthBuffer){glDeleteRenderbuffers(1,&depthBuffer);depthBuffer=0;}
     if(stencilBuffer){glDeleteRenderbuffers(1,&stencilBuffer);stencilBuffer=0;}
 }

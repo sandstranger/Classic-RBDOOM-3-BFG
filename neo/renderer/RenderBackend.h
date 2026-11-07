@@ -235,9 +235,16 @@ struct glContext_t
 
 	tmu_t		tmu[ MAX_MULTITEXTURE_UNITS ];
 	uint64		stencilOperations[ STENCIL_FACE_NUM ];
+	int			activeTextureUnit;		// the unit glActiveTexture selected last, -1 when unknown
 };
 
 extern glContext_t glcontext;
+
+// idImage::Bind skips binding a texture the unit has bound already. Texture binds and
+// deletes outside of it go through these, they drop what Bind knows about the units.
+void GL_InvalidateTextureBindings();
+void R_DirectBindTexture( unsigned int target, unsigned int texture );
+void R_DirectDeleteTextures( int count, const unsigned int* textures );
 
 #endif
 
@@ -355,16 +362,17 @@ private:
 #endif
 
 #if defined(ANDROID) && !defined( USE_VULKAN )
-	// world surfaces of several areas drawn with one call, see WorldMergePass
+	// world and baked static model surfaces drawn with one call, see WorldMergePass
 	void				WorldMergePass( const emptyCommand_t* cmds );
-	void				DrawWorldMergeRange( int firstIndex, int numIndexes );
-	void				BeginWorldMergeGroup( const drawSurf_t* surf );
+	void				DrawWorldMergeRange( int firstIndex, int numIndexes, unsigned int vertexBuffer );
+	const drawSurf_t*	BeginWorldMergeGroup( const drawSurf_t* surf );
 
 	// while set, DrawElementsWithCounters draws the merged group of worldMergeSurf in place of worldMergeSurf
 	const drawSurf_t*	worldMergeSurf;
 	int					worldMergeFirstIndex;
 	int					worldMergeNumIndexes;
-	unsigned int		worldMergeIndexBuffer;		// this frame's 32 bit indexes into the static vertex buffer
+	unsigned int		worldMergeVertexBuffer;
+	unsigned int		worldMergeIndexBuffer;		// this frame's 32 bit indexes into the static and the baked vertex buffer
 #endif
 
 	void				StencilShadowPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight );
@@ -400,6 +408,10 @@ private:
 	void				GL_SeparateStencil( stencilFace_t face, uint64 stencilBits );
 	
 	void				GL_SelectTexture( int unit );
+public:
+	// glActiveTexture for the unit GL_SelectTexture picked, for texture calls of its own after a Bind
+	void				GL_ActivateTextureUnit();
+private:
 //	void				GL_BindTexture( idImage* image );
 
 //	void				GL_CopyFrameBuffer( idImage* image, int x, int y, int imageWidth, int imageHeight );

@@ -878,9 +878,9 @@ void idInteraction::CreateStaticInteraction()
 				sint->numLightTrisIndexes = lightTris->numIndexes;
 				sint->lightTrisIndexCache = vertexCache.AllocStaticIndex( lightTris->indexes, ALIGN( lightTris->numIndexes * sizeof( lightTris->indexes[0] ), INDEX_CACHE_ALIGN ) );
 
-				// world area surfaces keep the indexes on the CPU, so the back end
-				// can draw all of a light's surfaces of one material in one go
-				if( model->IsStaticWorldModel() && lightTris->indexes != NULL )
+				// static models keep the indexes on the CPU, so the back end can draw
+				// all of a light's world and static model surfaces of one material in one go
+				if( lightTris->indexes != NULL )
 				{
 					if( lightTris->ambientSurface != NULL && lightTris->indexes == lightTris->ambientSurface->indexes )
 					{

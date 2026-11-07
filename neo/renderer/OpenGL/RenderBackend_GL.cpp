@@ -922,21 +922,19 @@ idRenderBackend::DrawElementsWithCounters
 =============
 idRenderBackend::DrawWorldMergeRange
 
-Draws merged world surfaces: 32 bit indexes from this frame's merge buffer
-into the static vertex buffer, with whatever program and state is set up
+Draws merged surfaces: 32 bit indexes from this frame's merge buffer into the
+static or the baked vertex buffer, with whatever program and state is set up
 =============
 */
-void idRenderBackend::DrawWorldMergeRange( int firstIndex, int numIndexes )
+void idRenderBackend::DrawWorldMergeRange( int firstIndex, int numIndexes, unsigned int vertexBuffer )
 {
-	if( numIndexes <= 0 || worldMergeIndexBuffer == 0 )
+	if( numIndexes <= 0 || worldMergeIndexBuffer == 0 || vertexBuffer == 0 )
 	{
 		return;
 	}
-
+	
 	FlushMultiDrawBatch();
-
-	idVertexBuffer* vertexBuffer = &vertexCache.staticData.vertexBuffer;
-
+	
 	renderProgManager.CommitUniforms( glStateBits );
 
 	if( ( GLintptr )currentIndexBuffer != ( GLintptr )worldMergeIndexBuffer || !r_useStateCaching.GetBool() )
@@ -945,12 +943,12 @@ void idRenderBackend::DrawWorldMergeRange( int firstIndex, int numIndexes )
 		currentIndexBuffer = worldMergeIndexBuffer;
 	}
 
-	// the indexes count from the first vertex of the static buffer
-	if( ( vertexLayout != LAYOUT_DRAW_VERT ) || ( ( GLintptr )currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) ||
+	// the indexes count from the first vertex of the buffer
+	if( ( vertexLayout != LAYOUT_DRAW_VERT ) || ( ( GLintptr )currentVertexBuffer != ( GLintptr )vertexBuffer ) ||
 			!r_useStateCaching.GetBool() || ( !isGLES32Version() && currentVertOffset != 0 ) )
 	{
-		glBindBuffer( GL_ARRAY_BUFFER, ( GLintptr )vertexBuffer->GetAPIObject() );
-		currentVertexBuffer = ( GLintptr )vertexBuffer->GetAPIObject();
+		glBindBuffer( GL_ARRAY_BUFFER, vertexBuffer );
+		currentVertexBuffer = vertexBuffer;
 
 		glEnableVertexAttribArray( PC_ATTRIB_INDEX_VERTEX );
 		glEnableVertexAttribArray( PC_ATTRIB_INDEX_NORMAL );
@@ -1061,7 +1059,7 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 	// the first surface of a merged world group draws the whole group
 	if( worldMergeSurf != NULL && surf == worldMergeSurf )
 	{
-		DrawWorldMergeRange( worldMergeFirstIndex, worldMergeNumIndexes );
+		DrawWorldMergeRange( worldMergeFirstIndex, worldMergeNumIndexes, worldMergeVertexBuffer );
 		return;
 	}
 
@@ -1472,6 +1470,7 @@ void idRenderBackend::GL_SetDefaultState()
 #endif
 	// make sure our GL state vector is set correctly
 	memset( &glcontext.tmu, 0, sizeof( glcontext.tmu ) );
+	glcontext.activeTextureUnit = -1;
 	currenttmu = 0;
 	currentVertexBuffer = 0;
 	currentIndexBuffer = 0;
@@ -1919,6 +1918,44 @@ void idRenderBackend::GL_State( uint64 stateBits, bool forceGlState )
 
 /*
 ====================
+GL_InvalidateTextureBindings
+====================
+*/
+void GL_InvalidateTextureBindings()
+{
+	// no texture is named 0, so nothing matches until bound again
+	memset( glcontext.tmu, 0, sizeof( glcontext.tmu ) );
+}
+
+void R_DirectBindTexture( unsigned int target, unsigned int texture )
+{
+	glBindTexture( target, texture );
+	GL_InvalidateTextureBindings();
+}
+
+void R_DirectDeleteTextures( int count, const unsigned int* textures )
+{
+	// a deleted texture is unbound from every unit, and its name comes back for new textures
+	glDeleteTextures( count, textures );
+	GL_InvalidateTextureBindings();
+}
+
+/*
+====================
+idRenderBackend::GL_ActivateTextureUnit
+====================
+*/
+void idRenderBackend::GL_ActivateTextureUnit()
+{
+	if( glcontext.activeTextureUnit != currenttmu )
+	{
+		glActiveTexture( GL_TEXTURE0 + currenttmu );
+		glcontext.activeTextureUnit = currenttmu;
+	}
+}
+
+/*
+====================
 idRenderBackend::SelectTexture
 ====================
 */
@@ -2138,6 +2175,7 @@ void idRenderBackend::CheckCVars()
 #endif
 				//GK: It sucks but some textures needs to be bound when altering their parameters (so much for DSA)
 				globalImages->images[i]->Bind();
+				GL_ActivateTextureUnit();
 				globalImages->images[i]->SetTexParameters();
 			}
 		}
@@ -2791,6 +2829,7 @@ idRenderBackend::idRenderBackend()
 {
 	memset( glcontext.tmu, 0, sizeof( glcontext.tmu ) );
 	memset( glcontext.stencilOperations, 0, sizeof( glcontext.stencilOperations ) );
+	glcontext.activeTextureUnit = -1;
 
 	numShadowAtlasLights = 0;
 	shadowAtlasSize = 0;
@@ -2801,6 +2840,7 @@ idRenderBackend::idRenderBackend()
 	worldMergeSurf = NULL;
 	worldMergeFirstIndex = 0;
 	worldMergeNumIndexes = 0;
+	worldMergeVertexBuffer = 0;
 	worldMergeIndexBuffer = 0;
 #endif
 }
@@ -2983,16 +3023,20 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 #endif
 			GL_SelectTexture( 0 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 1 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			DrawElementsWithCounters( &unitSquareSurface );
 #ifndef ANDROID
 			glDrawBuffer( GL_BACK_LEFT );
 #endif
 			GL_SelectTexture( 1 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 0 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			DrawElementsWithCounters( &unitSquareSurface );
 			break;
 			
@@ -3000,15 +3044,19 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 			// HDMI 720P 3D
 			GL_SelectTexture( 0 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 1 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			GL_ViewportAndScissor( 0, 0, 1280, 720 );
 			DrawElementsWithCounters( &unitSquareSurface );
 			
 			GL_SelectTexture( 0 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 1 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_ViewportAndScissor( 0, 750, 1280, 720 );
 			DrawElementsWithCounters( &unitSquareSurface );
 			
@@ -3031,8 +3079,10 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 				renderProgManager.SetRenderParm(RENDERPARM_COLOR, color.ToFloatPtr());
 				GL_SelectTexture(0);
 				stereoRenderImages[0]->Bind();
+				GL_ActivateTextureUnit();
 				GL_SelectTexture(1);
 				stereoRenderImages[1]->Bind();
+				GL_ActivateTextureUnit();
 				GLint xrFBO;
 				xrSystem->StartFrame();
 				glGetIntegerv(GL_FRAMEBUFFER_BINDING, &xrFBO);
@@ -3058,8 +3108,10 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 
 				GL_SelectTexture(0);
 				stereoRenderImages[1]->Bind();
+				GL_ActivateTextureUnit();
 				GL_SelectTexture(1);
 				stereoRenderImages[0]->Bind();
+				GL_ActivateTextureUnit();
 				xrSystem->BindSwapchainImage(1);
 				GL_ViewportAndScissor(0, 0, xrSystem->GetWidth(), xrSystem->GetHeight());
 				DrawElementsWithCounters(&unitSquareSurface);
@@ -3116,6 +3168,7 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 
 				GL_SelectTexture( 0 );
 				stereoRenderImages[0]->Bind();
+				GL_ActivateTextureUnit();
 #ifdef ANDROID //karin: using GL_CLAMP_TO_EDGE instead of GL_CLAMP_TO_BORDER in OpenGLES
                 glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
 				glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
@@ -3136,6 +3189,7 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 				
 				GL_SelectTexture( 0 );
 				stereoRenderImages[1]->Bind();
+				GL_ActivateTextureUnit();
 #ifdef ANDROID //karin: using GL_CLAMP_TO_EDGE instead of GL_CLAMP_TO_BORDER in OpenGLES
                 glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
 				glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
@@ -3153,15 +3207,19 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 
 			GL_SelectTexture( 0 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 1 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_ViewportAndScissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 			DrawElementsWithCounters( &unitSquareSurface );
 
 			GL_SelectTexture( 0 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 1 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			GL_ViewportAndScissor( renderSystem->GetWidth(), 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 			DrawElementsWithCounters( &unitSquareSurface );
 			break;
@@ -3169,15 +3227,19 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 		case STEREO3D_TOP_AND_BOTTOM_COMPRESSED:
 			GL_SelectTexture( 1 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 0 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_ViewportAndScissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 			DrawElementsWithCounters( &unitSquareSurface );
 			
 			GL_SelectTexture( 1 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			GL_SelectTexture( 0 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			GL_ViewportAndScissor( 0, renderSystem->GetHeight(), renderSystem->GetWidth(), renderSystem->GetHeight() );
 			DrawElementsWithCounters( &unitSquareSurface );
 			break;
@@ -3186,11 +3248,13 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 			// every other scanline
 			GL_SelectTexture( 0 );
 			stereoRenderImages[0]->Bind();
+			GL_ActivateTextureUnit();
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 			
 			GL_SelectTexture( 1 );
 			stereoRenderImages[1]->Bind();
+			GL_ActivateTextureUnit();
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 			
@@ -3199,10 +3263,12 @@ void idRenderBackend::StereoRenderExecuteBackEndCommands( const emptyCommand_t* 
 			DrawElementsWithCounters( &unitSquareSurface );
 			
 			GL_SelectTexture( 0 );
+			GL_ActivateTextureUnit();
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 			
 			GL_SelectTexture( 1 );
+			GL_ActivateTextureUnit();
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
 			glTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 			

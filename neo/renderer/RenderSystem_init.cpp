@@ -2590,8 +2590,13 @@ void idRenderSystemLocal::ResetGuiModels()
 idRenderSystemLocal::BeginLevelLoad
 ========================
 */
+int r_staticGeometryGeneration = 0;
+
 void idRenderSystemLocal::BeginLevelLoad()
 {
+	// the static models of the last level go away
+	r_staticGeometryGeneration++;
+	
 	globalImages->BeginLevelLoad();
 	renderModelManager->BeginLevelLoad();
 	
@@ -2630,6 +2635,9 @@ void idRenderSystemLocal::EndLevelLoad()
 {
 	renderModelManager->EndLevelLoad();
 	globalImages->EndLevelLoad();
+
+	// models the new level doesn't use were purged
+	r_staticGeometryGeneration++;
 }
 
 /*

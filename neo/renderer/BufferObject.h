@@ -83,6 +83,14 @@ public:
     void*  MapForWrite(int slot);
     void   Unmap(int slot);
 
+    // only writtenBytes from the start of the slot were written: flush just those
+    void   Unmap(int slot, GLsizeiptr writtenBytes);
+    // persistent rings stay mapped, a range written between draws is flushed with this
+    void   FlushRange(int slot, GLsizeiptr offset, GLsizeiptr length);
+    bool   IsPersistent() const { return persistent_; }
+    void*  PersistentPointer(int slot) const { return persistent_ ? mapped[slot] : nullptr; }
+    GLsizeiptr Size() const { return size_; }
+
 private:
     GLenum      target_ = GL_ARRAY_BUFFER;
     GLsizeiptr  size_ = 0;

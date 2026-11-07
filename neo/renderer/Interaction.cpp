@@ -587,6 +587,60 @@ Frees the surfaces, but leaves the interaction linked in, so it
 will be regenerated automatically
 ===============
 */
+/*
+===============
+R_FreeLightTrisIndexes
+
+The back end merges world draws with the light tris indexes of a frame while
+the front end already works on the next one, which may free the interaction.
+The indexes are freed a few frames after the interaction let go of them.
+===============
+*/
+struct deferredLightTrisFree_t
+{
+	triIndex_t*	indexes;
+	int			frameCount;
+};
+
+// a plain array, nothing here may run a destructor at exit()
+static const int MAX_DEFERRED_LIGHT_TRIS_FREES = 8192;
+static deferredLightTrisFree_t deferredLightTrisFrees[MAX_DEFERRED_LIGHT_TRIS_FREES];
+static int numDeferredLightTrisFrees = 0;
+
+static void R_FreeLightTrisIndexes( triIndex_t* indexes )
+{
+	const int FREE_DELAY_FRAMES = 4;
+	
+	for( int i = 0; i < numDeferredLightTrisFrees; )
+	{
+		// the frame counter starts over with a new renderer
+		if( tr.frameCount - deferredLightTrisFrees[i].frameCount > FREE_DELAY_FRAMES || tr.frameCount < deferredLightTrisFrees[i].frameCount )
+		{
+			Mem_Free( deferredLightTrisFrees[i].indexes );
+			deferredLightTrisFrees[i] = deferredLightTrisFrees[--numDeferredLightTrisFrees];
+		}
+		else
+		{
+			i++;
+		}
+	}
+	
+	if( indexes == NULL )
+	{
+		return;
+	}
+	
+	if( numDeferredLightTrisFrees == MAX_DEFERRED_LIGHT_TRIS_FREES )
+	{
+		// should never fill up, the oldest is the safest to let go of
+		Mem_Free( deferredLightTrisFrees[0].indexes );
+		deferredLightTrisFrees[0] = deferredLightTrisFrees[--numDeferredLightTrisFrees];
+	}
+	deferredLightTrisFrees[numDeferredLightTrisFrees].indexes = indexes;
+	deferredLightTrisFrees[numDeferredLightTrisFrees].frameCount = tr.frameCount;
+	numDeferredLightTrisFrees++;
+}
+
 void idInteraction::FreeSurfaces()
 {
 	// anything regenerated is no longer an optimized static version
@@ -599,6 +653,12 @@ void idInteraction::FreeSurfaces()
 			surfaceInteraction_t& srf = this->surfaces[i];
 			Mem_Free( srf.shadowIndexes );
 			srf.shadowIndexes = NULL;
+			if( srf.ownsLightTrisIndexes )
+			{
+				R_FreeLightTrisIndexes( const_cast<triIndex_t*>( srf.lightTrisIndexes ) );
+			}
+			srf.lightTrisIndexes = NULL;
+			srf.ownsLightTrisIndexes = false;
 		}
 		R_StaticFree( this->surfaces );
 		this->surfaces = NULL;
@@ -817,7 +877,25 @@ void idInteraction::CreateStaticInteraction()
 				// make a static index cache
 				sint->numLightTrisIndexes = lightTris->numIndexes;
 				sint->lightTrisIndexCache = vertexCache.AllocStaticIndex( lightTris->indexes, ALIGN( lightTris->numIndexes * sizeof( lightTris->indexes[0] ), INDEX_CACHE_ALIGN ) );
-				
+
+				// world area surfaces keep the indexes on the CPU, so the back end
+				// can draw all of a light's surfaces of one material in one go
+				if( model->IsStaticWorldModel() && lightTris->indexes != NULL )
+				{
+					if( lightTris->ambientSurface != NULL && lightTris->indexes == lightTris->ambientSurface->indexes )
+					{
+						// all triangles are lit: the light tris share the surface's own indexes
+						sint->lightTrisIndexes = lightTris->indexes;
+						sint->ownsLightTrisIndexes = false;
+					}
+					else
+					{
+						sint->lightTrisIndexes = lightTris->indexes;
+						sint->ownsLightTrisIndexes = true;
+						lightTris->indexes = NULL;
+					}
+				}
+
 				interactionGenerated = true;
 				R_FreeStaticTriSurf( lightTris );
 			}

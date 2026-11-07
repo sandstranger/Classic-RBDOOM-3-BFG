@@ -53,7 +53,11 @@ idCVar idRenderModelStatic::r_slopNormal( "r_slopNormal", "0.02", CVAR_RENDERER,
 
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
-static idCVar r_staticBatching( "r_staticBatching", "1", CVAR_BOOL | CVAR_RENDERER, "Merge static world surfaces across BSP areas by material and spatial cell" );
+static idCVar r_staticBatching( "r_staticBatching", "1", CVAR_BOOL | CVAR_RENDERER, "Merge the surfaces of a static model that share a material" );
+// The world batches are entities of their own: drawn whenever any area they span is visible, and with
+// shadow volumes of their own on top of the prelight ones. r_mergeWorldSurfaces merges the visible world
+// surfaces every frame instead.
+static idCVar r_staticBatchingWorld( "r_staticBatchingWorld", "0", CVAR_BOOL | CVAR_RENDERER, "at map load, merge the world surfaces of a material across BSP areas into separate batch entities" );
 static idCVar r_staticBatchingDebug( "r_staticBatchingDebug", "1", CVAR_BOOL | CVAR_RENDERER, "Log static batching cache statistics" );
 
 static const uint32_t STATIC_BATCH_CACHE_MAGIC = 0x53424348; // SBCH
@@ -1649,7 +1653,7 @@ void R_BuildWorldStaticBatches( idList<idRenderModel*, TAG_MODEL>& localModels, 
 			outBatches.Append( localModels[i] );
 		}
 	}
-	if( outBatches.Num() > 0 || !r_staticBatching.GetBool() )
+	if( outBatches.Num() > 0 || !r_staticBatching.GetBool() || !r_staticBatchingWorld.GetBool() )
 	{
 		return;
 	}

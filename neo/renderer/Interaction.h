@@ -73,7 +73,11 @@ struct surfaceInteraction_t
 	// generated in static vertex memory.
 	int						numLightTrisIndexes;
 	vertCacheHandle_t		lightTrisIndexCache;
-	
+
+	// CPU copy of the light tris of world area surfaces, for the back end to merge draws with
+	const triIndex_t*		lightTrisIndexes;
+	bool					ownsLightTrisIndexes;	// false when it points at the surface's own indexes
+
 	// shadow volume triangle surface
 	int						numShadowIndexes;
 	int						numShadowIndexesNoCaps;	// if the view is outside the shadow, this can be used

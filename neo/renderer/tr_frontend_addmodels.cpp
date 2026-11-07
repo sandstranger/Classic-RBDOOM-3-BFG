@@ -625,6 +625,15 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 	vEntity->skipMotionBlur = renderEntity->skipMotionBlur;
 	
 	memcpy( vEntity->modelMatrix, entityDef->modelMatrix, sizeof( vEntity->modelMatrix ) );
+
+	// the _area models of the world have the identity transform, so the back end
+	// can draw the surfaces of several areas together with one MVP
+	vEntity->staticWorldArea = false;
+	if( model->IsStaticWorldModel() && !renderEntity->weaponDepthHack && renderEntity->modelDepthHack == 0.0f )
+	{
+		static const float identity[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+		vEntity->staticWorldArea = ( memcmp( vEntity->modelMatrix, identity, sizeof( identity ) ) == 0 );
+	}
 	R_MatrixMultiply( entityDef->modelMatrix, viewDef->worldSpace.modelViewMatrix, vEntity->modelViewMatrix );
 	
 	idRenderMatrix viewMat;
@@ -863,6 +872,12 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 					baseDrawSurf->ambientCache = tri->ambientCache;
 					baseDrawSurf->indexCache = tri->indexCache;
 					baseDrawSurf->shadowCache = 0;
+
+					// static world geometry, the back end may draw it together with other areas
+					if( vEntity->staticWorldArea && tri->indexes != NULL && vertexCache.CacheIsStatic( tri->indexCache ) && vertexCache.CacheIsStatic( tri->ambientCache ) )
+					{
+						baseDrawSurf->staticIndexes = tri->indexes;
+					}
 					
 					baseDrawSurf->linkChain = NULL;		// link to the view
 					baseDrawSurf->nextOnLight = vEntity->drawSurfs;
@@ -938,6 +953,10 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 							// optimized static interaction
 							lightDrawSurf->numIndexes = surfInter->numLightTrisIndexes;
 							lightDrawSurf->indexCache = surfInter->lightTrisIndexCache;
+							if( vEntity->staticWorldArea )
+							{
+								lightDrawSurf->staticIndexes = surfInter->lightTrisIndexes;
+							}
 						}
 						else
 						{
@@ -1003,6 +1022,13 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 						lightDrawSurf->ambientCache = tri->ambientCache;
 						lightDrawSurf->shadowCache = 0;
 						lightDrawSurf->frontEndGeo = tri;
+						
+						// lights without a static interaction draw the whole static world surface
+						if( lightDrawSurf->staticIndexes == NULL && vEntity->staticWorldArea && lightDrawSurf->indexCache == tri->indexCache
+								&& tri->indexes != NULL && vertexCache.CacheIsStatic( tri->indexCache ) )
+						{
+							lightDrawSurf->staticIndexes = tri->indexes;
+						}
 						lightDrawSurf->space = vEntity;
 						lightDrawSurf->material = shader;
 						lightDrawSurf->extraGLState = 0;
@@ -1129,6 +1155,10 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 							// optimized static interaction
 							shadowDrawSurf->numIndexes = surfInter->numLightTrisIndexes;
 							shadowDrawSurf->indexCache = surfInter->lightTrisIndexCache;
+							if( vEntity->staticWorldArea )
+							{
+								shadowDrawSurf->staticIndexes = surfInter->lightTrisIndexes;
+							}
 						}
 						else
 						{
@@ -1161,6 +1191,12 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 						shadowDrawSurf->ambientCache = tri->ambientCache;
 						shadowDrawSurf->shadowCache = 0;
 						shadowDrawSurf->frontEndGeo = tri;
+						
+						if( shadowDrawSurf->staticIndexes == NULL && vEntity->staticWorldArea && shadowDrawSurf->indexCache == tri->indexCache
+								&& tri->indexes != NULL && vertexCache.CacheIsStatic( tri->indexCache ) )
+						{
+							shadowDrawSurf->staticIndexes = tri->indexes;
+						}
 						shadowDrawSurf->space = vEntity;
 						shadowDrawSurf->material = shader;
 						shadowDrawSurf->extraGLState = 0;

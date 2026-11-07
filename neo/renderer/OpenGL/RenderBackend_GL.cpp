@@ -43,6 +43,8 @@ If you have questions concerning this license or the applicable additional terms
 #if defined(ANDROID) && !defined(USE_VULKAN)
 extern void RB_InitExposureReadback();
 extern void RB_ShutdownExposureReadback();
+extern void RB_ShutdownWorldMerge();
+static void R_ShutdownInstanceStream();
 #endif
 #if ANDROID
 
@@ -852,6 +854,9 @@ void idRenderBackend::Shutdown()
     g_multiDrawCommands.clear();
 	// Delete PBOs and fences while the GLES context is still alive.
 	RB_ShutdownExposureReadback();
+	// the same for the streaming rings, they must not outlive the context in static destructors
+	RB_ShutdownWorldMerge();
+	R_ShutdownInstanceStream();
 #endif
 	GLimp_Shutdown();
 }
@@ -913,12 +918,153 @@ idRenderBackend::DrawElementsWithCounters
 =============
 */
 #if defined(ANDROID) && !defined(USE_VULKAN)
+/*
+=============
+idRenderBackend::DrawWorldMergeRange
+
+Draws merged world surfaces: 32 bit indexes from this frame's merge buffer
+into the static vertex buffer, with whatever program and state is set up
+=============
+*/
+void idRenderBackend::DrawWorldMergeRange( int firstIndex, int numIndexes )
+{
+	if( numIndexes <= 0 || worldMergeIndexBuffer == 0 )
+	{
+		return;
+	}
+
+	FlushMultiDrawBatch();
+
+	idVertexBuffer* vertexBuffer = &vertexCache.staticData.vertexBuffer;
+
+	renderProgManager.CommitUniforms( glStateBits );
+
+	if( ( GLintptr )currentIndexBuffer != ( GLintptr )worldMergeIndexBuffer || !r_useStateCaching.GetBool() )
+	{
+		glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, worldMergeIndexBuffer );
+		currentIndexBuffer = worldMergeIndexBuffer;
+	}
+
+	// the indexes count from the first vertex of the static buffer
+	if( ( vertexLayout != LAYOUT_DRAW_VERT ) || ( ( GLintptr )currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) ||
+			!r_useStateCaching.GetBool() || ( !isGLES32Version() && currentVertOffset != 0 ) )
+	{
+		glBindBuffer( GL_ARRAY_BUFFER, ( GLintptr )vertexBuffer->GetAPIObject() );
+		currentVertexBuffer = ( GLintptr )vertexBuffer->GetAPIObject();
+
+		glEnableVertexAttribArray( PC_ATTRIB_INDEX_VERTEX );
+		glEnableVertexAttribArray( PC_ATTRIB_INDEX_NORMAL );
+		glEnableVertexAttribArray( PC_ATTRIB_INDEX_COLOR );
+		glEnableVertexAttribArray( PC_ATTRIB_INDEX_COLOR2 );
+		glEnableVertexAttribArray( PC_ATTRIB_INDEX_ST );
+		glEnableVertexAttribArray( PC_ATTRIB_INDEX_TANGENT );
+
+		glVertexAttribPointer( PC_ATTRIB_INDEX_VERTEX, 3, GL_FLOAT, GL_FALSE, sizeof( idDrawVert ), ( void* )( DRAWVERT_XYZ_OFFSET ) );
+		glVertexAttribPointer( PC_ATTRIB_INDEX_NORMAL, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_NORMAL_OFFSET ) );
+		glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_COLOR_OFFSET ) );
+		glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_COLOR2_OFFSET ) );
+		glVertexAttribPointer( PC_ATTRIB_INDEX_ST, 2, GL_HALF_FLOAT, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_ST_OFFSET ) );
+		glVertexAttribPointer( PC_ATTRIB_INDEX_TANGENT, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_TANGENT_OFFSET ) );
+
+		vertexLayout = LAYOUT_DRAW_VERT;
+		if( !isGLES32Version() )
+		{
+			currentVertOffset = 0;
+		}
+	}
+
+	glDrawElements( GL_TRIANGLES, numIndexes, GL_UNSIGNED_INT, ( const void* )( ( uintptr_t )firstIndex * sizeof( uint32 ) ) );
+
+	pc.c_drawElements++;
+	pc.c_drawIndexes += numIndexes;
+}
+
+/*
+=============
+R_StreamInstanceData
+
+Per instance data goes into a persistently mapped ring for the frame, where the
+GPU is done with the slot, instead of a new glBufferData allocation per draw.
+=============
+*/
+static idGLBufferRing*	s_instanceRing = NULL;		// destroyed in idRenderBackend::Shutdown
+static int				s_instanceRingSlot = -1;
+static GLsizeiptr		s_instanceRingUsed = 0;
+static const GLsizeiptr	INSTANCE_RING_SIZE = 1024 * 1024;
+
+static bool R_StreamInstanceData( const void* data, GLsizeiptr bytes, GLuint& buffer, GLintptr& offset )
+{
+	if( !R_HasBufferStorage() || bytes > INSTANCE_RING_SIZE )
+	{
+		return false;
+	}
+	if( s_instanceRing == NULL )
+	{
+		s_instanceRing = new idGLBufferRing;
+		if( !s_instanceRing->Create( GL_COPY_WRITE_BUFFER, INSTANCE_RING_SIZE, true ) || !s_instanceRing->IsPersistent() )
+		{
+			s_instanceRing->Destroy();
+			// keep the object, so the check above fails fast from now on
+			return false;
+		}
+	}
+	if( !s_instanceRing->IsPersistent() )
+	{
+		return false;
+	}
+
+	const int slot = g_frameFences.CurrentSlot();
+	if( slot != s_instanceRingSlot )
+	{
+		s_instanceRingSlot = slot;
+		s_instanceRingUsed = 0;
+	}
+	if( s_instanceRingUsed + bytes > INSTANCE_RING_SIZE )
+	{
+		return false;
+	}
+
+	byte* mapped = ( byte* )s_instanceRing->PersistentPointer( slot );
+	if( mapped == NULL )
+	{
+		return false;
+	}
+	memcpy( mapped + s_instanceRingUsed, data, bytes );
+	s_instanceRing->FlushRange( slot, s_instanceRingUsed, bytes );
+
+	buffer = s_instanceRing->Buffer( slot );
+	offset = s_instanceRingUsed;
+	s_instanceRingUsed += ( bytes + 255 ) & ~( GLsizeiptr )255;
+	return true;
+}
+
+static void R_ShutdownInstanceStream()
+{
+	if( s_instanceRing != NULL )
+	{
+		s_instanceRing->Destroy();
+		delete s_instanceRing;
+		s_instanceRing = NULL;
+	}
+	s_instanceRingSlot = -1;
+	s_instanceRingUsed = 0;
+}
+#endif
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
 void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf, const gpuInstanceData_t* instances, int instanceCount )
 #else
 void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 #endif
 {
 #if defined(ANDROID) && !defined(USE_VULKAN)
+	// the first surface of a merged world group draws the whole group
+	if( worldMergeSurf != NULL && surf == worldMergeSurf )
+	{
+		DrawWorldMergeRange( worldMergeFirstIndex, worldMergeNumIndexes );
+		return;
+	}
+
     const bool useInstancing = (instances != NULL && instanceCount > 1);
     const bool useMultiDraw = g_multiDrawIndirectAvailable
         && r_useMultiDrawIndirect.GetBool()
@@ -1130,31 +1276,41 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 	const GLuint instanceAttribs[10] = { 1, 5, 6, 7, 10, 11, 12, 13, 14, 15 };
 	if (useInstancing)
 	{
-		if (gpuInstanceBuffer == 0)
+		const GLsizeiptr instanceBytes = sizeof(gpuInstanceData_t) * instanceCount;
+		GLuint instanceBuffer = 0;
+		GLintptr instanceOffset = 0;
+		if (!R_StreamInstanceData(instances, instanceBytes, instanceBuffer, instanceOffset))
 		{
-			GLuint buffer = 0;
-			glGenBuffers(1, &buffer);
-			gpuInstanceBuffer = buffer;
+			// no persistent mapping: a fresh allocation per draw, as before
+			if (gpuInstanceBuffer == 0)
+			{
+				GLuint buffer = 0;
+				glGenBuffers(1, &buffer);
+				gpuInstanceBuffer = buffer;
+			}
+			instanceBuffer = (GLuint)gpuInstanceBuffer;
+			instanceOffset = 0;
+			glBindBuffer(GL_ARRAY_BUFFER, instanceBuffer);
+			glBufferData(GL_ARRAY_BUFFER, instanceBytes, instances, GL_STREAM_DRAW);
 		}
-		glBindBuffer(GL_ARRAY_BUFFER, (GLuint)gpuInstanceBuffer);
-		glBufferData(GL_ARRAY_BUFFER, sizeof(gpuInstanceData_t) * instanceCount, instances, GL_STREAM_DRAW);
+		glBindBuffer(GL_ARRAY_BUFFER, instanceBuffer);
 		const GLsizei stride = sizeof(gpuInstanceData_t);
 		for (int row = 0; row < 4; ++row)
 		{
 			const GLuint mvpAttrib = mvpAttribs[row];
 			const GLuint modelViewAttrib = modelViewAttribs[row];
 			glEnableVertexAttribArray(mvpAttrib);
-			glVertexAttribPointer(mvpAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(row * 4 * sizeof(float)));
+			glVertexAttribPointer(mvpAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(instanceOffset + row * 4 * sizeof(float)));
 			glVertexAttribDivisor(mvpAttrib, 1);
 			glEnableVertexAttribArray(modelViewAttrib);
-			glVertexAttribPointer(modelViewAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(16 * sizeof(float) + row * 4 * sizeof(float)));
+			glVertexAttribPointer(modelViewAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(instanceOffset + 16 * sizeof(float) + row * 4 * sizeof(float)));
 			glVertexAttribDivisor(modelViewAttrib, 1);
 		}
 		glEnableVertexAttribArray(14);
-		glVertexAttribPointer(14, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(32 * sizeof(float)));
+		glVertexAttribPointer(14, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(instanceOffset + 32 * sizeof(float)));
 		glVertexAttribDivisor(14, 1);
 		glEnableVertexAttribArray(15);
-		glVertexAttribPointer(15, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(36 * sizeof(float)));
+		glVertexAttribPointer(15, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(instanceOffset + 36 * sizeof(float)));
 		glVertexAttribDivisor(15, 1);
 	}
     if (useMultiDraw)
@@ -2347,24 +2503,33 @@ if (!isGLES32Version()) {
 	const GLuint lightOriginAttrib = 15;
 	if( useInstancing )
 	{
-		if( gpuInstanceBuffer == 0 )
+		const GLsizeiptr instanceBytes = sizeof( gpuInstanceData_t ) * instanceCount;
+		GLuint instanceBuffer = 0;
+		GLintptr instanceOffset = 0;
+		if( !R_StreamInstanceData( instances, instanceBytes, instanceBuffer, instanceOffset ) )
 		{
-			GLuint buffer = 0;
-			glGenBuffers( 1, &buffer );
-			gpuInstanceBuffer = buffer;
+			if( gpuInstanceBuffer == 0 )
+			{
+				GLuint buffer = 0;
+				glGenBuffers( 1, &buffer );
+				gpuInstanceBuffer = buffer;
+			}
+			instanceBuffer = (GLuint)gpuInstanceBuffer;
+			instanceOffset = 0;
+			glBindBuffer( GL_ARRAY_BUFFER, instanceBuffer );
+			glBufferData( GL_ARRAY_BUFFER, instanceBytes, instances, GL_STREAM_DRAW );
 		}
-		glBindBuffer( GL_ARRAY_BUFFER, (GLuint)gpuInstanceBuffer );
-		glBufferData( GL_ARRAY_BUFFER, sizeof( gpuInstanceData_t ) * instanceCount, instances, GL_STREAM_DRAW );
+		glBindBuffer( GL_ARRAY_BUFFER, instanceBuffer );
 		const GLsizei stride = sizeof( gpuInstanceData_t );
 		for( int row = 0; row < 4; ++row )
 		{
 			const GLuint attrib = mvpAttribs[row];
 			glEnableVertexAttribArray( attrib );
-			glVertexAttribPointer( attrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)( row * 4 * sizeof( float ) ) );
+			glVertexAttribPointer( attrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)( instanceOffset + row * 4 * sizeof( float ) ) );
 			glVertexAttribDivisor( attrib, 1 );
 		}
 		glEnableVertexAttribArray( lightOriginAttrib );
-		glVertexAttribPointer( lightOriginAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)( 36 * sizeof( float ) ) );
+		glVertexAttribPointer( lightOriginAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)( instanceOffset + 36 * sizeof( float ) ) );
 		glVertexAttribDivisor( lightOriginAttrib, 1 );
 	}
 #endif
@@ -2632,6 +2797,12 @@ idRenderBackend::idRenderBackend()
 	hdrTargetClearedThisFrame = false;
 	skipBackBufferClear = false;
 	bloomResultImage = NULL;
+#if defined(ANDROID)
+	worldMergeSurf = NULL;
+	worldMergeFirstIndex = 0;
+	worldMergeNumIndexes = 0;
+	worldMergeIndexBuffer = 0;
+#endif
 }
 
 /*

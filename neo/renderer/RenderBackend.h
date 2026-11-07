@@ -354,6 +354,19 @@ private:
 	bool				skipBackBufferClear;		// a HDR view's tonemap replaces the whole back buffer this frame
 #endif
 
+#if defined(ANDROID) && !defined( USE_VULKAN )
+	// world surfaces of several areas drawn with one call, see WorldMergePass
+	void				WorldMergePass( const emptyCommand_t* cmds );
+	void				DrawWorldMergeRange( int firstIndex, int numIndexes );
+	void				BeginWorldMergeGroup( const drawSurf_t* surf );
+
+	// while set, DrawElementsWithCounters draws the merged group of worldMergeSurf in place of worldMergeSurf
+	const drawSurf_t*	worldMergeSurf;
+	int					worldMergeFirstIndex;
+	int					worldMergeNumIndexes;
+	unsigned int		worldMergeIndexBuffer;		// this frame's 32 bit indexes into the static vertex buffer
+#endif
+
 	void				StencilShadowPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight );
 	void				StencilSelectLight( const viewLight_t* vLight );
 	

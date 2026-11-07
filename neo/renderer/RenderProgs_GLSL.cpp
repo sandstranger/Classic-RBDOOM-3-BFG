@@ -841,6 +841,7 @@ const char* vertexInsert_GLSL_ES_3_00 =
         {
                 "#version 320 es\n"
                 "#define PC\n"
+                "// TBR_MOBILE_SHADER_PATH\n"
                 "precision highp float;\n"
                 "\n"
                 "float saturate( float v ) { return clamp( v, 0.0, 1.0 ); }\n"
@@ -850,10 +851,16 @@ const char* vertexInsert_GLSL_ES_3_00 =
                 "\n"
         };
 
+// lit surface programs get the second tex2D(), see R_GLSLUsesTextureLodBias()
+#define GLSL_ES_TEX2D				"vec4 tex2D( sampler2D sampler, vec2 texcoord ) { return texture( sampler, texcoord.xy ); }\n"
+#define GLSL_ES_TEX2D_LOD_BIAS		"uniform float " TEXTURE_LOD_BIAS_UNIFORM_NAME ";\n" \
+									"vec4 tex2D( sampler2D sampler, vec2 texcoord ) { return texture( sampler, texcoord.xy, " TEXTURE_LOD_BIAS_UNIFORM_NAME " ); }\n"
+
 const char* fragmentInsert_GLSL_ES_3_00 =
         {
                 "#version 320 es\n"
                 "#define PC\n"
+                "// TBR_MOBILE_SHADER_PATH\n"
                 "precision highp float;\n"
                 "precision mediump sampler2D;\n"
                 "precision mediump sampler2DShadow;\n"
@@ -873,7 +880,7 @@ const char* fragmentInsert_GLSL_ES_3_00 =
                 "vec3 saturate( vec3 v ) { return clamp( v, 0.0, 1.0 ); }\n"
                 "vec4 saturate( vec4 v ) { return clamp( v, 0.0, 1.0 ); }\n"
                 "\n"
-                "vec4 tex2D( sampler2D sampler, vec2 texcoord ) { return texture( sampler, texcoord.xy ); }\n"
+                GLSL_ES_TEX2D
                 "vec4 tex2D( sampler2DShadow sampler, vec3 texcoord ) { return vec4( texture( sampler, texcoord.xyz ) ); }\n"
                 "\n"
                 "vec4 tex2D( sampler2D sampler, vec2 texcoord, vec2 dx, vec2 dy ) { return textureGrad( sampler, texcoord.xy, dx, dy ); }\n"
@@ -898,6 +905,25 @@ const char* fragmentInsert_GLSL_ES_3_00 =
                 "\n"
         };
 
+/*
+========================
+R_GLSLUsesTextureLodBias
+
+GLES has no GL_TEXTURE_LOD_BIAS, so r_lodBias (Texture Distance LOD) is applied as a shader bias on the
+material textures (tex2D) of the lit surface programs. Particles, gui, post processing etc. keep the
+plain lookup: biased particle sprites come out as dark blobs.
+========================
+*/
+bool R_GLSLUsesTextureLodBias( const char* hlslFileName, rpStage_t stage )
+{
+    if( glConfig.driverType != GLDRV_OPENGL_MESA || stage != SHADER_STAGE_FRAGMENT )
+    {
+        return false;
+    }
+    idStr name( hlslFileName );
+    name.StripPath();
+    return name.Icmpn( "interaction", 11 ) == 0 || name.Icmpn( "ambient_lighting", 16 ) == 0;
+}
 
 struct builtinConversion_t
 {
@@ -919,6 +945,7 @@ struct inOutVariable_t
     idStr	type;
     idStr	nameCg;
     idStr	nameGLSL;
+    bool	halfPrecision;
     bool	declareInOut;
 };
 
@@ -938,6 +965,7 @@ void ParseInOutStruct( idLexer& src, int attribType, int attribIgnoreType, idLis
         idToken token;
         src.ReadToken( &token );
         var.type = token;
+        var.halfPrecision = ( var.type == "half" || var.type == "half2" || var.type == "half3" || var.type == "half4" );
         src.ReadToken( &token );
         var.nameCg = token;
 
@@ -1188,6 +1216,19 @@ static const char* GetPrecisionForGLSLVar( const char* glslName )
     return "";
 }
 
+static const char* GetPrecisionForInOutVariable( const inOutVariable_t& var )
+{
+    // VPOS is gl_FragCoord and must retain full precision even when the HLSL
+    // declaration uses half for the legacy input structure.
+    if( var.nameGLSL == "gl_FragCoord" )
+        return GetPrecisionForGLSLVar( var.nameGLSL );
+
+    if( glConfig.driverType == GLDRV_OPENGL_MESA && var.halfPrecision )
+        return "mediump";
+
+    return GetPrecisionForGLSLVar( var.nameGLSL );
+}
+
 static const char* GetPrecisionForSamplerType( const char* samplerType )
 {
     for( int i = 0; samplerPrecisionMap[i].name != NULL; i++ )
@@ -1380,6 +1421,7 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
 
     bool inMain = false;
     bool justEnteredMain = false;
+    const bool textureLodBias = R_GLSLUsesTextureLodBias( name, stage );
     const char* uniformArrayName = ( stage == SHADER_STAGE_VERTEX ) ? VERTEX_UNIFORM_ARRAY_NAME : FRAGMENT_UNIFORM_ARRAY_NAME;
     char newline[128] = { "\n" };
 
@@ -1487,7 +1529,7 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
                 {
                     if( varsIn[i].declareInOut )
                     {
-                        const char* prec = GetPrecisionForGLSLVar( varsIn[i].nameGLSL );
+                        const char* prec = GetPrecisionForInOutVariable( varsIn[i] );
                         idStr precStr = prec[0] ? idStr(prec) + " " : idStr("");
 
 
@@ -1513,7 +1555,7 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
                 {
                     if( varsOut[i].declareInOut )
                     {
-                        const char* prec = GetPrecisionForGLSLVar( varsOut[i].nameGLSL );
+                        const char* prec = GetPrecisionForInOutVariable( varsOut[i] );
                         idStr precStr = prec[0] ? idStr(prec) + " " : idStr("");
 
                         if( vkGLSL )
@@ -1539,7 +1581,7 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
                 {
                     if( varsIn[i].declareInOut )
                     {
-                        const char* prec = GetPrecisionForGLSLVar( varsIn[i].nameGLSL );
+                        const char* prec = GetPrecisionForInOutVariable( varsIn[i] );
                         idStr precStr = prec[0] ? idStr(prec) + " " : idStr("");
 
                         if( vkGLSL )
@@ -1557,6 +1599,8 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
                 var.type = "vec4";
                 var.nameCg = "position";
                 var.nameGLSL = "gl_FragCoord";
+                var.halfPrecision = false;
+                var.declareInOut = false;
                 varsIn.Append( var );
                 continue;
             }
@@ -1569,7 +1613,7 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
                 {
                     if( varsOut[i].declareInOut )
                     {
-                        const char* prec = GetPrecisionForGLSLVar( varsOut[i].nameGLSL );
+                        const char* prec = GetPrecisionForInOutVariable( varsOut[i] );
                         idStr precStr = prec[0] ? idStr(prec) + " " : idStr("");
 
                         if( vkGLSL )
@@ -1660,12 +1704,27 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
         }
 
 
+        // keep tex2D() instead of texture() so the lit surface programs get the biased one from the fragment insert
+        if( textureLodBias && token.Cmp( "tex2D" ) == 0 )
+        {
+            program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
+            program += token;
+            continue;
+        }
+
         bool foundType = false;
         for( int i = 0; typeConversion[i].typeCG != NULL; i++ )
         {
             if( token.Cmp( typeConversion[i].typeCG ) == 0 )
             {
                 program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
+                // Preserve HLSL half precision on GLES. It reduces FP32 work and
+                // register pressure on mobile tile-based GPUs. Constructors stay unqualified.
+                const bool isHalfType = ( token == "half" || token == "half2" || token == "half3" || token == "half4" );
+                if( isHalfType && glConfig.driverType == GLDRV_OPENGL_MESA && !src.PeekTokenString( "(" ) )
+                {
+                    program += "mediump ";
+                }
                 program += typeConversion[i].typeGLSL;
                 foundType = true;
                 break;
@@ -1900,6 +1959,10 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
             {
                 out.ReAllocate( idStr::Length( fragmentInsert_GLSL_ES_3_00 ) + in.Length() * 2, false );
                 idStr p(fragmentInsert_GLSL_ES_3_00);
+                if( textureLodBias )
+                {
+                    p.Replace( GLSL_ES_TEX2D, GLSL_ES_TEX2D_LOD_BIAS );
+                }
                 p.Insert(filenameHint, p.Find('\n') + 1);
                 out.Append(p);
                 break;

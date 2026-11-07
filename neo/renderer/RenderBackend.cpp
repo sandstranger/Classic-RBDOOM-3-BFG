@@ -38,6 +38,225 @@ If you have questions concerning this license or the applicable additional terms
 #define GL_READ_FRAMEBUFFER_EXT           0x8CA8
 #define GL_DRAW_FRAMEBUFFER_EXT           0x8CA9
 
+#if defined(ANDROID) && !defined(USE_VULKAN)
+namespace
+{
+static const int RB_EXPOSURE_READBACK_COUNT = 3;
+static const GLsizeiptr RB_EXPOSURE_READBACK_BYTES = 64 * 64 * 4 * sizeof(float);
+
+struct rbExposureReadbackSlot_t
+{
+	GLuint buffer;
+	GLsync fence;
+	unsigned long long sequence;
+};
+
+static rbExposureReadbackSlot_t rbExposureReadbackSlots[RB_EXPOSURE_READBACK_COUNT] = {};
+static unsigned long long rbExposureReadbackNextSequence = 1;
+static int rbExposureReadbackWriteIndex = 0;
+static bool rbExposureReadbackInitialized = false;
+static bool rbExposureReadbackHasInitialSample = false;
+}
+
+void RB_InitExposureReadback()
+{
+	if ( rbExposureReadbackInitialized )
+	{
+		return;
+	}
+
+	GLint previousPackBuffer = 0;
+	glGetIntegerv( GL_PIXEL_PACK_BUFFER_BINDING, &previousPackBuffer );
+
+	GLuint buffers[RB_EXPOSURE_READBACK_COUNT] = {};
+	glGenBuffers( RB_EXPOSURE_READBACK_COUNT, buffers );
+
+	bool success = true;
+	for ( int i = 0; i < RB_EXPOSURE_READBACK_COUNT; ++i )
+	{
+		if ( buffers[i] == 0 )
+		{
+			success = false;
+			break;
+		}
+
+		glBindBuffer( GL_PIXEL_PACK_BUFFER, buffers[i] );
+		glBufferData( GL_PIXEL_PACK_BUFFER, RB_EXPOSURE_READBACK_BYTES, NULL, GL_STREAM_READ );
+		GLint allocatedBytes = 0;
+		glGetBufferParameteriv( GL_PIXEL_PACK_BUFFER, GL_BUFFER_SIZE, &allocatedBytes );
+		if ( allocatedBytes < RB_EXPOSURE_READBACK_BYTES )
+		{
+			success = false;
+			break;
+		}
+	}
+
+	glBindBuffer( GL_PIXEL_PACK_BUFFER, previousPackBuffer );
+
+	if ( !success )
+	{
+		glDeleteBuffers( RB_EXPOSURE_READBACK_COUNT, buffers );
+		return;
+	}
+
+	for ( int i = 0; i < RB_EXPOSURE_READBACK_COUNT; ++i )
+	{
+		rbExposureReadbackSlots[i].buffer = buffers[i];
+		rbExposureReadbackSlots[i].fence = nullptr;
+		rbExposureReadbackSlots[i].sequence = 0;
+	}
+
+	rbExposureReadbackNextSequence = 1;
+	rbExposureReadbackWriteIndex = 0;
+	rbExposureReadbackHasInitialSample = false;
+	rbExposureReadbackInitialized = true;
+}
+
+void RB_ShutdownExposureReadback()
+{
+	if ( !rbExposureReadbackInitialized )
+	{
+		return;
+	}
+
+	GLuint buffers[RB_EXPOSURE_READBACK_COUNT] = {};
+	for ( int i = 0; i < RB_EXPOSURE_READBACK_COUNT; ++i )
+	{
+		if ( rbExposureReadbackSlots[i].fence != nullptr )
+		{
+			glDeleteSync( rbExposureReadbackSlots[i].fence );
+		}
+		buffers[i] = rbExposureReadbackSlots[i].buffer;
+		rbExposureReadbackSlots[i].buffer = 0;
+		rbExposureReadbackSlots[i].fence = nullptr;
+		rbExposureReadbackSlots[i].sequence = 0;
+	}
+
+	glDeleteBuffers( RB_EXPOSURE_READBACK_COUNT, buffers );
+	rbExposureReadbackNextSequence = 1;
+	rbExposureReadbackWriteIndex = 0;
+	rbExposureReadbackHasInitialSample = false;
+	rbExposureReadbackInitialized = false;
+}
+
+static bool RB_ReadExposurePixelsAsync( float* image )
+{
+	if ( !rbExposureReadbackInitialized )
+	{
+		// Keep HDR working on drivers where PBO allocation is unavailable.
+		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+		return true;
+	}
+
+	if ( !rbExposureReadbackHasInitialSample )
+	{
+		// Seed exposure synchronously once so the first HDR frame never tonemaps
+		// with uninitialized luminance while the asynchronous ring is warming up.
+		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+		rbExposureReadbackHasInitialSample = true;
+		return true;
+	}
+
+	int readyIndex = -1;
+	unsigned long long oldestReadySequence = ~0ULL;
+	bool waitFailed = false;
+
+	// Never wait for the current frame's readback. Only consume a completed
+	// buffer from an earlier frame, otherwise keep the previous exposure.
+	for ( int i = 0; i < RB_EXPOSURE_READBACK_COUNT; ++i )
+	{
+		rbExposureReadbackSlot_t& slot = rbExposureReadbackSlots[i];
+		if ( slot.fence == nullptr )
+		{
+			continue;
+		}
+
+		const GLenum waitResult = glClientWaitSync( slot.fence, 0, 0 );
+		if ( waitResult == GL_WAIT_FAILED )
+		{
+			waitFailed = true;
+			break;
+		}
+
+		if ( ( waitResult == GL_ALREADY_SIGNALED || waitResult == GL_CONDITION_SATISFIED ) &&
+			 slot.sequence < oldestReadySequence )
+		{
+			oldestReadySequence = slot.sequence;
+			readyIndex = i;
+		}
+	}
+
+	if ( waitFailed )
+	{
+		RB_ShutdownExposureReadback();
+		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+		return true;
+	}
+
+	bool hasSample = false;
+	if ( readyIndex >= 0 )
+	{
+		rbExposureReadbackSlot_t& slot = rbExposureReadbackSlots[readyIndex];
+		GLint previousPackBuffer = 0;
+		glGetIntegerv( GL_PIXEL_PACK_BUFFER_BINDING, &previousPackBuffer );
+		glBindBuffer( GL_PIXEL_PACK_BUFFER, slot.buffer );
+
+		const void* mapped = glMapBufferRange( GL_PIXEL_PACK_BUFFER, 0, RB_EXPOSURE_READBACK_BYTES, GL_MAP_READ_BIT );
+		bool mapSucceeded = false;
+		if ( mapped != nullptr )
+		{
+			memcpy( image, mapped, (size_t)RB_EXPOSURE_READBACK_BYTES );
+			mapSucceeded = ( glUnmapBuffer( GL_PIXEL_PACK_BUFFER ) == GL_TRUE );
+		}
+
+		glBindBuffer( GL_PIXEL_PACK_BUFFER, previousPackBuffer );
+		glDeleteSync( slot.fence );
+		slot.fence = nullptr;
+		slot.sequence = 0;
+
+		if ( !mapSucceeded )
+		{
+			// If a completed PBO cannot be mapped reliably, fall back to the
+			// synchronous path instead of leaving exposure frozen indefinitely.
+			RB_ShutdownExposureReadback();
+			glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+			return true;
+		}
+		hasSample = true;
+	}
+
+	// Use a three-buffer ring. If the next slot is still in flight, skip this
+	// submission rather than blocking the render thread or overwriting it.
+	const int writeIndex = rbExposureReadbackWriteIndex;
+	rbExposureReadbackSlot_t& writeSlot = rbExposureReadbackSlots[writeIndex];
+	if ( writeSlot.fence == nullptr && writeSlot.buffer != 0 )
+	{
+		GLint previousPackBuffer = 0;
+		glGetIntegerv( GL_PIXEL_PACK_BUFFER_BINDING, &previousPackBuffer );
+		glBindBuffer( GL_PIXEL_PACK_BUFFER, writeSlot.buffer );
+		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, NULL );
+		GLsync fence = glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
+		glBindBuffer( GL_PIXEL_PACK_BUFFER, previousPackBuffer );
+
+		if ( fence == nullptr )
+		{
+			// A missing fence makes safe asynchronous reuse impossible.
+			// Tear down the ring and fall back to the original synchronous path.
+			RB_ShutdownExposureReadback();
+			glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+			return true;
+		}
+
+		writeSlot.fence = fence;
+		writeSlot.sequence = rbExposureReadbackNextSequence++;
+	}
+
+	rbExposureReadbackWriteIndex = ( rbExposureReadbackWriteIndex + 1 ) % RB_EXPOSURE_READBACK_COUNT;
+	return hasSample;
+}
+#endif
+
+
 idCVar r_drawEyeColor( "r_drawEyeColor", "0", CVAR_RENDERER | CVAR_BOOL, "Draw a colored box, red = left eye, blue = right eye, grey = non-stereo" );
 idCVar r_motionBlur( "r_motionBlur", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "1 - 5, log2 of the number of motion blur samples" );
 idCVar r_forceZPassStencilShadows( "r_forceZPassStencilShadows", "0", CVAR_RENDERER | CVAR_BOOL, "force Z-pass rendering for performance testing" );
@@ -46,6 +265,7 @@ idCVar r_skipShaderPasses( "r_skipShaderPasses", "0", CVAR_RENDERER | CVAR_BOOL,
 idCVar r_skipInteractionFastPath( "r_skipInteractionFastPath", "1", CVAR_RENDERER | CVAR_BOOL, "" );
 idCVar r_useLightStencilSelect( "r_useLightStencilSelect", "0", CVAR_RENDERER | CVAR_BOOL, "use stencil select pass" );
 
+idCVar r_clShaderScaler("r_clShaderScaler", "2.0f", CVAR_RENDERER | CVAR_FLOAT, "set resolution scale factor for Classic DOOM's screen shader");
 //extern idCVar stereoRender_swapEyes;
 
 /*
@@ -3459,7 +3679,7 @@ void MatrixLookAtRH( float m[16], const idVec3& eye, const idVec3& dir, const id
 idRenderBackend::ShadowMapPass
 =====================
 */
-void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side )
+void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side, bool restoreFramebuffer )
 {
 	if( r_skipShadows.GetBool() )
 	{
@@ -4083,14 +4303,19 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 	}
 #endif
 	
-	// cleanup the shadow specific rendering state
-	if( r_useHDR.GetBool() /*&& !viewDef->is2Dgui*/ )
+	// Restore the main target only when requested. For cubemap/directional shadow
+	// sets, the caller keeps the shadow FBO active across all faces/splits and
+	// restores the main target once after the final pass.
+	if( restoreFramebuffer )
 	{
-		globalFramebuffers.hdrFBO->Bind();
-	}
-	else
-	{
-		Framebuffer::Unbind();
+		if( r_useHDR.GetBool() /*&& !viewDef->is2Dgui*/ )
+		{
+			globalFramebuffers.hdrFBO->Bind();
+		}
+		else
+		{
+			Framebuffer::Unbind();
+		}
 	}
 	renderProgManager.Unbind();
 	
@@ -4186,8 +4411,23 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 			
 			for( ; side < sideStop ; side++ )
 			{
-				ShadowMapPass( vLight->globalShadows, vLight, side );
+				// Keep the shadow framebuffer bound while rendering all faces/splits for
+				// this light. Switching back to the main target after every face can
+				// force tile GPUs to flush and reload the main framebuffer repeatedly.
+				ShadowMapPass( vLight->globalShadows, vLight, side, false );
 			}
+
+#if !defined(USE_VULKAN)
+			// Restore the main render target once, after the complete shadow set.
+			if( r_useHDR.GetBool() )
+			{
+				globalFramebuffers.hdrFBO->Bind();
+			}
+			else
+			{
+				Framebuffer::Unbind();
+			}
+#endif
 
             // go back from light view to default camera view
 			ResetViewportAndScissorToDefaultCamera( _viewDef );
@@ -5320,76 +5560,87 @@ void idRenderBackend::CalculateAutomaticExposure()
 		// calculate the average scene luminance
 		globalFramebuffers.hdr64FBO->Bind();
 		
-		// FIXME
+		bool hasLuminanceSample = true;
 #if !defined(USE_VULKAN)
-		// read back the contents
-		glReadPixels( 0, 0, 64, 64,  GL_RGBA, GL_FLOAT, image );
-#endif
-		
-		sum = 0.0f;
-		maxLuminance = 0.0f;
-		for( i = 0; i < ( 64 * 64 ); i += 4 )
-		{
-			color[0] = image[i * 4 + 0];
-			color[1] = image[i * 4 + 1];
-			color[2] = image[i * 4 + 2];
-			color[3] = image[i * 4 + 3];
-			
-			luminance = ( color.x * LUMINANCE_SRGB.x + color.y * LUMINANCE_SRGB.y + color.z * LUMINANCE_SRGB.z ) + 0.0001f;
-			if( luminance > maxLuminance )
-			{
-				maxLuminance = luminance;
-			}
-			
-			//float logLuminance = log( luminance + 1 );
-			//if( logLuminance > 0 )
-			{
-				sum += luminance;
-			}
-		}
-#if 0
-		sum /= ( 64.0f * 64.0f );
-		avgLuminance = exp( sum );
+		// Android reads into a three-buffer PBO ring and only maps a buffer after
+		// its fence signals. Desktop retains the original direct readback path.
+#if defined(ANDROID)
+		hasLuminanceSample = RB_ReadExposurePixelsAsync( image );
 #else
-		avgLuminance = sum / ( 64.0f * 64.0f );
+		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+#endif
+		// Do not invalidate hdr64FBO here: on Android the PBO readback is
+		// asynchronous, and the GPU may still be reading this attachment.
+		// Discarding it before the readback fence signals can produce unstable
+		// luminance samples on tile-based GPUs.
 #endif
 		
-		// the user's adapted luminance level is simulated by closing the gap between
-		// adapted luminance and current luminance by 2% every frame, based on a
-		// 30 fps rate. This is not an accurate model of human adaptation, which can
-		// take longer than half an hour.
-		if( hdrTime > curTime )
+		if ( hasLuminanceSample )
 		{
+			sum = 0.0f;
+			maxLuminance = 0.0f;
+			for( i = 0; i < ( 64 * 64 ); i += 4 )
+			{
+				color[0] = image[i * 4 + 0];
+				color[1] = image[i * 4 + 1];
+				color[2] = image[i * 4 + 2];
+				color[3] = image[i * 4 + 3];
+
+				luminance = ( color.x * LUMINANCE_SRGB.x + color.y * LUMINANCE_SRGB.y + color.z * LUMINANCE_SRGB.z ) + 0.0001f;
+				if( luminance > maxLuminance )
+				{
+					maxLuminance = luminance;
+				}
+
+				//float logLuminance = log( luminance + 1 );
+				//if( logLuminance > 0 )
+				{
+					sum += luminance;
+				}
+			}
+#if 0
+			sum /= ( 64.0f * 64.0f );
+			avgLuminance = exp( sum );
+#else
+			avgLuminance = sum / ( 64.0f * 64.0f );
+#endif
+
+			// The user's adapted luminance level is simulated by closing the gap between
+			// adapted luminance and current luminance by 2% every frame, based on a
+			// 30 fps rate. Only update adaptation time when a GPU sample is available.
+			if( hdrTime > curTime )
+			{
+				hdrTime = curTime;
+			}
+
+			deltaTime = curTime - hdrTime;
+
+			//if(r_hdrMaxLuminance->value)
+			{
+				hdrAverageLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), hdrAverageLuminance );
+				avgLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), avgLuminance );
+
+				hdrMaxLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), hdrMaxLuminance );
+				maxLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), maxLuminance );
+			}
+
+			newAdaptation = hdrAverageLuminance + ( avgLuminance - hdrAverageLuminance ) * ( 1.0f - powf( 0.98f, 30.0f * deltaTime ) );
+			newMaximum = hdrMaxLuminance + ( maxLuminance - hdrMaxLuminance ) * ( 1.0f - powf( 0.98f, 30.0f * deltaTime ) );
+
+			if( !IsNAN( newAdaptation ) && !IsNAN( newMaximum ) )
+			{
+#if 1
+				hdrAverageLuminance = newAdaptation;
+				hdrMaxLuminance = newMaximum;
+#else
+				hdrAverageLuminance = avgLuminance;
+				hdrMaxLuminance = maxLuminance;
+#endif
+			}
+
 			hdrTime = curTime;
 		}
-		
-		deltaTime = curTime - hdrTime;
-		
-		//if(r_hdrMaxLuminance->value)
-		{
-			hdrAverageLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), hdrAverageLuminance );
-			avgLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), avgLuminance );
-			
-			hdrMaxLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), hdrMaxLuminance );
-			maxLuminance = idMath::ClampFloat( r_hdrMinLuminance.GetFloat(), r_hdrMaxLuminance.GetFloat(), maxLuminance );
-		}
-		
-		newAdaptation = hdrAverageLuminance + ( avgLuminance - hdrAverageLuminance ) * ( 1.0f - powf( 0.98f, 30.0f * deltaTime ) );
-		newMaximum = hdrMaxLuminance + ( maxLuminance - hdrMaxLuminance ) * ( 1.0f - powf( 0.98f, 30.0f * deltaTime ) );
-		
-		if( !IsNAN( newAdaptation ) && !IsNAN( newMaximum ) )
-		{
-#if 1
-			hdrAverageLuminance = newAdaptation;
-			hdrMaxLuminance = newMaximum;
-#else
-			hdrAverageLuminance = avgLuminance;
-			hdrMaxLuminance = maxLuminance;
-#endif
-		}
-		
-		hdrTime = curTime;
-		
+
 		// calculate HDR image key
 #if 0
 		// RB: this never worked :/
@@ -5513,6 +5764,7 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 		return;
 	}
 	
+	const GLenum tileColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
 	RENDERLOG_PRINTF( "---------- RB_Bloom( avg = %f, max = %f, key = %f ) ----------\n", hdrAverageLuminance, hdrMaxLuminance, hdrKey );
 	
 	// BRIGHTPASS
@@ -5530,14 +5782,13 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 
 	GL_State( /*GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO |*/ GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS | GLS_CULL_TWOSIDED );
 	
-	int screenWidth = renderSystem->GetWidth();
-	int screenHeight = renderSystem->GetHeight();
 	
 	// set the window clipping
-	GL_Viewport( 0, 0, screenWidth / 4, screenHeight / 4 );
-	GL_Scissor( 0, 0, screenWidth / 4, screenHeight / 4 );
+	GL_Viewport( 0, 0, globalFramebuffers.bloomRenderFBO[0]->GetWidth(), globalFramebuffers.bloomRenderFBO[0]->GetHeight() );
+	GL_Scissor( 0, 0, globalFramebuffers.bloomRenderFBO[0]->GetWidth(), globalFramebuffers.bloomRenderFBO[0]->GetHeight() );
 	
 	globalFramebuffers.bloomRenderFBO[ 0 ]->Bind();
+	globalFramebuffers.bloomRenderFBO[ 0 ]->InvalidateAttachments(tileColorAttachment, 1);
 	
 	GL_SelectTexture( 0 );
 	
@@ -5600,18 +5851,35 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 	// BLOOM PING PONG rendering
 	renderProgManager.BindShader_HDRGlareChromatic();
 	
-	int j;
-	for( j = 0; j < r_hdrGlarePasses.GetInteger(); j++ )
+	// The old loop rendered one extra blur pass whose destination was immediately
+	// invalidated and never sampled by the composite. Skip that wasted full-screen
+	// draw, and composite the last pass that actually contributes to the image.
+	int bloomPassCount = r_hdrGlarePasses.GetInteger();
+	if ( bloomPassCount > 0 )
 	{
-		globalFramebuffers.bloomRenderFBO[( j + 1 ) % 2 ]->Bind();
-		
-		// FIXME
+		--bloomPassCount;
+	}
+	else
+	{
+		bloomPassCount = 0;
+	}
+
+	int j;
+	for( j = 0; j < bloomPassCount; j++ )
+	{
+		Framebuffer* bloomTarget = globalFramebuffers.bloomRenderFBO[( j + 1 ) % 2 ];
+		bloomTarget->Bind();
+		GL_Viewport( 0, 0, bloomTarget->GetWidth(), bloomTarget->GetHeight() );
+		GL_Scissor( 0, 0, bloomTarget->GetWidth(), bloomTarget->GetHeight() );
+		if ( !bloomTarget->InvalidateAttachments( tileColorAttachment, 1 ) )
+		{
 #if !defined(USE_VULKAN)
-		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+			glClear( GL_COLOR_BUFFER_BIT );
 #endif
-		
+		}
+
 		globalImages->bloomRenderImage[j % 2]->Bind();
-		
+
 		DrawElementsWithCounters( &unitSquareSurface );
 	}
 	
@@ -5624,7 +5892,7 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 	
 	renderProgManager.BindShader_Screen();
 	
-	globalImages->bloomRenderImage[( j + 1 ) % 2]->Bind();
+	globalImages->bloomRenderImage[j % 2]->Bind();
 	
 	DrawElementsWithCounters( &unitSquareSurface );
 	
@@ -5738,6 +6006,7 @@ void idRenderBackend::DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef
 	
 	int screenWidth = renderSystem->GetWidth();
 	int screenHeight = renderSystem->GetHeight();
+	const GLenum tileColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
 	
 	// build hierarchical depth buffer
 	if( r_useHierarchicalDepthBuffer.GetBool() )
@@ -5758,8 +6027,10 @@ void idRenderBackend::DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef
 			GL_Scissor( 0, 0, width, height );
 			
 			globalFramebuffers.csDepthFBO[i]->Bind();
-			
-			glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+			if (!globalFramebuffers.csDepthFBO[i]->InvalidateAttachments(tileColorAttachment, 1))
+			{
+				glClear( GL_COLOR_BUFFER_BIT );
+			}
 			
 			if( i == 0 )
 			{
@@ -5803,9 +6074,13 @@ void idRenderBackend::DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef
 	if( r_ssaoFiltering.GetBool() )
 	{
 		globalFramebuffers.ambientOcclusionFBO[0]->Bind();
-		
-		glClearColor( 0, 0, 0, 0 );
-		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+		GL_Viewport( 0, 0, globalFramebuffers.ambientOcclusionFBO[0]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[0]->GetHeight() );
+		GL_Scissor( 0, 0, globalFramebuffers.ambientOcclusionFBO[0]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[0]->GetHeight() );
+		if (!globalFramebuffers.ambientOcclusionFBO[0]->InvalidateAttachments(tileColorAttachment, 1))
+		{
+			glClearColor( 0, 0, 0, 0 );
+			glClear( GL_COLOR_BUFFER_BIT );
+		}
 		
 		renderProgManager.BindShader_AmbientOcclusion();
 	}
@@ -5888,6 +6163,9 @@ void idRenderBackend::DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef
 		// AO blur X
 #if 1
 		globalFramebuffers.ambientOcclusionFBO[1]->Bind();
+		GL_Viewport( 0, 0, globalFramebuffers.ambientOcclusionFBO[1]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[1]->GetHeight() );
+		GL_Scissor( 0, 0, globalFramebuffers.ambientOcclusionFBO[1]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[1]->GetHeight() );
+		globalFramebuffers.ambientOcclusionFBO[1]->InvalidateAttachments(tileColorAttachment, 1);
 		
 		renderProgManager.BindShader_AmbientOcclusionBlur();
 		
@@ -5905,6 +6183,8 @@ void idRenderBackend::DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef
 #endif
 		
 		// AO blur Y
+		GL_Viewport( 0, 0, screenWidth, screenHeight );
+		GL_Scissor( 0, 0, screenWidth, screenHeight );
 		if( hdrIsActive )
 		{
 			globalFramebuffers.hdrFBO->Bind();
@@ -5971,6 +6251,7 @@ void idRenderBackend::DrawScreenSpaceGlobalIllumination( const viewDef_t* _viewD
 	
 	int screenWidth = renderSystem->GetWidth();
 	int screenHeight = renderSystem->GetHeight();
+	const GLenum tileColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
 	
 	// set the window clipping
 	GL_Viewport( 0, 0, screenWidth, screenHeight );
@@ -6001,8 +6282,10 @@ void idRenderBackend::DrawScreenSpaceGlobalIllumination( const viewDef_t* _viewD
 			GL_Scissor( 0, 0, width, height );
 			
 			globalFramebuffers.csDepthFBO[i]->Bind();
-			
-			glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+			if (!globalFramebuffers.csDepthFBO[i]->InvalidateAttachments(tileColorAttachment, 1))
+			{
+				glClear( GL_COLOR_BUFFER_BIT );
+			}
 			
 			if( i == 0 )
 			{
@@ -6046,10 +6329,14 @@ void idRenderBackend::DrawScreenSpaceGlobalIllumination( const viewDef_t* _viewD
 	if( r_ssgiFiltering.GetBool() )
 	{
 		globalFramebuffers.ambientOcclusionFBO[0]->Bind();
-		
-		// FIXME remove and mix with color from previous frame
-		glClearColor( 0, 0, 0, 0 );
-		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+		GL_Viewport( 0, 0, globalFramebuffers.ambientOcclusionFBO[0]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[0]->GetHeight() );
+		GL_Scissor( 0, 0, globalFramebuffers.ambientOcclusionFBO[0]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[0]->GetHeight() );
+		if (!globalFramebuffers.ambientOcclusionFBO[0]->InvalidateAttachments(tileColorAttachment, 1))
+		{
+			// FIXME remove and mix with color from previous frame
+			glClearColor( 0, 0, 0, 0 );
+			glClear( GL_COLOR_BUFFER_BIT );
+		}
 		
 		renderProgManager.BindShader_DeepGBufferRadiosity();
 	}
@@ -6148,6 +6435,9 @@ void idRenderBackend::DrawScreenSpaceGlobalIllumination( const viewDef_t* _viewD
 		// AO blur X
 #if 1
 		globalFramebuffers.ambientOcclusionFBO[1]->Bind();
+		GL_Viewport( 0, 0, globalFramebuffers.ambientOcclusionFBO[1]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[1]->GetHeight() );
+		GL_Scissor( 0, 0, globalFramebuffers.ambientOcclusionFBO[1]->GetWidth(), globalFramebuffers.ambientOcclusionFBO[1]->GetHeight() );
+		globalFramebuffers.ambientOcclusionFBO[1]->InvalidateAttachments(tileColorAttachment, 1);
 		
 		renderProgManager.BindShader_DeepGBufferRadiosityBlur();
 		
@@ -6165,6 +6455,8 @@ void idRenderBackend::DrawScreenSpaceGlobalIllumination( const viewDef_t* _viewD
 #endif
 		
 		// AO blur Y
+		GL_Viewport( 0, 0, screenWidth, screenHeight );
+		GL_Scissor( 0, 0, screenWidth, screenHeight );
 		if( hdrIsActive )
 		{
 			globalFramebuffers.hdrFBO->Bind();
@@ -6241,9 +6533,11 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	renderLog.StartFrame();
 	GL_StartFrame();
 	g_frameFences.BeginFrame();
+	Framebuffer::BeginFrame();
 
 	if( cmds->commandId == RC_NOP && !cmds->next )
 	{
+		Framebuffer::EndFrame();
 		g_frameFences.EndFrame();
 		return;
 	}
@@ -6251,6 +6545,8 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	if( renderSystem->GetStereo3DMode() != STEREO3D_OFF )
 	{
 		StereoRenderExecuteBackEndCommands( cmds );
+		Framebuffer::InvalidateDefaultFramebufferAttachments();
+		Framebuffer::EndFrame();
 		g_frameFences.EndFrame();
 		renderLog.EndFrame();
 		return;
@@ -6302,6 +6598,8 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	}
 	
 	DrawFlickerBox();
+	Framebuffer::InvalidateDefaultFramebufferAttachments();
+	Framebuffer::EndFrame();
 	g_frameFences.EndFrame();
 	GL_EndFrame();
 	
@@ -6472,10 +6770,12 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 		}
 		//GK: Set rpWindowCoord to the Virtual resolution for Classic DOOM Screen Shaders
 		float windowCoordParm[4];
-		windowCoordParm[0] = 1.0f / renderSystem->GetVirtualWidth();
-		windowCoordParm[1] = 1.0f / renderSystem->GetVirtualHeight();
-		windowCoordParm[2] = renderSystem->GetVirtualWidth();
-		windowCoordParm[3] = renderSystem->GetVirtualHeight();
+		float clSWidth = 320.0f * r_clShaderScaler.GetFloat();
+		float clSHeight = 240.0f * r_clShaderScaler.GetFloat();
+		windowCoordParm[0] = 1.0f / clSWidth;
+		windowCoordParm[1] = 1.0f / clSHeight;
+		windowCoordParm[2] = clSWidth;
+		windowCoordParm[3] = clSHeight;
 		SetFragmentParm( RENDERPARM_WINDOWCOORD, windowCoordParm ); // rpWindowCoord
 		processed = DrawShaderPasses( drawSurfs, numDrawSurfs, guiScreenOffset, stereoEye );
 		renderLog.CloseMainBlock();
@@ -6571,6 +6871,8 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 		{
 			glBindFramebuffer( GL_READ_FRAMEBUFFER, globalFramebuffers.hdrFBO->GetFramebuffer() );
 			glBindFramebuffer( GL_DRAW_FRAMEBUFFER, globalFramebuffers.hdrNonMSAAFBO->GetFramebuffer() );
+			const GLenum hdrColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
+			Framebuffer::InvalidateDrawFramebufferAttachments( hdrColorAttachment, 1 );
 			glBlitFramebuffer( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight(),
 							   0, 0, renderSystem->GetWidth(), renderSystem->GetHeight(),
 							   GL_COLOR_BUFFER_BIT,
@@ -6579,6 +6881,8 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 			// TODO resolve to 1x1
 			glBindFramebuffer( GL_READ_FRAMEBUFFER_EXT, globalFramebuffers.hdrNonMSAAFBO->GetFramebuffer() );
 			glBindFramebuffer( GL_DRAW_FRAMEBUFFER_EXT, globalFramebuffers.hdr64FBO->GetFramebuffer() );
+			const GLenum hdr64ColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
+			Framebuffer::InvalidateDrawFramebufferAttachments( hdr64ColorAttachment, 1 );
 			glBlitFramebuffer( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight(),
 							   0, 0, 64, 64,
 							   GL_COLOR_BUFFER_BIT,
@@ -6600,6 +6904,8 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 			{
 				glBindFramebuffer(GL_READ_FRAMEBUFFER_EXT, globalFramebuffers.hdrFBO->GetFramebuffer());
 				glBindFramebuffer(GL_DRAW_FRAMEBUFFER_EXT, globalFramebuffers.hdr64FBO->GetFramebuffer());
+				const GLenum hdr64ColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
+				Framebuffer::InvalidateDrawFramebufferAttachments( hdr64ColorAttachment, 1 );
 				glBlitFramebuffer(0, 0, renderSystem->GetWidth(), renderSystem->GetHeight(),
 					0, 0, 64, 64,
 					GL_COLOR_BUFFER_BIT,
@@ -6980,10 +7286,13 @@ void idRenderBackend::PostProcess( const void* data )
 		screenCorrectionParm[3] = screenHeight;
 		SetFragmentParm( RENDERPARM_SCREENCORRECTIONFACTOR, screenCorrectionParm ); // rpScreenCorrectionFactor
 		
+		const GLenum tileColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
 		globalFramebuffers.smaaEdgesFBO->Bind();
-		
-		glClearColor( 0, 0, 0, 0 );
-		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+		if (!globalFramebuffers.smaaEdgesFBO->InvalidateAttachments(tileColorAttachment, 1))
+		{
+			glClearColor( 0, 0, 0, 0 );
+			glClear( GL_COLOR_BUFFER_BIT );
+		}
 		
 		GL_SelectTexture( 0 );
 		globalImages->smaaInputImage->Bind();
@@ -6996,8 +7305,10 @@ void idRenderBackend::PostProcess( const void* data )
 		
 		globalFramebuffers.smaaBlendFBO->Bind();
 		//Framebuffer::Unbind();
-		
-		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
+		if (!globalFramebuffers.smaaBlendFBO->InvalidateAttachments(tileColorAttachment, 1))
+		{
+			glClear( GL_COLOR_BUFFER_BIT );
+		}
 		
 		GL_SelectTexture( 0 );
 		globalImages->smaaEdgesImage->Bind();

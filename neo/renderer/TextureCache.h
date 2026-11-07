@@ -91,7 +91,7 @@ public:
 
 private:
     idTextureCache() = default;
-    ~idTextureCache() = default;
+    ~idTextureCache();
 
     std::string GetCachePath(uint64_t hash);
     bool ValidateCacheFile(const char* path, uint64_t expectedHash,

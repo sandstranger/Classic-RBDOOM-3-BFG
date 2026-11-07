@@ -331,7 +331,7 @@ static std::string baseGameDir;
 extern "C"{
 __attribute__((used)) __attribute__((visibility("default")))
 void setBaseGameDir (const char *pathToGameDir){
-	baseGameDir = pathToGameDir;
+	baseGameDir = pathToGameDir != NULL ? pathToGameDir : "";
 }
 }
 

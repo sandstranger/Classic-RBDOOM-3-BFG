@@ -39,6 +39,11 @@ If you have questions concerning this license or the applicable additional terms
 #include "../RenderCommon.h"
 #include "../RenderBackend.h"
 #include "../../framework/Common_local.h"
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+extern void RB_InitExposureReadback();
+extern void RB_ShutdownExposureReadback();
+#endif
 #if ANDROID
 
 #define GL_MULTISAMPLE                    0x809D
@@ -799,6 +804,11 @@ void idRenderBackend::Init()
 	
 	renderProgManager.Init();
 
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	// Prepare asynchronous HDR exposure readback after the GLES context exists.
+	RB_InitExposureReadback();
+#endif
+
 	//GL_CheckErrors();
 	
 	tr.SetInitialized();
@@ -840,6 +850,8 @@ void idRenderBackend::Shutdown()
     }
     g_multiDrawIndirectAvailable = false;
     g_multiDrawCommands.clear();
+	// Delete PBOs and fences while the GLES context is still alive.
+	RB_ShutdownExposureReadback();
 #endif
 	GLimp_Shutdown();
 }
@@ -1948,6 +1960,10 @@ void idRenderBackend::CheckCVars()
 	if( r_maxAnisotropicFiltering.IsModified() || r_useTrilinearFiltering.IsModified() || r_lodBias.IsModified() )
 	{
 		idLib::Printf( "Updating texture filter parameters.\n" );
+#ifdef ANDROID
+		// r_lodBias is a shader uniform on gles (CommitUniforms), only filtering changes concern the textures
+		const bool filteringChanged = r_maxAnisotropicFiltering.IsModified() || r_useTrilinearFiltering.IsModified();
+#endif
 		r_maxAnisotropicFiltering.ClearModified();
 		r_useTrilinearFiltering.ClearModified();
 		r_lodBias.ClearModified();
@@ -1956,6 +1972,14 @@ void idRenderBackend::CheckCVars()
 		{
 			if( globalImages->images[i] )
 			{
+#ifdef ANDROID
+				// Bind() loads images that aren't resident, i.e. every texture this session ever referenced, at once.
+				// an image loaded later gets the current filtering from AllocImage() anyway.
+				if( !filteringChanged || !globalImages->images[i]->IsLoaded() )
+				{
+					continue;
+				}
+#endif
 				//GK: It sucks but some textures needs to be bound when altering their parameters (so much for DSA)
 				globalImages->images[i]->Bind();
 				globalImages->images[i]->SetTexParameters();

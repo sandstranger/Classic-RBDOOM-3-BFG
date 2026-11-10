@@ -3061,6 +3061,7 @@ idRenderBackend::idRenderBackend()
 		shadowCacheEntries[i].generation = 0;
 		shadowCacheEntries[i].lastUsedFrame = 0;
 		shadowCacheEntries[i].missingFrames = 0;
+		shadowCacheEntries[i].drawn = false;
 		shadowCacheEntries[i].casters = NULL;
 	}
 	for( int i = 0; i < MAX_SHADOW_CACHE_LEVELS; i++ )

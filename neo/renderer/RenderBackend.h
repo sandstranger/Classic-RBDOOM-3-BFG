@@ -435,6 +435,7 @@ private:
 		int					blockY[6];
 		int					lastUsedFrame;
 		int					missingFrames;		// frames in a row a view needed static casters it doesn't hold
+		bool				drawn;				// its tiles hold its casters; until then they hold whatever was there before
 		idList<uint32>*		casters;			// sorted drawSurf_t::shadowCacheId of the static casters it holds, allocated once
 	};
 

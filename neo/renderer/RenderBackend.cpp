@@ -5365,6 +5365,7 @@ void idRenderBackend::ShadowCacheReset( int size )
 		}
 		shadowCacheEntries[i].generation = 0;
 		shadowCacheEntries[i].missingFrames = 0;
+		shadowCacheEntries[i].drawn = false;
 		shadowCacheEntries[i].casters->Clear();
 	}
 	for( int level = 0; level < MAX_SHADOW_CACHE_LEVELS; level++ )
@@ -5461,6 +5462,7 @@ void idRenderBackend::ShadowCacheFreeEntry( shadowCacheEntry_t& entry )
 		ShadowCacheFreeBlock( entry.level, entry.blockX[side], entry.blockY[side] );
 	}
 	entry.generation = 0;
+	entry.drawn = false;
 	entry.casters->Clear();
 }
 
@@ -5567,6 +5569,7 @@ idRenderBackend::shadowCacheEntry_t* idRenderBackend::ShadowCacheAlloc( int gene
 	entry->level = level;
 	entry->lastUsedFrame = shadowCacheFrame;
 	entry->missingFrames = 0;
+	entry->drawn = false;
 	entry->casters->Clear();
 	return entry;
 }
@@ -5704,6 +5707,7 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 		int					cacheEntry;		// shadowCacheEntries index, -1 = the light isn't cached
 		bool				cacheDirect;	// no dynamic casters: sampled from the cache, no frame tiles
 		bool				cacheRebuild;	// the cache entry is drawn this frame
+		bool				cacheCopy;		// its frame atlas tiles start with a copy of the cache entry
 		bool				placed;			// has frame atlas tiles
 	};
 	atlasRequest_t requests[MAX_SHADOW_ATLAS_LIGHTS];
@@ -5763,6 +5767,7 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 			request.cacheEntry = -1;
 			request.cacheDirect = false;
 			request.cacheRebuild = false;
+			request.cacheCopy = false;
 			request.placed = false;
 		}
 	}
@@ -5823,8 +5828,12 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 			}
 			R_SortShadowCacheIds( staticCasters );
 
+			// an entry is only read once its tiles were drawn, or when a view of this frame allocated it
+			// (the update below draws it before anything reads it): tiles that were never drawn hold the
+			// depth of whatever had them before, and an entry used every frame is never evicted
 			shadowCacheEntry_t* entry = ShadowCacheFind( vLight->shadowCacheGeneration );
-			const bool valid = ( entry != NULL && entry->tileSize == request.lodSize && entry->numSides == request.numSides );
+			const bool valid = ( entry != NULL && entry->tileSize == request.lodSize && entry->numSides == request.numSides
+								 && ( entry->drawn || entry->lastUsedFrame == shadowCacheFrame ) );
 
 			// static casters the entry doesn't hold yet (the camera moved, now they cast into the view):
 			// drawn on top of the copy like dynamic ones, the entry is only drawn again when they stay
@@ -5979,14 +5988,14 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 		}
 	}
 
-	// a cached light that didn't keep its full tile can't take a copy of its cache: all casters this frame
+	// a cached light that didn't keep its full tile can't take a copy of its cache: all casters this
+	// frame. Its entry stays as it is: one allocated this frame is still drawn below. Dropping the
+	// entry here left it allocated and never drawn, and the next frames read it as valid: garbage
+	// depth, the light lost its shadows (or all of its light) until the engine was restarted.
 	for( int i = 0; i < numRequests; i++ )
 	{
 		atlasRequest_t& request = requests[i];
-		if( request.cacheEntry >= 0 && !request.cacheDirect && request.size != request.lodSize )
-		{
-			request.cacheEntry = -1;
-		}
+		request.cacheCopy = ( request.cacheEntry >= 0 && !request.cacheDirect && request.size == request.lodSize );
 	}
 
 	//-------------------------------------------------
@@ -6083,7 +6092,18 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 	}
 #endif
 
+#if defined(ANDROID)
+	// the lights that read the cache this frame, straight or through a copy
+	bool anyCacheUse = false;
+	for( int i = 0; i < numRequests; i++ )
+	{
+		anyCacheUse = anyCacheUse || ( requests[i].cacheEntry >= 0 );
+	}
+	// the entries allocated this frame are drawn even when no light got tiles anywhere
+	if( numShadowAtlasLights == 0 && !anyCacheRebuild )
+#else
 	if( numShadowAtlasLights == 0 )
+#endif
 	{
 		renderLog.CloseBlock();
 		return;
@@ -6097,7 +6117,11 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 	// the cache entries that are drawn again: their static casters only
 	//-------------------------------------------------
 #if defined(ANDROID)
-	if( anyCacheRebuild && Framebuffer::EnsureShadowCacheTarget( shadowCacheSize ) )
+	// every frame the cache is read, not only when an entry is drawn: UpdateOptionalTargets frees a
+	// target nothing marked for r_renderTargetIdleFrames frames, and the lights that only read the
+	// cache draw nothing into it. Cheap when the storage and the attachment are there already.
+	const bool cacheReady = anyCacheUse && Framebuffer::EnsureShadowCacheTarget( shadowCacheSize );
+	if( cacheReady && anyCacheRebuild )
 	{
 		const uint64 cacheStart = Sys_Microseconds();
 		renderLog.OpenBlock( "RB_ShadowCacheUpdate" );
@@ -6112,7 +6136,7 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 			{
 				continue;
 			}
-			const shadowCacheEntry_t& entry = shadowCacheEntries[request.cacheEntry];
+			shadowCacheEntry_t& entry = shadowCacheEntries[request.cacheEntry];
 			const viewLight_t* vLight = request.vLight;
 			viewDef = request.view;
 
@@ -6133,12 +6157,13 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 				GL_ViewportAndScissor( entry.blockX[s] + SHADOW_ATLAS_TILE_BORDER, entry.blockY[s] + SHADOW_ATLAS_TILE_BORDER, innerSize, innerSize );
 				DrawShadowMapCasters( vLight->globalShadows, vLight, side, lightViewRenderMatrix, lightProjectionRenderMatrix, SHADOW_CASTERS_STATIC );
 			}
+			entry.drawn = true;
 		}
 
 		renderLog.CloseBlock();
 		pc.shadowStaticMicroSec += ( int )( Sys_Microseconds() - cacheStart );
 	}
-	else if( anyCacheRebuild )
+	else if( anyCacheUse && !cacheReady )
 	{
 		// no storage for the cache: nothing can come from it this frame
 		ShadowCacheReset( 0 );
@@ -6154,6 +6179,7 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 		for( int i = 0; i < numRequests; i++ )
 		{
 			requests[i].cacheEntry = -1;
+			requests[i].cacheCopy = false;
 			if( requests[i].cacheDirect )
 			{
 				// it renders its per light shadow maps
@@ -6222,7 +6248,7 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 
 			const int innerSize = atlasLight.tileSize - SHADOW_ATLAS_TILE_BORDER * 2;
 #if defined(ANDROID)
-			const shadowCacheEntry_t* entry = ( request.cacheEntry >= 0 ) ? &shadowCacheEntries[request.cacheEntry] : NULL;
+			const shadowCacheEntry_t* entry = request.cacheCopy ? &shadowCacheEntries[request.cacheEntry] : NULL;
 #endif
 
 			for( int s = 0; s < atlasLight.numSides; s++ )

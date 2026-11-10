@@ -888,12 +888,15 @@ bool Framebuffer::EnsureShadowMapTargets( int lod )
 
 static bool R_EnsureShadowAtlasImage( idImage* image, Framebuffer* fbo, int size, optionalTargetGroup_t group )
 {
+	// new storage is attached again even under the same texture name: GL hands a deleted name out
+	// again, and a framebuffer the texture was deleted from while it wasn't bound keeps the old one
+	const bool hadStorage = image->IsLoaded();
 	image->Resize( size, size );
 	if( !image->EnsureAllocated() )
 	{
 		return false;
 	}
-	if( fbo->GetDepthAttachment() != image->texnum || fbo->GetWidth() != size )
+	if( !hadStorage || fbo->GetDepthAttachment() != image->texnum || fbo->GetWidth() != size )
 	{
 		idScopedFramebufferBind bind( fbo );
 		fbo->AttachImageDepthLayer( image, 0 );

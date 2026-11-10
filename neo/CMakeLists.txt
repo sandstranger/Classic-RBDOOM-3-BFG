@@ -382,9 +382,7 @@ endif(USE_SYSTEM_ZLIB)
 if (ZLIB_FOUND)
     include_directories(${ZLIB_INCLUDE_DIRS})
 	if (MSVC AND ALL_STATIC)
-		set(ZLIB_LIBRARY
-		optimized "vcpkg_installed/${CPU_ARCH}-windows-static-md/lib/zlib"
-		debug "vcpkg_installed/${CPU_ARCH}-windows-static-md/debug/lib/zlibd")
+		set(ZLIB_LIBRARY ZLIB::ZLIB)
 	else()
 		set(ZLIB_LIBRARY ${ZLIB_LIBRARIES})
 	endif()
@@ -546,11 +544,12 @@ if (USE_OPENXR)
 	set(XR_RUNTIME_JSON "$ENV{XR_RUNTIME_JSON}")
 	include(FetchContent)
 	set(BUILD_TESTS OFF)
-	set(BUILD_API_LAYERS ON)
+	set(BUILD_API_LAYERS OFF)
+	set(DYNAMIC_LOADER OFF)
 	FetchContent_Declare(
 		OpenXR
-		URL_HASH MD5=A8DE805EE5C34C180A5B630EBD816850
-		URL https://github.com/KhronosGroup/OpenXR-SDK-Source/archive/refs/tags/release-1.1.43.tar.gz
+		URL_HASH MD5=9DB7D36346F5B167CE5F52EB75A155FC
+		URL https://github.com/KhronosGroup/OpenXR-SDK/archive/refs/tags/release-1.1.65.tar.gz
 		SOURCE_DIR
 		../neo/libs/openxr
 	)
@@ -1483,24 +1482,24 @@ if(MSVC)
 	#		Xinput
 	#		)
 	#elseif(WINRT AND NOT OPENAL)
-	if (USE_SYSTEM_DX)
-		set(DirectX_LIBRARIES
-			dinput8
-			#dsound
-			dxguid
-			#dxerr
-			Xinput9_1_0 #GK: Win7 backwards compatibility
-			)
-		if(USE_XAUDIO2)
-			list(APPEND DirectX_LIBRARIES xaudio2.lib)
+		if (USE_SYSTEM_DX)
+			set(DirectX_LIBRARIES
+				dinput8
+				#dsound
+				dxguid
+				#dxerr
+				Xinput9_1_0 #GK: Win7 backwards compatibility
+				)
+			if(USE_XAUDIO2)
+				list(APPEND DirectX_LIBRARIES xaudio2.lib)
+			endif()
+			if (USE_DXGI)
+				list(APPEND DirectX_LIBRARIES dxgi d3d11)
+			endif()
+		else()
+			find_package(DirectX REQUIRED)
+			include_directories(${DirectX_INCLUDE_DIR})
 		endif()
-		if (USE_DXGI)
-			list(APPEND DirectX_LIBRARIES dxgi d3d11)
-		endif()
-	else()
-		find_package(DirectX REQUIRED)
-		include_directories(${DirectX_INCLUDE_DIR})
-	endif()
 	
 	if(USE_VULKAN)
 		list(APPEND RBDOOM3_INCLUDES ${RENDERER_VULKAN_INCLUDES})
@@ -1796,7 +1795,7 @@ endif()
 		${CMAKE_DL_LIBS}
 		)
 		if (USE_OPENXR)
-			target_link_libraries(DoomBFA openxr-gfxwrapper openxr_loader)
+			target_link_libraries(DoomBFA openxr_loader)
 		endif()
 		if (USE_SDL_WIN32)
 			target_link_libraries(DoomBFA ${SDLx_LIBRARY})
@@ -2040,10 +2039,7 @@ else()
 endif()
 		if (USE_OPENXR) 
 	        target_compile_options(openxr_loader PRIVATE "-Wno-error")
-			target_compile_options(XrApiLayer_api_dump PRIVATE "-Wno-error")
-			target_compile_options(XrApiLayer_core_validation PRIVATE "-Wno-error")
-			target_compile_options(openxr-gfxwrapper PRIVATE "-Wno-error")
-			target_link_libraries(DoomBFA openxr-gfxwrapper openxr_loader)
+			target_link_libraries(DoomBFA openxr_loader)
 		endif()
 	endif()
 	

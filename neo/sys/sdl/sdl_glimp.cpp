@@ -432,17 +432,13 @@ bool GLimp_Init( glimpParms_t parms )
 		r_windowHeight.SetInteger(glConfig.nativeScreenHeight);
 		r_fullscreen.SetInteger(1);
 #endif
+
 		common->Printf( "Using %d color bits, %d depth, %d stencil display\n",
 						channelcolorbits, tdepthbits, tstencilbits );
 						
 		glConfig.colorBits = tcolorbits;
 		glConfig.depthBits = tdepthbits;
 		glConfig.stencilBits = tstencilbits;
-		
-		// RB begin
-		glConfig.displayFrequency = parms.displayHz;
-		glConfig.isStereoPixelFormat = parms.stereo;
-		glConfig.multisamples = parms.multiSamples;
 		glConfig.pixelAspect = 1.0f;	// FIXME: some monitor modes may be distorted
 #ifndef ANDROID
 		// should side-by-side stereo modes be consider aspect 0.5?
@@ -569,7 +565,7 @@ static bool SetScreenParmsFullscreen( glimpParms_t parms )
 			rDiff = nrDiff;
 			m = displayModes[i];
 		}
-		if (wDiff == 0 || hDiff == 0 || rDiff == 0) {
+		if (wDiff == 0 && hDiff == 0 && rDiff == 0) {
 			m = displayModes[i];
 			break;
 		}
@@ -584,7 +580,7 @@ static bool SetScreenParmsFullscreen( glimpParms_t parms )
 	// }
 
 	// if we're currently not in fullscreen mode, we need to switch to fullscreen
-	//if( SDL_GetWindowFullscreenMode(window) == NULL)
+	if (!(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN))
 	{
 		if( !SDL_SetWindowFullscreen( window, true ) )
 		{
@@ -1019,6 +1015,7 @@ Sys_ChangeTitle
 void* GetOpenXRGraphicsBinding()
 {
 	idStr videoDriver = idStr(SDL_GetCurrentVideoDriver());
+#ifdef __linux__
 	if (!idStr::Icmp(videoDriver, "x11")) {
 			x11Binding = {XR_TYPE_GRAPHICS_BINDING_OPENGL_XLIB_KHR};
 			x11Binding.xDisplay = (Display *)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
@@ -1038,6 +1035,15 @@ void* GetOpenXRGraphicsBinding()
 			waylandBinding.display = (struct wl_display *)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, NULL);
 			return &waylandBinding;
 		}
+#endif
+#ifdef _WIN32
+		if (!idStr::Icmp(videoDriver, "windows")) {
+			win32Binding = { XR_TYPE_GRAPHICS_BINDING_OPENGL_WIN32_KHR };
+			win32Binding.hDC = (HDC)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HDC_POINTER, NULL);
+			win32Binding.hGLRC = (HGLRC)SDL_GL_GetCurrentContext();
+			return &win32Binding;
+		}
+#endif
 	return NULL;
 }
 #endif

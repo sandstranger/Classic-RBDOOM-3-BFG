@@ -312,7 +312,7 @@ public:
 	// the shadow cache of the back end only reuses static shadow maps built for the same value
 	int						shadowCacheGeneration;
 
-	// r_maxShadowedLights: the last frame the light was among the shadowed lights, for the hysteresis
+	// r_shadowedLightBudget: the last frame the light was among the shadowed lights, for the hysteresis
 	int						shadowSelectedFrame;
 };
 
@@ -447,7 +447,7 @@ struct viewLight_t
 	// idRenderLightLocal::shadowCacheGeneration of this frame
 	int						shadowCacheGeneration;
 
-	// r_maxShadowedLights: the light lights the view without shadows this frame
+	// r_shadowedLightBudget: the light lights the view without shadows this frame
 	bool					shadowBudgetRejected;
 	float					shadowPriority;
 };
@@ -1038,7 +1038,7 @@ extern idCVar r_useShadowDepthBounds;		// use depth bounds test on individual sh
 // RB begin
 extern idCVar r_useShadowMapping;			// use shadow mapping instead of stencil shadows
 extern idCVar r_shadowMapDepth16;			// 16 bit shadow map depth on GLES
-extern idCVar r_maxShadowedLights;			// shadow casting light budget of a view, 0 = no limit
+extern idCVar r_shadowedLightBudget;		// shadow casting light budget of a view, 0 (default) = no limit
 extern idCVar r_useHalfLambertLighting;		// use Half-Lambert lighting instead of classic Lambert
 extern idCVar r_useHDR;
 extern idCVar r_useSRGB;

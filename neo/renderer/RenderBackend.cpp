@@ -5654,10 +5654,11 @@ idRenderBackend::ShadowAtlasPass
 Runs before the first command of the frame, while nothing is bound that a
 render pass switch would have to write out.
 
-Admission: the lights are placed by priority (r_maxShadowedLights' importance, else the screen
-area). When their sides at the resolution of their LOD don't fit, the tiles of the least important
-lights are halved, down to the smallest resolution, before any light has to fall back to the per
-light shadow maps, which interrupt the main render pass.
+Admission: the lights are placed by priority (r_shadowedLightBudget's importance when it is on,
+else the screen area). When their sides at the resolution of their LOD don't fit, the tiles of
+the least important lights are halved, one step below their LOD at most, then the least important
+lights fall back to the per light shadow maps at their full resolution (they interrupt the main
+render pass) and the halved tiles of the others grow back into the room they left.
 =====================
 */
 void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
@@ -5914,6 +5915,12 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 			neededCells += sideCells( request.size ) * request.numSides;
 		}
 	}
+	// a tile goes at most one step below the resolution of the light's LOD: further down thin
+	// casters lose their shadows, the light rather keeps its per light shadow maps at full size
+	auto smallestSize = [minTileSize]( const atlasRequest_t& request ) -> int
+	{
+		return Max( minTileSize, request.lodSize / 2 );
+	};
 	while( neededCells > totalCells )
 	{
 		// the least important light whose tiles can still be halved
@@ -5921,7 +5928,7 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 		for( int k = numRequests - 1; k >= 0 && victim == -1; k-- )
 		{
 			const int i = order[k];
-			if( wanted[i] && requests[i].size > minTileSize )
+			if( wanted[i] && requests[i].size > smallestSize( requests[i] ) )
 			{
 				victim = i;
 			}
@@ -5951,6 +5958,24 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 		if( !dropped )
 		{
 			break;
+		}
+	}
+
+	// the lights that left made room: the most important halved tiles get their full size back
+	for( int k = 0; k < numRequests; k++ )
+	{
+		atlasRequest_t& request = requests[order[k]];
+		const int fullSize = Min( request.lodSize, atlasSize );
+		while( wanted[order[k]] && request.size < fullSize )
+		{
+			const int extraCells = ( sideCells( request.size * 2 ) - sideCells( request.size ) ) * request.numSides;
+			if( neededCells + extraCells > totalCells )
+			{
+				break;
+			}
+			neededCells += extraCells;
+			request.size *= 2;
+			pc.c_shadowAtlasDowngrades -= request.numSides;
 		}
 	}
 

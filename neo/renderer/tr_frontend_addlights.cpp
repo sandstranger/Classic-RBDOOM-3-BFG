@@ -587,10 +587,11 @@ REGISTER_PARALLEL_JOB( R_AddSingleLight, "R_AddSingleLight" );
 =================
 R_SelectShadowedLights
 
-r_maxShadowedLights: only the most important shadow casting lights of the view render shadows.
-Runs after R_AddSingleLight and before the models are added, so a light over the budget gets no
-caster surfaces, no shadow volume jobs and no shadow only entities at all. Every light keeps
-lighting the view, only its shadows go.
+r_shadowedLightBudget (off by default): only the most important shadow casting lights of the view
+render shadows. Runs after R_AddSingleLight and before the models are added, so a light over the
+budget gets no caster surfaces, no shadow volume jobs and no shadow only entities at all. Every
+light keeps lighting the view, only its shadows go: the importance follows the screen coverage,
+so walking away from a light takes its shadows off the walls. That's why it is off.
 
 Importance: the share of the view the light's scissor covers (projected influence), times the
 brightness of its brightest stage, times 1 + the share of the view it reaches up close (the
@@ -602,7 +603,7 @@ Parallel lights have their own priority: they are always shadowed and don't use 
 */
 static void R_SelectShadowedLights()
 {
-	const int maxShadowedLights = r_maxShadowedLights.GetInteger();
+	const int maxShadowedLights = r_shadowedLightBudget.GetInteger();
 	if( maxShadowedLights <= 0 || tr.viewDef == NULL )
 	{
 		return;
@@ -739,7 +740,7 @@ void R_AddLights()
 	}
 	
 	//-------------------------------------------------
-	// r_maxShadowedLights, before anything is added for the shadows of the lights
+	// r_shadowedLightBudget, before anything is added for the shadows of the lights
 	//-------------------------------------------------
 	R_SelectShadowedLights();
 

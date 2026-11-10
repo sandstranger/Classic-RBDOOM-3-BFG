@@ -1120,7 +1120,7 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 			{
 				continue;
 			}
-			// r_maxShadowedLights: the light lights the view without shadows this frame
+			// r_shadowedLightBudget: the light lights the view without shadows this frame
 			if( vLight->shadowBudgetRejected )
 			{
 				continue;

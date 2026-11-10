@@ -358,7 +358,10 @@ typedef enum
 	MF_LOD2						= IDBIT( 8 ),	 // motorsep 11-24-2014; material flag for LOD2 iteration
 	MF_LOD3						= IDBIT( 9 ),	 // motorsep 11-24-2014; material flag for LOD3 iteration
 	MF_LOD4						= IDBIT( 10 ), // motorsep 11-24-2014; material flag for LOD4 iteration
-	MF_LOD_PERSISTENT			= IDBIT( 11 )	 // motorsep 11-24-2014; material flag for persistent LOD iteration
+	MF_LOD_PERSISTENT			= IDBIT( 11 ),	 // motorsep 11-24-2014; material flag for persistent LOD iteration
+	// twoSided: no shadow volumes (they would be coplanar with the surface), shadow maps are fine.
+	// Tested against the current r_useShadowMapping by NoShadows(), not frozen at parse time
+	MF_NOSTENCILSHADOWS			= IDBIT( 12 )
 } materialFlags_t;
 
 // contents flags, NOTE: make sure to keep the defines in doom_defs.script up to date with these!
@@ -535,8 +538,11 @@ public:
 	// distinction between global and no-self shadows
 	bool				SurfaceCastsShadow() const
 	{
-		return TestMaterialFlag( MF_FORCESHADOWS ) || !TestMaterialFlag( MF_NOSHADOWS );
+		return TestMaterialFlag( MF_FORCESHADOWS ) || !NoShadows();
 	}
+
+	// MF_NOSHADOWS, or a twoSided material while stencil shadows are in use
+	bool				NoShadows() const;
 	
 	// returns true if the material will generate interactions with fog/blend lights
 	// All non-translucent surfaces receive fog unless they are explicitly noFog
@@ -557,7 +563,7 @@ public:
 	// from light centers, as with noshadow and noselfshadow options
 	bool				ReceivesLightingOnBackSides() const
 	{
-		return ( materialFlags & ( MF_NOSELFSHADOW | MF_NOSHADOWS ) ) != 0;
+		return TestMaterialFlag( MF_NOSELFSHADOW ) || NoShadows();
 	}
 	
 	// Standard two-sided triangle rendering won't work with bump map lighting, because
@@ -657,7 +663,7 @@ public:
 	bool				LightCastsShadows() const
 	{
 		return TestMaterialFlag( MF_FORCESHADOWS ) ||
-			   ( !fogLight && !ambientLight && !blendLight && !TestMaterialFlag( MF_NOSHADOWS ) );
+			   ( !fogLight && !ambientLight && !blendLight && !NoShadows() );
 	}
 	
 	// fog lights, blend lights, ambient lights, etc will all have to have interaction

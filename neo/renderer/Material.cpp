@@ -76,6 +76,26 @@ idCVar r_forceSoundOpAmplitude( "r_forceSoundOpAmplitude", "0", CVAR_FLOAT, "Don
 
 /*
 =============
+idMaterial::NoShadows
+
+A twoSided material only loses its shadow while stencil shadows are in use.
+This used to be decided once, from r_useShadowMapping at parse time. A material
+parsed while it was off, or one parsed outside a level load (never reparsed),
+kept MF_NOSHADOWS for good: the main campaign player head is twoSided, so the
+player shadow had no head under shadow mapping. The ROE head is not twoSided.
+=============
+*/
+bool idMaterial::NoShadows() const
+{
+	if( TestMaterialFlag( MF_NOSHADOWS ) )
+	{
+		return true;
+	}
+	return TestMaterialFlag( MF_NOSTENCILSHADOWS ) && !r_useShadowMapping.GetBool();
+}
+
+/*
+=============
 idMaterial::CommonInit
 =============
 */
@@ -2619,8 +2639,9 @@ void idMaterial::ParseMaterial( idLexer& src )
 			// volume would be coplanar with the surface, giving depth fighting
 			// we could make this no-self-shadows, but it may be more important
 			// to receive shadows from no-self-shadow monsters
-			if( !r_useShadowMapping.GetBool() ) // motorsep 11-08-2014; when shadow mapping is on, we allow two-sided surfaces to cast shadows
-				SetMaterialFlag( MF_NOSHADOWS );
+			// motorsep 11-08-2014; when shadow mapping is on, we allow two-sided surfaces to cast shadows
+			// (checked per frame by NoShadows(), not once here)
+			SetMaterialFlag( MF_NOSTENCILSHADOWS );
 		}
 		// backSided
 		else if( !token.Icmp( "backSided" ) )

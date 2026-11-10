@@ -49,7 +49,7 @@ turned off (and the shadow maps that weren't used for a while), so toggling a fe
 the resolution never leaves storage behind and never allocates during normal frames.
 
 	feature						targets											lifetime
-	HDR or deferred shading		_currentRenderHDR, _currentDepth -> hdrFBO		the 3D views of a frame
+	HDR							_currentRenderHDR, _currentDepth -> hdrFBO		the 3D views of a frame
 	HDR exposure				_currentRenderHDR64 -> hdr64FBO					blit, read back by a PBO
 	HDR bloom					_bloomRender0/1 -> bloomRenderFBO				Bloom -> BloomComposite of a view
 	SSAO / SSGI filtering		_ao0/1 -> ambientOcclusionFBO, quarter size		SSAO of a view
@@ -59,7 +59,6 @@ the resolution never leaves storage behind and never allocates during normal fra
 	shadow mapping				_shadowAtlas -> shadowAtlasFBO					ShadowAtlasPass -> the views of a frame
 	shadow mapping				_shadowCache -> shadowCacheFBO					static casters, kept between frames
 	shadow mapping				_shadowMapArray0..4 -> shadowFBO[]				lights that don't fit in the atlas
-	deferred shading			3 RGBA8 renderbuffers, colors 1..3 of hdrFBO	on tile, invalidated after the lights
 
 _bloomRender0/1 and _ao0/1, _currentNormals and _smaaEdges are never in use at the same time and
 share their textures through the alias keys of the RenderTargetPool, see renderTargetAlias_t.
@@ -83,7 +82,6 @@ Framebuffer* Framebuffer::currentBoundFramebuffer = nullptr;
 globalFramebuffers_t globalFramebuffers;
 
 #if defined(ANDROID)
-extern idCVar r_useDeferredShading;
 extern idCVar r_shadowAtlasSize;
 extern idCVar r_shadowCacheSize;
 #endif
@@ -947,7 +945,7 @@ void Framebuffer::UpdateOptionalTargets()
 		}
 	}
 
-	if( !r_useHDR.GetBool() && !r_useDeferredShading.GetBool() && !ssao && !ssgi )
+	if( !r_useHDR.GetBool() && !ssao && !ssgi )
 	{
 		R_ReleaseTargetGroup( RTG_SCENE );
 	}
@@ -1449,8 +1447,8 @@ static int R_GatherRenderTargets( renderTargetInfo_t* targets, int maxTargets )
 		}
 	};
 
-	add( globalImages->currentRenderHDRImage, "scene", "the 3D views of a frame (HDR or deferred)" );
-	add( globalImages->currentDepthImage, "scene", "the 3D views of a frame (HDR or deferred)" );
+	add( globalImages->currentRenderHDRImage, "scene", "the 3D views of a frame with HDR" );
+	add( globalImages->currentDepthImage, "scene", "the 3D views of a frame with HDR, depth copies" );
 	add( globalImages->currentRenderHDRImage64, "hdr", "per HDR view: blit -> luminance readback" );
 	add( globalImages->currentRenderHDRImageQuarter, "hdr", "unused, never allocated" );
 	for( int i = 0; i < MAX_BLOOM_BUFFERS; i++ )
@@ -1519,21 +1517,9 @@ static int64_t R_ImageBytes( const idImage* image )
 	return RenderTargetPool::TextureBytes( desc );
 }
 
-static int64_t R_GBufferBytes( int& width, int& height, int& count )
-{
-	width = height = count = 0;
-#if defined(ANDROID)
-	count = tr.backend.DeferredGBufferInfo( width, height );
-	return ( int64_t )width * height * 4 * count;
-#else
-	return 0;
-#endif
-}
-
 struct renderTargetTotals_t
 {
 	int		textures;
-	int		renderbuffers;
 	int		logical;
 	int64_t	bytes;
 };
@@ -1563,10 +1549,6 @@ static renderTargetTotals_t R_RenderTargetTotals()
 		totals.bytes += R_ImageBytes( image );
 	}
 
-	int gbufferWidth, gbufferHeight, gbufferCount;
-	totals.bytes += R_GBufferBytes( gbufferWidth, gbufferHeight, gbufferCount );
-	totals.renderbuffers += gbufferCount;
-
 	// pool textures nobody holds are still allocated
 	totals.bytes += Framebuffer::renderTargetPool.GetIdleBytes();
 	return totals;
@@ -1580,8 +1562,8 @@ static int64_t	s_peakRenderTargetBytes = 0;
 void R_UpdateRenderTargetPeaks()
 {
 	const renderTargetTotals_t totals = R_RenderTargetTotals();
-	s_peakRenderTargetTextures = Max( s_peakRenderTargetTextures, totals.textures + totals.renderbuffers );
-	s_peakRenderTargetLogical = Max( s_peakRenderTargetLogical, totals.logical + totals.renderbuffers );
+	s_peakRenderTargetTextures = Max( s_peakRenderTargetTextures, totals.textures );
+	s_peakRenderTargetLogical = Max( s_peakRenderTargetLogical, totals.logical );
 	s_peakRenderTargetBytes = Max( s_peakRenderTargetBytes, totals.bytes );
 }
 
@@ -1651,23 +1633,16 @@ void Framebuffer::PrintRenderTargets( bool verbose )
 						bytes * MiB, storage, targets[i].lifetime, ( loaded && bytes == 0 ) ? " (shares a texture listed above)" : "" );
 	}
 
-	int gbufferWidth, gbufferHeight, gbufferCount;
-	const int64_t gbufferBytes = R_GBufferBytes( gbufferWidth, gbufferHeight, gbufferCount );
-	common->Printf( "  %-26s %-13s %5d x %-5d %-8s %3d %6d %4d %3d %10.2f %-10s %s\n", "G-buffer renderbuffers x3", "deferred", gbufferWidth, gbufferHeight,
-					gbufferCount ? "RGBA8" : "-", gbufferCount ? 4 : 0, gbufferCount, 1, 1, gbufferBytes * MiB, gbufferCount ? "renderbuf" : "none",
-					"on tile per view, invalidated after the lights: allocated, never stored or loaded" );
-
 	common->Printf( "Memory by subsystem:\n" );
 	for( int s = 0; s < numSubsystems; s++ )
 	{
 		common->Printf( "  %-13s %8.2f MiB\n", subsystems[s].name, subsystems[s].bytes * MiB );
 	}
-	common->Printf( "  %-13s %8.2f MiB\n", "deferred", gbufferBytes * MiB );
 	common->Printf( "  %-13s %8.2f MiB\n", "pool idle", renderTargetPool.GetIdleBytes() * MiB );
 
 	const renderTargetTotals_t totals = R_RenderTargetTotals();
-	common->Printf( "Physical textures %d, renderbuffers %d, logical render targets %d, %.2f MiB allocated\n",
-					totals.textures, totals.renderbuffers, totals.logical + totals.renderbuffers, totals.bytes * MiB );
+	common->Printf( "Physical textures %d, logical render targets %d, %.2f MiB allocated\n",
+					totals.textures, totals.logical, totals.bytes * MiB );
 	common->Printf( "Peak: %d physical targets, %d logical, %.2f MiB at once\n", s_peakRenderTargetTextures, s_peakRenderTargetLogical, s_peakRenderTargetBytes * MiB );
 	common->Printf( "Render target textures allocated %d, freed %d, lazy targets described without storage %d, allocated late by a bind %d\n",
 					renderTargetCounters.allocations, renderTargetCounters.deallocations, renderTargetCounters.lazyAllocationsSkipped, renderTargetCounters.lateAllocations );

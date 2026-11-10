@@ -908,7 +908,7 @@ void idImageManager::CreateIntrinsicImages()
 	
 	randomImage256 = globalImages->ImageFromFunction( "_random256", R_CreateRandom256Image );
 	
-	// the scene color of HDR and of the on-tile deferred shading, see Framebuffer::EnsureSceneTargets
+	// the scene color of HDR, see Framebuffer::EnsureSceneTargets
 	currentRenderHDRImage = ( this->*RenderTargetFromFunction )( "_currentRenderHDR", R_HDR_RGBA16FImage_ResNative );
 #if defined(USE_HDR_MSAA)
 	currentRenderHDRImageNoMSAA = globalImages->ImageFromFunction( "_currentRenderHDRNoMSAA", R_HDR_RGBA16FImage_ResNative_NoMSAA );

@@ -107,10 +107,8 @@ void idRenderSystemLocal::PrintPerformanceCounters()
 						b.c_drawsByCategory[DRAW_CATEGORY_LIGHTING], b.c_indexesByCategory[DRAW_CATEGORY_LIGHTING] / 3,
 						b.c_drawsByCategory[DRAW_CATEGORY_SHADOW], b.c_drawsByCategory[DRAW_CATEGORY_POST],
 						b.c_framebufferBinds, b.c_programBinds, pc.frontEndMicroSec, b.totalMicroSec, ( int )commonLocal.GetRendererGPUMicroseconds() );
-		common->Printf( "  lights %d: deferred %d forward %d | deferred volume draws %d, batched draws %d for %d light stages, tiles %d avg %.2f max %d lights | forward batched draws %d for %d light-surface stages, single interaction draws %d\n",
-						b.c_visibleLights, b.c_deferredLights, b.c_forwardLights, b.c_lightVolumeDraws, b.c_lightBatchDraws, b.c_lightBatchEntries,
-						b.c_lightTiles, b.c_lightTiles > 0 ? ( float )b.c_lightTileSlots / b.c_lightTiles : 0.0f, b.c_lightTileMax,
-						b.c_forwardBatchDraws, b.c_forwardBatchPairs, b.c_interactionDraws );
+		common->Printf( "  lights %d, %d of them in multi light draws | multi light draws: world %d, models %d, for %d light stage / surface pairs | single light interaction draws %d\n",
+						b.c_visibleLights, b.c_batchedLights, b.c_forwardWorldDraws, b.c_forwardBatchDraws, b.c_forwardBatchPairs, b.c_interactionDraws );
 		common->Printf( "  shadows: %d lights, %d sides, %d caster draws | atlas %d lights %d%% used, %d smaller sides, %d overflow | cache %d hits, %d copies, %d misses, %d invalidations | cpu cache %d us, frame atlas %d us\n",
 						b.c_shadowedLights, b.c_shadowMapSides, b.c_shadowCasterDraws, b.c_shadowAtlasLights,
 						b.c_shadowAtlasTexels > 0 ? ( int )( 100.0 * b.c_shadowAtlasUsedTexels / b.c_shadowAtlasTexels ) : 0,

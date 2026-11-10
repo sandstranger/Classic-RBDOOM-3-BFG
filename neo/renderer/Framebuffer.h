@@ -233,7 +233,7 @@ public:
     // Optional render targets get their storage when their feature runs and give it back when
     // the feature is turned off (Android, see the top of Framebuffer_GL.cpp). The other builds
     // allocate everything in Init, these only report that the targets are there.
-    static bool EnsureSceneTargets();					// hdrFBO: scene color and depth stencil, HDR or deferred shading
+    static bool EnsureSceneTargets();					// hdrFBO: scene color and depth stencil of HDR
     static bool EnsureExposureTargets();				// hdr64FBO, the HDR luminance
     static bool EnsureBloomTargets();					// bloomRenderFBO[]
     static bool EnsureAmbientOcclusionTargets();		// ambientOcclusionFBO[], SSAO / SSGI filtering

@@ -692,60 +692,12 @@ public:
 	//GK: End
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
-	// TBDR: on-tile deferred shading, GLSL ES programs of the engine, see DeferredShaders_GL.h
-	enum deferredLightProgram_t
+	// GLSL ES programs of the engine, see EngineShaders_GL.h
+	// multi light interactions, see FORWARD MULTI LIGHT INTERACTIONS in RenderBackend.cpp
+	void	BindShader_ForwardLights( bool skinned, bool shadows )
 	{
-		DEFERRED_LIGHT_PLAIN,
-		DEFERRED_LIGHT_AMBIENT,
-		DEFERRED_LIGHT_SPOT,		// shadow mapped
-		DEFERRED_LIGHT_POINT,
-		DEFERRED_LIGHT_PARALLEL,
-	};
-
-	void	BindShader_DeferredGBuffer()
-	{
-		BindShader_Builtin( BUILTIN_DEFERRED_GBUFFER );
-	}
-
-	void	BindShader_DeferredGBufferSkinned()
-	{
-		BindShader_Builtin( BUILTIN_DEFERRED_GBUFFER_SKINNED );
-	}
-
-	void	BindShader_DeferredGBufferInstanced()
-	{
-		BindShader_Builtin( BUILTIN_DEFERRED_GBUFFER_INSTANCED );
-	}
-
-	void	BindShader_DeferredLight( deferredLightProgram_t program )
-	{
-		BindShader_Builtin( BUILTIN_DEFERRED_LIGHT + program );
-	}
-
-	void	BindShader_DeferredResolve()
-	{
-		BindShader_Builtin( BUILTIN_DEFERRED_RESOLVE );
-	}
-
-	void	BindShader_DeferredTestWrite()
-	{
-		BindShader_Builtin( BUILTIN_DEFERRED_TEST_WRITE );
-	}
-
-	void	BindShader_DeferredTestFetch()
-	{
-		BindShader_Builtin( BUILTIN_DEFERRED_TEST_FETCH );
-	}
-
-	// multi light shading, see LIGHT BATCHES in RenderBackend.cpp
-	void	BindShader_DeferredLightBatch()
-	{
-		BindShader_Builtin( BUILTIN_DEFERRED_LIGHT_BATCH );
-	}
-
-	void	BindShader_ForwardLightBatch( bool skinned )
-	{
-		BindShader_Builtin( skinned ? BUILTIN_FORWARD_LIGHT_BATCH_SKINNED : BUILTIN_FORWARD_LIGHT_BATCH );
+		BindShader_Builtin( shadows ? ( skinned ? BUILTIN_FORWARD_LIGHTS_SHADOWS_SKINNED : BUILTIN_FORWARD_LIGHTS_SHADOWS )
+							: ( skinned ? BUILTIN_FORWARD_LIGHTS_SKINNED : BUILTIN_FORWARD_LIGHTS ) );
 	}
 
 	void	BindShader_ShadowCacheCopy()
@@ -753,17 +705,11 @@ public:
 		BindShader_Builtin( BUILTIN_SHADOW_CACHE_COPY );
 	}
 
-	// every program of the deferred shading compiled and linked, the driver has the framebuffer fetch
-	bool	DeferredShadersReady() const;
-
-	// the optional engine programs of the multi light shading and of the shadow cache
-	bool	DeferredLightBatchShaderReady() const
+	// the optional engine programs of the multi light interactions and of the shadow cache
+	bool	ForwardLightsShadersReady( bool shadows, bool skinned = false ) const
 	{
-		return EngineProgramReady( BUILTIN_DEFERRED_LIGHT_BATCH );
-	}
-	bool	ForwardLightBatchShadersReady() const
-	{
-		return EngineProgramReady( BUILTIN_FORWARD_LIGHT_BATCH ) && EngineProgramReady( BUILTIN_FORWARD_LIGHT_BATCH_SKINNED );
+		return EngineProgramReady( shadows ? ( skinned ? BUILTIN_FORWARD_LIGHTS_SHADOWS_SKINNED : BUILTIN_FORWARD_LIGHTS_SHADOWS )
+								   : ( skinned ? BUILTIN_FORWARD_LIGHTS_SKINNED : BUILTIN_FORWARD_LIGHTS ) );
 	}
 	bool	ShadowCacheCopyShaderReady() const
 	{
@@ -944,22 +890,11 @@ private:
 		BUILTIN_CLASSIC,
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
-		// the order of deferredLightProgram_t
-		BUILTIN_DEFERRED_GBUFFER,
-		BUILTIN_DEFERRED_GBUFFER_SKINNED,
-		BUILTIN_DEFERRED_GBUFFER_INSTANCED,
-		BUILTIN_DEFERRED_LIGHT,
-		BUILTIN_DEFERRED_LIGHT_AMBIENT,
-		BUILTIN_DEFERRED_LIGHT_SPOT,
-		BUILTIN_DEFERRED_LIGHT_POINT,
-		BUILTIN_DEFERRED_LIGHT_PARALLEL,
-		BUILTIN_DEFERRED_RESOLVE,
-		BUILTIN_DEFERRED_TEST_WRITE,
-		BUILTIN_DEFERRED_TEST_FETCH,
-		// optional, DeferredShadersReady doesn't wait for them
-		BUILTIN_DEFERRED_LIGHT_BATCH,
-		BUILTIN_FORWARD_LIGHT_BATCH,
-		BUILTIN_FORWARD_LIGHT_BATCH_SKINNED,
+		// engine GLSL ES, optional: a driver that fails them keeps the per light interactions
+		BUILTIN_FORWARD_LIGHTS,
+		BUILTIN_FORWARD_LIGHTS_SKINNED,
+		BUILTIN_FORWARD_LIGHTS_SHADOWS,
+		BUILTIN_FORWARD_LIGHTS_SHADOWS_SKINNED,
 		BUILTIN_SHADOW_CACHE_COPY,
 #endif
 

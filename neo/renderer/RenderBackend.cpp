@@ -1079,18 +1079,13 @@ void idRenderBackend::ResetViewportAndScissorToDefaultCamera( const viewDef_t* _
 ==================
 idRenderBackend::UseSceneFramebuffer
 
-The 3D views draw into hdrFBO for HDR and for the on-tile deferred shading, whose G-buffer
-is attached to it. Its color goes to the back buffer when the view is done: the tonemap or
-DeferredResolve.
+The 3D views draw into hdrFBO for HDR, the tonemap takes its color to the back buffer. Without
+HDR they draw straight into the back buffer.
 ==================
 */
 bool idRenderBackend::UseSceneFramebuffer() const
 {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-	return r_useHDR.GetBool() || deferredFrame;
-#else
 	return r_useHDR.GetBool();
-#endif
 }
 
 /*
@@ -1504,6 +1499,9 @@ void RB_ShutdownWorldMerge()
 	s_numWorldMergeViews = 0;
 	s_numWorldMergeCasters = 0;
 }
+
+// see FORWARD MULTI LIGHT INTERACTIONS
+static bool R_LightBatchCandidate( const viewLight_t* vLight );
 
 // static world area geometry with a CPU copy of the indexes it draws
 static bool R_WorldMergeable( const drawSurf_t* surf )
@@ -1955,8 +1953,13 @@ void idRenderBackend::WorldMergePass( const emptyCommand_t* cmds )
 				continue;
 			}
 
-			R_WorldMergeInteractions( writer, vLight->localInteractions );
-			R_WorldMergeInteractions( writer, vLight->globalInteractions );
+			// the multi light draws merge the world surfaces of the lights they take, by material
+			// and lights (DrawForwardLightBatches)
+			if( !R_LightBatchCandidate( vLight ) )
+			{
+				R_WorldMergeInteractions( writer, vLight->localInteractions );
+				R_WorldMergeInteractions( writer, vLight->globalInteractions );
+			}
 
 			if( mergeCasters && vLight->globalShadows != NULL && !vLight->lightShader->IsAmbientLight() )
 			{
@@ -2665,7 +2668,7 @@ idRenderBackend::RenderInteractions
 With added sorting and trivial path work.
 =============
 */
-void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const viewLight_t* vLight, int depthFunc, bool performStencilTest, bool useLightDepthBounds, bool skipDeferredSurfaces )
+void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const viewLight_t* vLight, int depthFunc, bool performStencilTest, bool useLightDepthBounds )
 {
 	if( surfList == NULL )
 	{
@@ -2732,11 +2735,6 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 		}
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
-		// DrawDeferredLight lit the surfaces of the G-buffer, the others are drawn as interactions
-		if( skipDeferredSurfaces && DeferredSurface( walk ) )
-		{
-			continue;
-		}
 		// a multi light draw lit it with this light, see DrawForwardLightBatches
 		if( walk->forwardBatched )
 		{
@@ -2762,7 +2760,7 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 #if defined(ANDROID) && !defined(USE_VULKAN)
 	if( allSurfaces.Num() == 0 )
 	{
-		// all of them were in the G-buffer
+		// the multi light draws lit them all
 		return;
 	}
 
@@ -3447,7 +3445,7 @@ AMBIENT PASS RENDERING
 idRenderBackend::AmbientPass
 ==================
 */
-void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs, bool fillGbuffer, bool skipDeferredSurfaces )
+void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs, bool fillGbuffer )
 {
 	if( fillGbuffer )
 	{
@@ -3587,12 +3585,6 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 		}
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
-		// DeferredGBufferPass wrote the ambient of the surfaces in the G-buffer
-		if( skipDeferredSurfaces && DeferredSurface( drawSurf ) )
-		{
-			continue;
-		}
-
 		// a merged world surface draws its whole material group, the rest of the group is done then
 		worldMergeSurf = NULL;
 		if( R_WorldMergeSkip( drawSurf ) )
@@ -6322,100 +6314,96 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 /*
 ==============================================================================================
 
-TBDR: ON-TILE DEFERRED SHADING
+FORWARD MULTI LIGHT INTERACTIONS
 
-Every light draws all the surfaces it lights again, with all their textures, in the forward
-interactions. A tile based GPU keeps the render pass of the view in its tile memory, so a
-G-buffer next to the scene color costs no memory traffic there: DeferredGBufferPass draws
-the surfaces once into it, and every light is then one draw of its volume that reads the
-G-buffer of its pixels with GL_EXT_shader_framebuffer_fetch (DrawDeferredLight). The
-G-buffer is cleared when the view starts and invalidated when the lights are done, it never
-leaves the tile memory. See DeferredShaders_GL.h for its layout.
+Every light draws the surfaces it lights again, one light at a time, as interactions. A light
+whose shadows don't need the stencil buffer (no shadows, an ambient light, shadow maps in the
+atlas or the shadow cache) can be added together with others: a surface is drawn once per
+interaction for up to LIGHT_BATCH_SLOTS light stages, blended one one with depth equal into the
+target of the view, where its interactions would add them one by one. Nothing is rendered or
+allocated besides, the view stays one render pass.
 
-A light from the G-buffer lights the same surfaces as its interactions:
-- the front end only lets a light do it when every area its volume reaches holds its
-  interactions (viewLight_t::deferredVolumeOk), a light behind a closed door or one that
-  flows through the portals keeps its interactions
-- the surfaces of more than one interaction (several bump stages), of an invisible ink
-  spectrum or translucent stay out of the G-buffer and keep their interactions
-- lights with local stencil shadows, which mustn't darken the noSelfShadow surfaces, keep
-  their interactions
-The stencil shadows and the shadow maps work as before: the light volume is drawn with the
-stencil test of the interactions, or reads the shadow maps like interactionSM.
+- Every light stage is a slot of its own (LightBatchAddEntries): projection, falloff, color,
+  texture matrix and the shadow maps of its sides, in view space, all slots of a view in one
+  uniform buffer upload.
+- The slots of a surface are the batched lights that have an interaction with it, by light,
+  LIGHT_BATCH_SLOTS per draw. A pixel only gets the light of a slot inside the light's volume,
+  and not on a triangle facing away from the light when the interaction culled those (light
+  tris), which the program tests with the plane of the triangle.
+- World surfaces of one material with the same slots are one draw: the triangles their lights
+  lit, without duplicates, go into a per view index buffer (UploadLightBatchIndexes).
+  WorldMergePass leaves the lights that can be batched out of its per light merging for this
+  (R_LightBatchCandidate).
+- A model surface is drawn whole once per interaction and draw of slots, when more than one
+  light stage reaches it; a single light stage keeps its interaction draw.
 
-Without HDR the views draw into the HDR target too, it holds the G-buffer, and
-DeferredResolve copies the view to the back buffer like the tonemap does.
+Not batched, one light at a time as before: fog and blend lights, lights of an invisible ink
+spectrum, lights with stencil shadows (the stencil test is per light), lights whose shadow maps
+didn't get an atlas tile, translucent surfaces, surfaces of more than MAX_FORWARD_INTERACTIONS
+interactions, and the world surfaces WorldMergePass merged for a light with shadow maps (that is
+decided before the atlas exists).
 
 ==============================================================================================
 */
 
-idCVar r_useDeferredShading( "r_useDeferredShading", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "TBDR: light the views from a G-buffer in the tile memory, read with GL_EXT_shader_framebuffer_fetch (GLES 3.2), instead of drawing the lit surfaces again for every light. Off without the extension and with MSAA" );
-idCVar r_showDeferredShading( "r_showDeferredShading", "0", CVAR_RENDERER | CVAR_BOOL, "print every frame how many lights the on-tile deferred shading drew from the G-buffer and how many as interactions" );
+idCVar r_lightBatching( "r_lightBatching", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "multi light interactions: the lights without stencil shadows light a surface several at once, one draw per interaction for up to four light stages instead of one per light" );
+idCVar r_showLightBatches( "r_showLightBatches", "0", CVAR_RENDERER | CVAR_BOOL, "print for every view what the multi light interactions drew" );
+
+struct lightBatchLight_t
+{
+	const viewLight_t*	vLight;
+	int					firstEntry;
+	int					numEntries;
+};
+
+// plain arrays: nothing here may run a destructor at exit()
+static const int			MAX_LIGHT_BATCH_LIGHTS = 256;
+static lightBatchLight_t	s_lightBatchLights[MAX_LIGHT_BATCH_LIGHTS];
+static int					s_numLightBatchLights;
+static idRenderMatrix		s_lightBatchWorldToView;
+static idRenderMatrix		s_lightBatchViewToWorld;
+static const int			MAX_FORWARD_INTERACTIONS = 8;	// bump / diffuse / specular sets of a surface a multi light draw takes
 
 /*
 ==================
-idRenderBackend::DeferredBeginFrame
+R_LightBatchCandidate
+
+Whether DrawForwardLightBatches may take the light, as far as that is known before the shadow
+atlas: WorldMergePass doesn't merge the light's world surfaces then. A light with shadow maps
+is only known once the atlas has it, its world surfaces stay merged per light.
 ==================
 */
-void idRenderBackend::DeferredBeginFrame( const emptyCommand_t* cmds )
+static bool R_LightBatchCandidate( const viewLight_t* vLight )
 {
-	if( r_showDeferredShading.GetBool() && ( deferredLightsDeferred + deferredLightsForward ) > 0 )
+	if( !r_lightBatching.GetBool() || r_skipInteractions.GetBool() || !renderProgManager.ForwardLightsShadersReady( false ) )
 	{
-		idLib::Printf( "on-tile deferred shading: %d lights from the G-buffer, %d as interactions\n", deferredLightsDeferred, deferredLightsForward );
+		return false;
 	}
-	deferredLightsDeferred = 0;
-	deferredLightsForward = 0;
-
-	deferredFrame = false;
-	deferredView = false;
-
-	if( !r_useDeferredShading.GetBool() || glConfig.multisamples > 0 || deferredSelfTestResult < 0 )
+	const idMaterial* lightShader = vLight->lightShader;
+	if( lightShader->IsFogLight() || lightShader->IsBlendLight() || lightShader->Spectrum() != 0 )
 	{
-		// the scene color alone again
-		if( deferredGBufferAttached )
-		{
-			DeferredReleaseTargets();
-		}
-		return;
+		return false;
 	}
-
-	// a frame without 3D views keeps what is attached
-	bool any3DView = false;
-	for( const emptyCommand_t* cmd = cmds; cmd != NULL && !any3DView; cmd = ( const emptyCommand_t* )cmd->next )
+	if( vLight->localInteractions == NULL && vLight->globalInteractions == NULL )
 	{
-		if( cmd->commandId == RC_DRAW_VIEW_3D )
-		{
-			const viewDef_t* view = ( ( const drawSurfsCommand_t* )cmd )->viewDef;
-			any3DView = ( view != NULL && view->viewEntitys != NULL && view->numDrawSurfs > 0 && !view->is2Dgui );
-		}
+		return false;
 	}
-	if( !any3DView || r_skipRender.GetBool() )
+	if( r_useShadowMapping.GetBool() )
 	{
-		return;
+		// ambient lights are drawn without shadows
+		return vLight->globalShadows == NULL || lightShader->IsAmbientLight();
 	}
-
-	// the first time: the programs, the extension and the test of the driver,
-	// later reloadShaders may have lost a program
-	if( !DeferredSelfTest() || !renderProgManager.DeferredShadersReady() )
-	{
-		if( deferredGBufferAttached )
-		{
-			DeferredReleaseTargets();
-		}
-		return;
-	}
-
-	deferredFrame = DeferredUpdateTargets();
+	return vLight->globalShadows == NULL && vLight->localShadows == NULL;
 }
 
 /*
 ==================
-R_DeferredFinishInteraction
+R_FinishSurfaceInteraction
 
 What DrawSingleInteraction does to the interaction before it draws it, false when it wouldn't draw it
 ==================
 */
-static bool R_DeferredFinishInteraction( drawInteraction_t* din )
+static bool R_FinishSurfaceInteraction( drawInteraction_t* din )
 {
 	if( din->bumpImage == NULL )
 	{
@@ -6445,814 +6433,10 @@ static bool R_DeferredFinishInteraction( drawInteraction_t* din )
 
 /*
 ==================
-idRenderBackend::DeferredSurfaceInteraction
-
-Goes through the stages like RenderInteractions does, for a light of color 1: -1 when the G-buffer
-can't hold the surface, else the number of interactions it draws, 0 or 1, the one in inter.
-The view surface and the light surfaces of a model surface share the material and the registers.
+idRenderBackend::LightBatchViewParms
 ==================
 */
-int idRenderBackend::DeferredSurfaceInteraction( const drawSurf_t* surf, drawInteraction_t* inter )
-{
-	const idMaterial* material = surf->material;
-	if( material == NULL || surf->shaderRegisters == NULL || material->Coverage() == MC_TRANSLUCENT
-			|| !material->ReceivesLighting() || material->Spectrum() != 0 )
-	{
-		return -1;
-	}
-
-	// identity texture matrices, a stage the material doesn't have samples a black image
-	const idVec4 sMatrix( 1, 0, 0, 0 );
-	const idVec4 tMatrix( 0, 1, 0, 0 );
-
-	drawInteraction_t din = {};
-	din.surf = surf;
-	din.bumpImage = NULL;
-	din.diffuseImage = NULL;
-	din.specularImage = NULL;
-	din.vertexColor = SVC_IGNORE;
-	din.ambientLight = 0;
-	din.bumpMatrix[0] = sMatrix;
-	din.bumpMatrix[1] = tMatrix;
-	din.diffuseMatrix[0] = sMatrix;
-	din.diffuseMatrix[1] = tMatrix;
-	din.specularMatrix[0] = sMatrix;
-	din.specularMatrix[1] = tMatrix;
-
-	// see RB_SetupForFastPathInteractions
-	if( material->GetFastPathBumpImage() && !r_skipInteractionFastPath.GetBool() )
-	{
-		din.bumpImage = material->GetFastPathBumpImage();
-		din.specularImage = material->GetFastPathSpecularImage();
-		din.diffuseImage = material->GetFastPathDiffuseImage();
-		din.diffuseColor = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
-		din.specularColor = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
-		if( inter != NULL )
-		{
-			*inter = din;
-		}
-		return 1;
-	}
-
-	static const float lightColorOne[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-	const float* surfaceRegs = surf->shaderRegisters;
-
-	din.diffuseColor = idVec4( 0.0f, 0.0f, 0.0f, 0.0f );
-	din.specularColor = idVec4( 0.0f, 0.0f, 0.0f, 0.0f );
-
-	int numInteractions = 0;
-	for( int surfaceStageNum = 0; surfaceStageNum < material->GetNumStages(); surfaceStageNum++ )
-	{
-		const shaderStage_t* surfaceStage = material->GetStage( surfaceStageNum );
-
-		bool previousDone = false;
-		switch( surfaceStage->lighting )
-		{
-			case SL_BUMP:
-				if( !surfaceRegs[ surfaceStage->conditionRegister ] )
-				{
-					break;
-				}
-				previousDone = ( din.bumpImage != NULL );
-				break;
-			case SL_DIFFUSE:
-				if( !surfaceRegs[ surfaceStage->conditionRegister ] )
-				{
-					break;
-				}
-				previousDone = ( din.diffuseImage != NULL );
-				break;
-			case SL_SPECULAR:
-				if( !surfaceRegs[ surfaceStage->conditionRegister ] )
-				{
-					break;
-				}
-				previousDone = ( din.specularImage != NULL );
-				break;
-			default:
-				// coverage and ambient stages are no interactions
-				continue;
-		}
-		if( !surfaceRegs[ surfaceStage->conditionRegister ] )
-		{
-			continue;
-		}
-
-		// RenderInteractions draws the previous interaction
-		if( previousDone && R_DeferredFinishInteraction( &din ) )
-		{
-			if( ++numInteractions > 1 )
-			{
-				return -1;
-			}
-			if( inter != NULL )
-			{
-				*inter = din;
-			}
-		}
-
-		switch( surfaceStage->lighting )
-		{
-			case SL_BUMP:
-				din.bumpImage = surfaceStage->texture.image;
-				din.diffuseImage = NULL;
-				din.specularImage = NULL;
-				SetupInteractionStage( surfaceStage, surfaceRegs, NULL, din.bumpMatrix, NULL );
-				break;
-			case SL_DIFFUSE:
-				din.diffuseImage = surfaceStage->texture.image;
-				din.vertexColor = surfaceStage->vertexColor;
-				SetupInteractionStage( surfaceStage, surfaceRegs, lightColorOne, din.diffuseMatrix, din.diffuseColor.ToFloatPtr() );
-				break;
-			case SL_SPECULAR:
-				din.specularImage = surfaceStage->texture.image;
-				din.vertexColor = surfaceStage->vertexColor;
-				SetupInteractionStage( surfaceStage, surfaceRegs, lightColorOne, din.specularMatrix, din.specularColor.ToFloatPtr() );
-				break;
-			default:
-				break;
-		}
-	}
-
-	// the final interaction
-	if( R_DeferredFinishInteraction( &din ) )
-	{
-		if( ++numInteractions > 1 )
-		{
-			return -1;
-		}
-		if( inter != NULL )
-		{
-			*inter = din;
-		}
-	}
-
-	return numInteractions;
-}
-
-/*
-==================
-idRenderBackend::DeferredSurface
-
-The surface is in the G-buffer, or it has no interaction at all
-==================
-*/
-bool idRenderBackend::DeferredSurface( const drawSurf_t* surf )
-{
-	return DeferredSurfaceInteraction( surf, NULL ) >= 0;
-}
-
-/*
-==================
-idRenderBackend::DeferredLight
-
-The light is drawn from the G-buffer, see the top of this section
-==================
-*/
-bool idRenderBackend::DeferredLight( const viewLight_t* vLight ) const
-{
-	if( !deferredView || !vLight->deferredVolumeOk )
-	{
-		return false;
-	}
-
-	const idMaterial* lightShader = vLight->lightShader;
-	if( lightShader->IsFogLight() || lightShader->IsBlendLight() || lightShader->Spectrum() != 0 )
-	{
-		return false;
-	}
-
-	// the stencil test of the volume can't keep the local shadows off the noSelfShadow surfaces
-	if( !r_useShadowMapping.GetBool() && vLight->localShadows != NULL )
-	{
-		return false;
-	}
-
-	// no opaque surface gets the light from its interactions either
-	return ( vLight->localInteractions != NULL || vLight->globalInteractions != NULL );
-}
-
-/*
-==================
-idRenderBackend::DeferredGBufferPass
-
-AmbientPass for the G-buffer: the surfaces of the depth pass with one interaction write it,
-and the ambient pass into the scene color, which AmbientPass skips for them then.
-==================
-*/
-void idRenderBackend::DeferredGBufferPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs )
-{
-	if( numDrawSurfs == 0 || viewDef->viewEntitys == NULL )
-	{
-		return;
-	}
-
-	renderLog.OpenBlock( "RB_DeferredGBufferPass" );
-
-	bool* gpuInstanceConsumed = ( bool* )_alloca( numDrawSurfs * sizeof( bool ) );
-	memset( gpuInstanceConsumed, 0, numDrawSurfs * sizeof( bool ) );
-
-	// every merged world group is drawn once in this pass
-	++s_worldMergeStamp;
-
-	// force MVP change on first surface
-	currentSpace = NULL;
-
-	// the ambient of AmbientPass
-	const bool writeAmbient = ( r_forceAmbient.GetFloat() > 0 && !r_skipAmbient.GetBool() );
-	float ambientBoost = 1.0f;
-	ambientBoost += r_useSSAO.GetBool() ? 0.2f : 0.0f;
-	ambientBoost *= r_useHDR.GetBool() ? 1.1f : 1.0f;
-	const idVec4 ambientColor( r_forceAmbient.GetFloat() * ambientBoost, r_forceAmbient.GetFloat() * ambientBoost, r_forceAmbient.GetFloat() * ambientBoost, 1.0f );
-	renderProgManager.SetRenderParm( RENDERPARM_AMBIENT_COLOR, ambientColor.ToFloatPtr() );
-
-	const float gbufferParms[4] = { r_lightScale.GetFloat(), writeAmbient ? 1.0f : 0.0f, 0.0f, 0.0f };
-	SetFragmentParm( RENDERPARM_USER3, gbufferParms );
-
-	// without the ambient the scene color keeps the black of the depth pass
-	const uint64 sceneColorMask = writeAmbient ? 0 : ( GLS_COLORMASK | GLS_ALPHAMASK );
-	DeferredSetGBufferWrites( true );
-
-	int gpuInstanceBatchCount = 0;
-	int numDrawn = 0;
-
-	for( int i = 0; i < numDrawSurfs; i++ )
-	{
-		if( gpuInstanceConsumed[i] )
-		{
-			continue;
-		}
-
-		const drawSurf_t* drawSurf = drawSurfs[i];
-		const idMaterial* surfaceMaterial = drawSurf->material;
-
-		// translucent surfaces don't put anything in the depth buffer
-		if( surfaceMaterial->Coverage() == MC_TRANSLUCENT )
-		{
-			continue;
-		}
-
-		// if all stages of a material have been conditioned off, don't do anything
-		const float* surfaceRegs = drawSurf->shaderRegisters;
-		int stage = 0;
-		for( ; stage < surfaceMaterial->GetNumStages(); stage++ )
-		{
-			if( surfaceRegs[ surfaceMaterial->GetStage( stage )->conditionRegister ] != 0 )
-			{
-				break;
-			}
-		}
-		if( stage == surfaceMaterial->GetNumStages() )
-		{
-			continue;
-		}
-
-		// the surfaces of more than one interaction are lit by their interactions
-		drawInteraction_t inter;
-		if( DeferredSurfaceInteraction( drawSurf, &inter ) != 1 )
-		{
-			continue;
-		}
-
-		// a merged world surface draws its whole material group, the rest of the group is done then
-		worldMergeSurf = NULL;
-		if( R_WorldMergeSkip( drawSurf ) )
-		{
-			continue;
-		}
-		if( R_IsWorldMergeGroupMember( drawSurf ) )
-		{
-			BeginWorldMergeGroup( drawSurf );
-		}
-
-		const gpuInstanceData_t* gpuInstanceData = NULL;
-		int gpuInstanceCount = 1;
-		gpuInstanceData_t gpuInstances[MAX_GPU_INSTANCES_PER_DRAW];
-		if( glConfig.glVersion >= 3.2f )
-		{
-			gpuInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i, viewDef->renderView.vieworg, gpuInstanceConsumed, gpuInstances, surfaceMaterial->Coverage() == MC_PERFORATED );
-			if( gpuInstanceCount > 1 )
-			{
-				gpuInstanceData = gpuInstances;
-				gpuInstanceBatchCount++;
-			}
-		}
-
-		if( drawSurf->jointCache )
-		{
-			renderProgManager.BindShader_DeferredGBufferSkinned();
-		}
-		else if( gpuInstanceCount > 1 )
-		{
-			renderProgManager.BindShader_DeferredGBufferInstanced();
-		}
-		else
-		{
-			renderProgManager.BindShader_DeferredGBuffer();
-		}
-
-		// change the matrix if needed
-		if( drawSurf->space != currentSpace )
-		{
-			currentSpace = drawSurf->space;
-
-			RB_SetMVP( drawSurf->space->mvp );
-
-			// tranform the view origin into model local space
-			idVec4 localViewOrigin( 1.0f );
-			R_GlobalPointToLocal( drawSurf->space->modelMatrix, viewDef->renderView.vieworg, localViewOrigin.ToVec3() );
-			SetVertexParm( RENDERPARM_LOCALVIEWORIGIN, localViewOrigin.ToFloatPtr() );
-
-			// the G-buffer is in view space
-			float modelViewMatrixTranspose[16];
-			R_MatrixTranspose( drawSurf->space->modelViewMatrix, modelViewMatrixTranspose );
-			SetVertexParms( RENDERPARM_MODELVIEWMATRIX_X, modelViewMatrixTranspose, 4 );
-		}
-
-		SetVertexParm( RENDERPARM_BUMPMATRIX_S, inter.bumpMatrix[0].ToFloatPtr() );
-		SetVertexParm( RENDERPARM_BUMPMATRIX_T, inter.bumpMatrix[1].ToFloatPtr() );
-		SetVertexParm( RENDERPARM_DIFFUSEMATRIX_S, inter.diffuseMatrix[0].ToFloatPtr() );
-		SetVertexParm( RENDERPARM_DIFFUSEMATRIX_T, inter.diffuseMatrix[1].ToFloatPtr() );
-		SetVertexParm( RENDERPARM_SPECULARMATRIX_S, inter.specularMatrix[0].ToFloatPtr() );
-		SetVertexParm( RENDERPARM_SPECULARMATRIX_T, inter.specularMatrix[1].ToFloatPtr() );
-		RB_SetVertexColorParms( inter.vertexColor );
-
-		// the colors of the material stages, the light pass multiplies the light color with them
-		SetFragmentParm( RENDERPARM_DIFFUSEMODIFIER, inter.diffuseColor.ToFloatPtr() );
-		SetFragmentParm( RENDERPARM_SPECULARMODIFIER, inter.specularColor.ToFloatPtr() );
-
-		// AmbientPass adds the ambient of vertex colored stages to the black of the depth pass
-		uint64 surfGLState = GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL | sceneColorMask;
-		if( writeAmbient && inter.vertexColor != SVC_IGNORE )
-		{
-			surfGLState |= GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE;
-		}
-		else
-		{
-			surfGLState |= GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO;
-		}
-		GL_State( surfGLState );
-
-		GL_SelectTexture( INTERACTION_TEXUNIT_BUMP );
-		inter.bumpImage->Bind();
-
-		GL_SelectTexture( INTERACTION_TEXUNIT_SPECULARMIX );
-		inter.specularImage->Bind();
-
-		GL_SelectTexture( INTERACTION_TEXUNIT_BASECOLOR );
-		inter.diffuseImage->Bind();
-
-		renderLog.OpenBlock( surfaceMaterial->GetName() );
-		DrawElementsWithCounters( drawSurf, gpuInstanceData, gpuInstanceCount );
-		renderLog.CloseBlock();
-		numDrawn++;
-	}
-
-	DeferredSetGBufferWrites( false );
-	worldMergeSurf = NULL;
-
-	if( r_gpuInstancingDebug.GetBool() )
-	{
-		idLib::Printf( "on-tile deferred shading G-buffer: %d draws, %d instanced batches\n", numDrawn, gpuInstanceBatchCount );
-	}
-
-	GL_SelectTexture( 0 );
-	renderProgManager.Unbind();
-
-	renderLog.CloseBlock();
-}
-
-/*
-==================
-idRenderBackend::DrawDeferredLight
-
-Adds the light to the G-buffer pixels of its volume, what its interactions add to them: draws the
-volume with depth greater equal, so only the pixels of the surfaces in front of its back sides, and
-the program reads their G-buffer and the scene color with the framebuffer fetch.
-The interactions are culled to the light volume, the program skips the pixels outside of it.
-Everything is in view space, the G-buffer has the view depth.
-False when the light must be drawn as interactions.
-==================
-*/
-bool idRenderBackend::DrawDeferredLight( const viewLight_t* vLight, bool performStencilTest )
-{
-	// view space -> world space
-	idRenderMatrix worldToView;
-	idRenderMatrix::Transpose( *( const idRenderMatrix* )viewDef->worldSpace.modelViewMatrix, worldToView );
-	idRenderMatrix viewToWorld;
-	if( !idRenderMatrix::Inverse( worldToView, viewToWorld ) )
-	{
-		return false;
-	}
-
-	// the plane a dotted with a world space x y z 1, for a view space x y z 1
-	auto planeToView = [&viewToWorld]( const float* plane, float* out )
-	{
-		for( int j = 0; j < 4; j++ )
-		{
-			out[j] = plane[0] * viewToWorld[0][j] + plane[1] * viewToWorld[1][j] + plane[2] * viewToWorld[2][j] + plane[3] * viewToWorld[3][j];
-		}
-	};
-
-	const idMaterial* lightShader = vLight->lightShader;
-	const float* lightRegs = vLight->shaderRegisters;
-	const bool ambientLight = lightShader->IsAmbientLight();
-	const bool useShadowMaps = r_useShadowMapping.GetBool() && vLight->globalShadows != NULL && !ambientLight;
-
-	renderLog.OpenBlock( "Deferred Light" );
-
-	// the scissor of the interactions
-	if( !currentScissor.Equals( vLight->scissorRect ) && r_useScissor.GetBool() )
-	{
-		GL_Scissor( viewDef->viewport.x1 + vLight->scissorRect.x1,
-					viewDef->viewport.y1 + vLight->scissorRect.y1,
-					vLight->scissorRect.x2 + 1 - vLight->scissorRect.x1,
-					vLight->scissorRect.y2 + 1 - vLight->scissorRect.y1 );
-
-		currentScissor = vLight->scissorRect;
-	}
-
-	// The sides of the volume behind the surfaces: inside of it only its back side passes. Both
-	// facings are drawn, a mirror and a projection turn the winding around, and in front of the
-	// volume where both pass the program finds the pixels outside of it. The program adds the
-	// light to the fetched scene color itself.
-	uint64 glState = GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO | GLS_DEPTHMASK | GLS_DEPTHFUNC_GREATER | GLS_CULL_TWOSIDED;
-	if( performStencilTest )
-	{
-		glState |= GLS_STENCIL_FUNC_EQUAL | GLS_STENCIL_MAKE_REF( STENCIL_SHADOW_TEST_VALUE ) | GLS_STENCIL_MAKE_MASK( STENCIL_SHADOW_MASK_VALUE );
-	}
-	else
-	{
-		glState |= GLS_STENCIL_FUNC_ALWAYS;
-	}
-	GL_State( glState );
-
-	if( ambientLight )
-	{
-		renderProgManager.BindShader_DeferredLight( idRenderProgManager::DEFERRED_LIGHT_AMBIENT );
-	}
-	else if( useShadowMaps )
-	{
-		if( vLight->parallel )
-		{
-			renderProgManager.BindShader_DeferredLight( idRenderProgManager::DEFERRED_LIGHT_PARALLEL );
-		}
-		else if( vLight->pointLight )
-		{
-			renderProgManager.BindShader_DeferredLight( idRenderProgManager::DEFERRED_LIGHT_POINT );
-		}
-		else
-		{
-			renderProgManager.BindShader_DeferredLight( idRenderProgManager::DEFERRED_LIGHT_SPOT );
-		}
-	}
-	else
-	{
-		renderProgManager.BindShader_DeferredLight( idRenderProgManager::DEFERRED_LIGHT_PLAIN );
-	}
-
-	// window coordinates -> view space position on the view depth
-	const idScreenRect& viewport = viewDef->viewport;
-	const float viewportWidth = ( float )( viewport.x2 + 1 - viewport.x1 );
-	const float viewportHeight = ( float )( viewport.y2 + 1 - viewport.y1 );
-	const float windowToNDC[4] = { 2.0f / viewportWidth, 2.0f / viewportHeight,
-								   -1.0f - 2.0f * ( float )viewport.x1 / viewportWidth, -1.0f - 2.0f * ( float )viewport.y1 / viewportHeight
-								 };
-	SetFragmentParm( RENDERPARM_USER0, windowToNDC );
-
-	const idRenderMatrix& projection = viewDef->projectionRenderMatrix;
-	const float projectionX[4] = { 1.0f / projection[0][0], projection[0][2], projection[0][3], projection[3][2] };
-	const float projectionY[4] = { 1.0f / projection[1][1], projection[1][2], projection[1][3], projection[3][3] };
-	SetFragmentParm( RENDERPARM_USER1, projectionX );
-	SetFragmentParm( RENDERPARM_USER2, projectionY );
-
-	// the light in view space
-	const idVec3& lightOrigin = vLight->globalLightOrigin;
-	float viewLightOrigin[4];
-	for( int i = 0; i < 4; i++ )
-	{
-		viewLightOrigin[i] = worldToView[i][0] * lightOrigin.x + worldToView[i][1] * lightOrigin.y + worldToView[i][2] * lightOrigin.z + worldToView[i][3];
-	}
-	SetFragmentParm( RENDERPARM_LOCALLIGHTORIGIN, viewLightOrigin );
-
-	// the volume: 0 < x, y, z < w in the zero to one cube, see idRenderMatrix::CullPointToMVP
-	for( int i = 0; i < 4; i++ )
-	{
-		float row[4];
-		planeToView( vLight->baseLightProject[i], row );
-		SetFragmentParm( ( renderParm_t )( RENDERPARM_TEXGEN_0_S + i ), row );
-	}
-
-	if( useShadowMaps )
-	{
-		// what RenderInteractions sets up for the shadow map interactions
-		const shadowAtlasLight_t* atlasLight = FindShadowAtlasLight( vLight );
-
-		idRenderMatrix lightWorldToShadow[6];
-		int numShadowSides = 0;
-		if( atlasLight != NULL )
-		{
-			numShadowSides = atlasLight->numSides;
-			for( int i = 0; i < numShadowSides; i++ )
-			{
-				lightWorldToShadow[i] = atlasLight->worldToShadow[i];
-			}
-		}
-		else
-		{
-			// ShadowMapPass left the matrices of this light in shadowV / shadowP
-			if( vLight->parallel )
-			{
-				numShadowSides = r_shadowMapSplits.GetInteger() + 1;
-			}
-			else if( vLight->pointLight )
-			{
-				numShadowSides = 6;
-			}
-			else
-			{
-				numShadowSides = 1;
-			}
-			numShadowSides = Min( numShadowSides, 6 );
-			for( int i = 0; i < numShadowSides; i++ )
-			{
-				idRenderMatrix lightViewProjection;
-				idRenderMatrix::Multiply( shadowP[i], shadowV[i], lightViewProjection );
-				if( vLight->parallel || vLight->pointLight )
-				{
-					idRenderMatrix::Multiply( renderMatrix_clipSpaceToWindowSpace, lightViewProjection, lightWorldToShadow[i] );
-				}
-				else
-				{
-					// the base light projection of a projected light is 0..1 already
-					lightWorldToShadow[i] = lightViewProjection;
-				}
-			}
-		}
-
-		for( int i = 0; i < numShadowSides; i++ )
-		{
-			idRenderMatrix viewToShadow;
-			idRenderMatrix::Multiply( lightWorldToShadow[i], viewToWorld, viewToShadow );
-			renderProgManager.SetRenderParms( ( renderParm_t )( RENDERPARM_SHADOW_MATRIX_0_X + i * 4 ), viewToShadow[0], 4 );
-		}
-
-		// the side of a point light is the world axis closest to the direction to the light
-		SetFragmentParm( RENDERPARM_MODELMATRIX_X, viewToWorld[0] );
-		SetFragmentParm( RENDERPARM_MODELMATRIX_Y, viewToWorld[1] );
-		SetFragmentParm( RENDERPARM_MODELMATRIX_Z, viewToWorld[2] );
-
-		const static int JITTER_SIZE = 128;
-
-		// default high quality
-		float jitterSampleScale = 1.0f;
-		float shadowMapSamples = r_shadowMapSamples.GetInteger();
-
-		// screen power of two correction factor
-		float screenCorrectionParm[4];
-		screenCorrectionParm[0] = 1.0f / ( JITTER_SIZE * shadowMapSamples ) ;
-		screenCorrectionParm[1] = 1.0f / JITTER_SIZE;
-		// texel size for the PCF taps, the atlas texel is as big as a texel of the light's own resolution
-		screenCorrectionParm[2] = ( atlasLight != NULL ) ? 1.0f / atlasLight->atlasSize : 1.0f / shadowMapResolutions[vLight->shadowLOD];
-		screenCorrectionParm[3] = vLight->parallel ? r_shadowMapSunDepthBiasScale.GetFloat() : r_shadowMapRegularDepthBiasScale.GetFloat();
-		SetFragmentParm( RENDERPARM_SCREENCORRECTIONFACTOR, screenCorrectionParm ); // rpScreenCorrectionFactor
-
-		float jitterTexScale[4];
-		jitterTexScale[0] = r_shadowMapJitterScale.GetFloat() * jitterSampleScale;
-		jitterTexScale[1] = r_shadowMapJitterScale.GetFloat() * jitterSampleScale;
-		jitterTexScale[2] = -r_shadowMapBiasScale.GetFloat();
-		jitterTexScale[3] = 0.0f;
-		SetFragmentParm( RENDERPARM_JITTERTEXSCALE, jitterTexScale ); // rpJitterTexScale
-
-		float jitterTexOffset[4];
-		if( r_shadowMapRandomizeJitter.GetBool() )
-		{
-			jitterTexOffset[0] = ( rand() & 255 ) / 255.0;
-			jitterTexOffset[1] = ( rand() & 255 ) / 255.0;
-		}
-		else
-		{
-			jitterTexOffset[0] = 0;
-			jitterTexOffset[1] = 0;
-		}
-		jitterTexOffset[2] = 0.0f;
-		jitterTexOffset[3] = 0.0f;
-		SetFragmentParm( RENDERPARM_JITTERTEXOFFSET, jitterTexOffset ); // rpJitterTexOffset
-
-		if( vLight->parallel )
-		{
-			float cascadeDistances[4];
-			cascadeDistances[0] = viewDef->frustumSplitDistances[0];
-			cascadeDistances[1] = viewDef->frustumSplitDistances[1];
-			cascadeDistances[2] = viewDef->frustumSplitDistances[2];
-			cascadeDistances[3] = viewDef->frustumSplitDistances[3];
-			SetFragmentParm( RENDERPARM_CASCADEDISTANCES, cascadeDistances ); // rpCascadeDistances
-		}
-
-		// texture 5 will be the shadow maps array
-		GL_SelectTexture( INTERACTION_TEXUNIT_SHADOWMAPS );
-		if( atlasLight != NULL )
-		{
-			atlasLight->image->Bind();
-		}
-		else
-		{
-			globalImages->shadowImage[vLight->shadowLOD]->Bind();
-		}
-
-		// texture 6 will be the jitter texture for soft shadowing
-		GL_SelectTexture( INTERACTION_TEXUNIT_JITTER );
-		if( r_shadowMapSamples.GetInteger() == 16 )
-		{
-			globalImages->jitterImage16->Bind();
-		}
-		else if( r_shadowMapSamples.GetInteger() == 4 )
-		{
-			globalImages->jitterImage4->Bind();
-		}
-		else
-		{
-			globalImages->jitterImage1->Bind();
-		}
-	}
-
-	// the zero to one cube deformed into the light volume
-	idRenderMatrix lightVolumeMVP;
-	idRenderMatrix::Multiply( viewDef->worldSpace.mvp, vLight->inverseBaseLightProject, lightVolumeMVP );
-	RB_SetMVP( lightVolumeMVP );
-
-	const float lightScale = r_lightScale.GetFloat();
-
-	// some rare lights have multiple animating stages
-	for( int lightStageNum = 0; lightStageNum < lightShader->GetNumStages(); lightStageNum++ )
-	{
-		const shaderStage_t* lightStage = lightShader->GetStage( lightStageNum );
-
-		// ignore stages that fail the condition
-		if( !lightRegs[ lightStage->conditionRegister ] )
-		{
-			continue;
-		}
-
-		const idVec4 lightColor(
-			lightScale * lightRegs[ lightStage->color.registers[0] ],
-			lightScale * lightRegs[ lightStage->color.registers[1] ],
-			lightScale * lightRegs[ lightStage->color.registers[2] ],
-			lightRegs[ lightStage->color.registers[3] ] );
-		if( lightColor[0] <= 0.0f && lightColor[1] <= 0.0f && lightColor[2] <= 0.0f )
-		{
-			// the interactions would draw nothing
-			continue;
-		}
-
-		// apply the world-global overbright and the 2x factor for specular
-		const idVec4 specularColor = lightColor * 2.0f;
-		SetFragmentParm( RENDERPARM_DIFFUSEMODIFIER, lightColor.ToFloatPtr() );
-		SetFragmentParm( RENDERPARM_SPECULARMODIFIER, specularColor.ToFloatPtr() );
-
-		// the light projection with the texture matrix of the stage, in view space
-		idPlane lightProjection[4];
-		for( int i = 0; i < 4; i++ )
-		{
-			lightProjection[i] = vLight->lightProject[i];
-		}
-		if( lightStage->texture.hasMatrix )
-		{
-			float lightTextureMatrix[16];
-			RB_GetShaderTextureMatrix( lightRegs, &lightStage->texture, lightTextureMatrix );
-			RB_BakeTextureMatrixIntoTexgen( lightProjection, lightTextureMatrix );
-		}
-		for( int i = 0; i < 4; i++ )
-		{
-			float plane[4];
-			planeToView( lightProjection[i].ToFloatPtr(), plane );
-			SetFragmentParm( ( renderParm_t )( RENDERPARM_LIGHTPROJECTION_S + i ), plane );
-		}
-
-		// texture 3 will be the light falloff texture
-		GL_SelectTexture( INTERACTION_TEXUNIT_FALLOFF );
-		vLight->falloffImage->Bind();
-
-		// texture 4 will be the light projection texture
-		GL_SelectTexture( INTERACTION_TEXUNIT_PROJECTION );
-		lightStage->texture.image->Bind();
-
-		DrawElementsWithCounters( &zeroOneCubeSurface );
-		pc.c_lightVolumeDraws++;
-	}
-
-	GL_SelectTexture( 0 );
-
-	renderLog.CloseBlock();
-	return true;
-}
-
-/*
-==================
-idRenderBackend::DeferredResolve
-
-Without HDR: the view from the scene target to the back buffer, where the tonemap would draw it.
-Only the view's part of the back buffer, a gui may have drawn the rest.
-==================
-*/
-void idRenderBackend::DeferredResolve( const viewDef_t* _viewDef )
-{
-	renderLog.OpenBlock( "RB_DeferredResolve" );
-
-	const int screenWidth = renderSystem->GetWidth();
-	const int screenHeight = renderSystem->GetHeight();
-	const idScreenRect& viewport = _viewDef->viewport;
-	const bool fullScreen = ( viewport.x1 <= 0 && viewport.y1 <= 0 && viewport.x2 + 1 >= screenWidth && viewport.y2 + 1 >= screenHeight );
-
-	if( fullScreen && !backBufferDrawnThisFrame )
-	{
-		// every pixel of the back buffer is replaced, nothing is loaded into the tiles
-		Framebuffer::InvalidateDefaultFramebufferForOverwrite();
-	}
-	else
-	{
-		Framebuffer::Unbind();
-	}
-	backBufferDrawnThisFrame = true;
-
-	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS | GLS_CULL_TWOSIDED );
-	GL_Viewport( 0, 0, screenWidth, screenHeight );
-	GL_Scissor( viewport.x1, viewport.y1, viewport.x2 + 1 - viewport.x1, viewport.y2 + 1 - viewport.y1 );
-
-	GL_SelectTexture( 0 );
-	globalImages->currentRenderHDRImage->Bind();
-
-	renderProgManager.BindShader_DeferredResolve();
-	DrawElementsWithCounters( &unitSquareSurface );
-
-	renderProgManager.Unbind();
-	GL_State( GLS_DEFAULT );
-
-	renderLog.CloseBlock();
-}
-
-/*
-==============================================================================================
-
-LIGHT BATCHES
-
-The deferred shading drew a volume per light, the forward interactions draw every surface once
-per light. Lights whose shadows don't need the stencil buffer (no shadows, or shadow maps in the
-atlas or the shadow cache) are evaluated several at once instead:
-
-From the G-buffer (DrawDeferredLightBatches): the lights are sorted by where they are on the
-screen and grouped LIGHT_BATCH_DEFERRED_SLOTS at a time. The screen is cut into tiles of
-r_lightBatchTileSize pixels; every tile gets the mask of the batch's lights whose scissor
-reaches it, runs of tiles with the same mask become one instance of a quad, and one instanced
-draw per batch covers them all. Each pixel fetches its G-buffer once and adds every light of its
-mask. A tile with more lights than a batch holds is drawn by several batches: no light is ever
-dropped or truncated, a pixel only pays for the lights that reach its tile, and the number of
-draws is the number of batches, not of lights.
-
-Surfaces outside the G-buffer (DrawForwardLightBatches): a surface several such lights reach is
-drawn once per interaction with up to LIGHT_BATCH_FORWARD_SLOTS of them, blended one one like the
-interactions; the G-buffer values are computed in the fragment program instead of stored. A
-surface reached by a single light keeps its interaction draw, and the world surfaces a light's
-interactions merge into one draw per material (WorldMergePass) keep that.
-
-Both evaluate a light like DrawDeferredLight: the light's stages with their colors, projection,
-falloff and texture matrices, the shadow maps of interactionSM. Every stage is a slot of its own,
-so a light of several animated stages is batched as well. The parameters of all slots of a view
-go into one uniform buffer upload (UploadLightBatchData).
-
-Not batched, one draw per light as before: fog and blend lights, lights of an invisible ink
-spectrum, lights with stencil shadows (the stencil test is per light), lights whose shadow maps
-didn't get an atlas tile (per light shadow map arrays, rendered right before the light).
-
-==============================================================================================
-*/
-
-idCVar r_lightBatching( "r_lightBatching", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "multi light shading: the lights of the on-tile deferred shading several per draw over screen tiles, and the surfaces outside the G-buffer that several lights reach drawn once for all of them. Lights with stencil shadows or per light shadow maps are drawn one by one" );
-idCVar r_lightBatchTileSize( "r_lightBatchTileSize", "64", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "pixels of the screen tiles the batched lights of the deferred shading are assigned to", 16, 512 );
-idCVar r_showLightBatches( "r_showLightBatches", "0", CVAR_RENDERER | CVAR_BOOL, "print every frame what the multi light shading drew" );
-
-struct lightBatchLight_t
-{
-	const viewLight_t*	vLight;
-	int					firstEntry;
-	int					numEntries;
-	bool				deferred;		// lit from the G-buffer
-};
-
-// plain arrays: nothing here may run a destructor at exit(); as many as there are slots
-static const int			MAX_LIGHT_BATCH_LIGHTS = 256;
-static lightBatchLight_t	s_lightBatchLights[MAX_LIGHT_BATCH_LIGHTS];
-static int					s_numLightBatchLights;
-static idRenderMatrix		s_lightBatchWorldToView;
-static idRenderMatrix		s_lightBatchViewToWorld;
-static const int			MAX_FORWARD_INTERACTIONS = 8;	// bump / diffuse / specular sets of a surface a multi light draw takes
-
-/*
-==================
-idRenderBackend::DeferredViewParms
-==================
-*/
-void idRenderBackend::DeferredViewParms( idRenderMatrix& worldToView, idRenderMatrix& viewToWorld )
+void idRenderBackend::LightBatchViewParms( idRenderMatrix& worldToView, idRenderMatrix& viewToWorld )
 {
 	idRenderMatrix::Transpose( *( const idRenderMatrix* )viewDef->worldSpace.modelViewMatrix, worldToView );
 	if( !idRenderMatrix::Inverse( worldToView, viewToWorld ) )
@@ -7309,7 +6493,7 @@ bool idRenderBackend::LightBatchable( const viewLight_t* vLight ) const
 	if( r_useShadowMapping.GetBool() && vLight->globalShadows != NULL && !lightShader->IsAmbientLight() )
 	{
 		const shadowAtlasLight_t* atlasLight = FindShadowAtlasLight( vLight );
-		if( atlasLight == NULL || atlasLight->numSides > 6 )
+		if( atlasLight == NULL || atlasLight->numSides > 6 || !renderProgManager.ForwardLightsShadersReady( true ) )
 		{
 			return false;
 		}
@@ -7321,11 +6505,11 @@ bool idRenderBackend::LightBatchable( const viewLight_t* vLight ) const
 ==================
 idRenderBackend::LightBatchAddEntries
 
-A slot for every stage of the light that lights anything, in the view space of the G-buffer.
+A slot for every stage of the light that lights anything, in view space.
 The number of slots, -1 when they don't fit and the light must be drawn alone.
 ==================
 */
-int idRenderBackend::LightBatchAddEntries( const viewLight_t* vLight, bool deferred )
+int idRenderBackend::LightBatchAddEntries( const viewLight_t* vLight )
 {
 	const idRenderMatrix& viewToWorld = s_lightBatchViewToWorld;
 	const idRenderMatrix& worldToView = s_lightBatchWorldToView;
@@ -7403,7 +6587,7 @@ int idRenderBackend::LightBatchAddEntries( const viewLight_t* vLight, bool defer
 		entry.falloffImage = vLight->falloffImage;
 		entry.projectionImage = lightStage->texture.image;
 		entry.rect = vLight->scissorRect;
-		entry.deferred = deferred;
+		entry.shadowMapped = ( atlasLight != NULL );
 
 		float* data = entry.data;
 		memset( data, 0, sizeof( entry.data ) );
@@ -7445,7 +6629,7 @@ int idRenderBackend::LightBatchAddEntries( const viewLight_t* vLight, bool defer
 
 		if( atlasLight != NULL )
 		{
-			// 10: texel size, depth bias, which atlas
+			// 10: texel size, depth bias, which atlas; w is set per draw
 			data[10 * 4 + 0] = 1.0f / Max( 1, atlasLight->atlasSize );
 			data[10 * 4 + 1] = vLight->parallel ? r_shadowMapSunDepthBiasScale.GetFloat() : r_shadowMapRegularDepthBiasScale.GetFloat();
 			data[10 * 4 + 2] = ( atlasLight->image == globalImages->shadowCacheImage ) ? 1.0f : 0.0f;
@@ -7485,15 +6669,14 @@ The batchable lights of the view and their slots
 void idRenderBackend::LightBatchBeginView( const viewDef_t* _viewDef )
 {
 	numLightBatchEntries = 0;
-	numLightBatchedDeferred = 0;
 	s_numLightBatchLights = 0;
 
-	if( !r_lightBatching.GetBool() || _viewDef->viewEntitys == NULL )
+	if( !r_lightBatching.GetBool() || _viewDef->viewEntitys == NULL || !renderProgManager.ForwardLightsShadersReady( false ) )
 	{
 		return;
 	}
 
-	DeferredViewParms( s_lightBatchWorldToView, s_lightBatchViewToWorld );
+	LightBatchViewParms( s_lightBatchWorldToView, s_lightBatchViewToWorld );
 
 	for( const viewLight_t* vLight = _viewDef->viewLights; vLight != NULL && s_numLightBatchLights < MAX_LIGHT_BATCH_LIGHTS; vLight = vLight->next )
 	{
@@ -7501,18 +6684,17 @@ void idRenderBackend::LightBatchBeginView( const viewDef_t* _viewDef )
 		{
 			continue;
 		}
-		const bool deferred = DeferredLight( vLight );
 		const int firstEntry = numLightBatchEntries;
-		const int numEntries = LightBatchAddEntries( vLight, deferred );
-		if( numEntries < 0 )
+		const int numEntries = LightBatchAddEntries( vLight );
+		if( numEntries <= 0 )
 		{
+			// nothing to add, or no room: the interactions do what there is
 			continue;
 		}
 		lightBatchLight_t& light = s_lightBatchLights[s_numLightBatchLights++];
 		light.vLight = vLight;
 		light.firstEntry = firstEntry;
 		light.numEntries = numEntries;
-		light.deferred = deferred;
 	}
 }
 
@@ -7525,21 +6707,6 @@ What the slots of a draw share: the view and the soft shadow jitter
 */
 void idRenderBackend::LightBatchSetGlobals()
 {
-	// window coordinates -> view space position on the view depth, see DrawDeferredLight
-	const idScreenRect& viewport = viewDef->viewport;
-	const float viewportWidth = ( float )( viewport.x2 + 1 - viewport.x1 );
-	const float viewportHeight = ( float )( viewport.y2 + 1 - viewport.y1 );
-	const float windowToNDC[4] = { 2.0f / viewportWidth, 2.0f / viewportHeight,
-								   -1.0f - 2.0f * ( float )viewport.x1 / viewportWidth, -1.0f - 2.0f * ( float )viewport.y1 / viewportHeight
-								 };
-	SetFragmentParm( RENDERPARM_USER0, windowToNDC );
-
-	const idRenderMatrix& projection = viewDef->projectionRenderMatrix;
-	const float projectionX[4] = { 1.0f / projection[0][0], projection[0][2], projection[0][3], projection[3][2] };
-	const float projectionY[4] = { 1.0f / projection[1][1], projection[1][2], projection[1][3], projection[3][3] };
-	SetFragmentParm( RENDERPARM_USER1, projectionX );
-	SetFragmentParm( RENDERPARM_USER2, projectionY );
-
 	// the side of a point light is the world axis closest to the direction to the light
 	SetFragmentParm( RENDERPARM_MODELMATRIX_X, s_lightBatchViewToWorld[0] );
 	SetFragmentParm( RENDERPARM_MODELMATRIX_Y, s_lightBatchViewToWorld[1] );
@@ -7610,219 +6777,6 @@ void idRenderBackend::LightBatchBindSlot( int slot, int firstUnit, const lightBa
 	entry.projectionImage->Bind();
 }
 
-static int R_PopCount( uint32 v )
-{
-	int n = 0;
-	for( ; v != 0; v &= v - 1 )
-	{
-		n++;
-	}
-	return n;
-}
-
-static int R_LightBatchMortonKey( const idScreenRect& rect, int tileSize )
-{
-	const int cx = Max( 0, ( rect.x1 + rect.x2 ) / 2 / tileSize ) & 0xffff;
-	const int cy = Max( 0, ( rect.y1 + rect.y2 ) / 2 / tileSize ) & 0xffff;
-	int key = 0;
-	for( int bit = 0; bit < 15; bit++ )
-	{
-		key |= ( ( cx >> bit ) & 1 ) << ( bit * 2 );
-		key |= ( ( cy >> bit ) & 1 ) << ( bit * 2 + 1 );
-	}
-	return key;
-}
-
-/*
-==================
-idRenderBackend::DrawDeferredLightBatches
-
-The batchable lights of the G-buffer, see the top of this section. Must run while the view's
-G-buffer is in the render pass, before the lights are drawn one by one.
-==================
-*/
-void idRenderBackend::DrawDeferredLightBatches()
-{
-	if( !deferredView || !r_lightBatching.GetBool() || !renderProgManager.DeferredLightBatchShaderReady() )
-	{
-		return;
-	}
-
-	// the slots of the deferred lights, nearby lights next to each other
-	int entryOrder[MAX_LIGHT_BATCH_ENTRIES];
-	int entryKey[MAX_LIGHT_BATCH_ENTRIES];
-	int numEntries = 0;
-	const int tileSize = r_lightBatchTileSize.GetInteger();
-	for( int i = 0; i < numLightBatchEntries; i++ )
-	{
-		if( lightBatchEntries[i].deferred && !lightBatchEntries[i].rect.IsEmpty() )
-		{
-			entryKey[i] = R_LightBatchMortonKey( lightBatchEntries[i].rect, tileSize );
-			entryOrder[numEntries++] = i;
-		}
-	}
-	for( int i = 1; i < numEntries; i++ )
-	{
-		const int current = entryOrder[i];
-		int j = i - 1;
-		for( ; j >= 0 && entryKey[entryOrder[j]] > entryKey[current]; j-- )
-		{
-			entryOrder[j + 1] = entryOrder[j];
-		}
-		entryOrder[j + 1] = current;
-	}
-
-	// every light of the deferred shading the batches light, those without a slot light nothing
-	for( int i = 0; i < s_numLightBatchLights; i++ )
-	{
-		if( s_lightBatchLights[i].deferred && numLightBatchedDeferred < MAX_LIGHT_BATCH_ENTRIES )
-		{
-			lightBatchedDeferred[numLightBatchedDeferred++] = s_lightBatchLights[i].vLight;
-		}
-	}
-	if( numEntries == 0 )
-	{
-		return;
-	}
-
-	renderLog.OpenBlock( "RB_DeferredLightBatches" );
-
-	const int numBatches = ( numEntries + LIGHT_BATCH_DEFERRED_SLOTS - 1 ) / LIGHT_BATCH_DEFERRED_SLOTS;
-	const int slotsVec4s = LIGHT_BATCH_DEFERRED_SLOTS * LIGHT_BATCH_VEC4S;
-	const int alignment = Max( 16, glConfig.uniformBufferOffsetAlignment );
-	const int batchBytes = ( ( slotsVec4s * 16 + alignment - 1 ) / alignment ) * alignment;
-
-	// the slots of all batches in one upload
-	// heap objects: nothing here may run a destructor at exit()
-	static idList<float>* batchData = new idList<float>();
-	idList<float>& data = *batchData;
-	data.SetNum( numBatches * batchBytes / ( int )sizeof( float ) );
-	memset( data.Ptr(), 0, data.Num() * sizeof( float ) );
-	for( int e = 0; e < numEntries; e++ )
-	{
-		const int batch = e / LIGHT_BATCH_DEFERRED_SLOTS;
-		const int slot = e % LIGHT_BATCH_DEFERRED_SLOTS;
-		memcpy( &data[batch * batchBytes / sizeof( float ) + slot * LIGHT_BATCH_VEC4S * 4], lightBatchEntries[entryOrder[e]].data, sizeof( lightBatchEntries[0].data ) );
-	}
-	unsigned int buffer = 0;
-	int bufferOffset = 0;
-	if( !UploadLightBatchData( data.Ptr(), data.Num() / 4, buffer, bufferOffset ) )
-	{
-		numLightBatchedDeferred = 0;
-		renderLog.CloseBlock();
-		return;
-	}
-
-	// the tiles of the view
-	const idScreenRect& viewport = viewDef->viewport;
-	const int viewportWidth = viewport.x2 + 1 - viewport.x1;
-	const int viewportHeight = viewport.y2 + 1 - viewport.y1;
-	const int tilesX = ( viewportWidth + tileSize - 1 ) / tileSize;
-	const int tilesY = ( viewportHeight + tileSize - 1 ) / tileSize;
-	static idList<byte>* tileMaskList = new idList<byte>();
-	idList<byte>& tileMasks = *tileMaskList;
-	tileMasks.SetNum( tilesX * tilesY );
-	static idList<gpuInstanceData_t>* instanceList = new idList<gpuInstanceData_t>();
-	idList<gpuInstanceData_t>& instances = *instanceList;
-
-	// the whole view, the tiles bound what is drawn
-	GL_Scissor( viewport.x1, viewport.y1, viewportWidth, viewportHeight );
-	currentScissor.x1 = 0;
-	currentScissor.y1 = 0;
-	currentScissor.x2 = viewportWidth - 1;
-	currentScissor.y2 = viewportHeight - 1;
-
-	// replaces the scene color with what the program adds to the fetched one, no depth test: the tiles cover the lights
-	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS | GLS_CULL_TWOSIDED | GLS_STENCIL_FUNC_ALWAYS );
-	renderProgManager.BindShader_DeferredLightBatch();
-	LightBatchSetGlobals();
-	LightBatchBindShadowImages( 0, 1, 2 );
-
-	for( int batch = 0; batch < numBatches; batch++ )
-	{
-		const int first = batch * LIGHT_BATCH_DEFERRED_SLOTS;
-		const int numSlots = Min( LIGHT_BATCH_DEFERRED_SLOTS, numEntries - first );
-
-		// the mask of every tile
-		memset( tileMasks.Ptr(), 0, tileMasks.Num() );
-		for( int slot = 0; slot < numSlots; slot++ )
-		{
-			const idScreenRect& rect = lightBatchEntries[entryOrder[first + slot]].rect;
-			const int tx0 = idMath::ClampInt( 0, tilesX - 1, rect.x1 / tileSize );
-			const int tx1 = idMath::ClampInt( 0, tilesX - 1, rect.x2 / tileSize );
-			const int ty0 = idMath::ClampInt( 0, tilesY - 1, rect.y1 / tileSize );
-			const int ty1 = idMath::ClampInt( 0, tilesY - 1, rect.y2 / tileSize );
-			for( int ty = ty0; ty <= ty1; ty++ )
-			{
-				for( int tx = tx0; tx <= tx1; tx++ )
-				{
-					tileMasks[ty * tilesX + tx] |= ( byte )( 1 << slot );
-				}
-			}
-		}
-
-		// runs of tiles of a row with the same mask are one quad
-		instances.SetNum( 0 );
-		for( int ty = 0; ty < tilesY; ty++ )
-		{
-			for( int tx = 0; tx < tilesX; )
-			{
-				const byte mask = tileMasks[ty * tilesX + tx];
-				if( mask == 0 )
-				{
-					tx++;
-					continue;
-				}
-				int end = tx + 1;
-				while( end < tilesX && tileMasks[ty * tilesX + end] == mask )
-				{
-					end++;
-				}
-
-				const int lightsInTile = R_PopCount( mask );
-				pc.c_lightTiles += end - tx;
-				pc.c_lightTileSlots += lightsInTile * ( end - tx );
-				pc.c_lightTileMax = Max( pc.c_lightTileMax, lightsInTile );
-
-				gpuInstanceData_t instance;
-				memset( &instance, 0, sizeof( instance ) );
-				instance.mvp[0] = ( float )( tx * tileSize ) / viewportWidth * 2.0f - 1.0f;
-				instance.mvp[1] = ( float )( ty * tileSize ) / viewportHeight * 2.0f - 1.0f;
-				instance.mvp[2] = ( float )Min( end * tileSize, viewportWidth ) / viewportWidth * 2.0f - 1.0f;
-				instance.mvp[3] = ( float )Min( ( ty + 1 ) * tileSize, viewportHeight ) / viewportHeight * 2.0f - 1.0f;
-				instance.mvp[4] = ( float )mask;
-				instances.Append( instance );
-				tx = end;
-			}
-		}
-		if( instances.Num() == 0 )
-		{
-			continue;
-		}
-		if( instances.Num() == 1 )
-		{
-			// the instanced path needs two, the second covers nothing and lights nothing
-			gpuInstanceData_t empty;
-			memset( &empty, 0, sizeof( empty ) );
-			instances.Append( empty );
-		}
-
-		glBindBufferRange( GL_UNIFORM_BUFFER, 1, buffer, bufferOffset + batch * batchBytes, slotsVec4s * 16 );
-		for( int slot = 0; slot < numSlots; slot++ )
-		{
-			LightBatchBindSlot( slot, 3, lightBatchEntries[entryOrder[first + slot]] );
-		}
-
-		DrawElementsWithCounters( &unitSquareSurface, instances.Ptr(), instances.Num() );
-		pc.c_lightBatchDraws++;
-		pc.c_lightBatchEntries += numSlots;
-	}
-
-	GL_SelectTexture( 0 );
-	renderProgManager.Unbind();
-	renderLog.CloseBlock();
-}
-
 /*
 ==================
 idRenderBackend::CollectSurfaceInteractions
@@ -7876,7 +6830,7 @@ int idRenderBackend::CollectSurfaceInteractions( const drawSurf_t* surf, bool am
 	auto finish = [&]()
 	{
 		drawInteraction_t finished = din;
-		if( R_DeferredFinishInteraction( &finished ) )
+		if( R_FinishSurfaceInteraction( &finished ) )
 		{
 			if( numInteractions < maxInteractions )
 			{
@@ -7940,17 +6894,69 @@ int idRenderBackend::CollectSurfaceInteractions( const drawSurf_t* surf, bool am
 	return numInteractions;
 }
 
+// a triangle of a merged world draw, turned so its smallest index is first: the same triangle
+// of two lights' light tris compares equal, the winding stays
+struct forwardTri_t
+{
+	uint32	v[3];
+};
+
+static int R_CompareForwardTris( const void* a, const void* b )
+{
+	const forwardTri_t* ta = ( const forwardTri_t* )a;
+	const forwardTri_t* tb = ( const forwardTri_t* )b;
+	for( int i = 0; i < 3; i++ )
+	{
+		if( ta->v[i] != tb->v[i] )
+		{
+			return ( ta->v[i] < tb->v[i] ) ? -1 : 1;
+		}
+	}
+	return 0;
+}
+
+static void R_AppendForwardTris( idList<forwardTri_t>& tris, const drawSurf_t* surf )
+{
+	const uint32 baseVertex = ( uint32 )( ( ( surf->ambientCache >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK ) / sizeof( idDrawVert ) );
+	const triIndex_t* in = surf->staticIndexes;
+	for( int j = 0; j + 2 < surf->numIndexes; j += 3 )
+	{
+		const uint32 a = baseVertex + in[j + 0];
+		const uint32 b = baseVertex + in[j + 1];
+		const uint32 c = baseVertex + in[j + 2];
+		forwardTri_t& tri = tris.Alloc();
+		if( a <= b && a <= c )
+		{
+			tri.v[0] = a;
+			tri.v[1] = b;
+			tri.v[2] = c;
+		}
+		else if( b <= a && b <= c )
+		{
+			tri.v[0] = b;
+			tri.v[1] = c;
+			tri.v[2] = a;
+		}
+		else
+		{
+			tri.v[0] = c;
+			tri.v[1] = a;
+			tri.v[2] = b;
+		}
+	}
+}
+
 /*
 ==================
 idRenderBackend::DrawForwardLightBatches
 
-The surfaces outside the G-buffer that several batchable lights reach, once per interaction for
-LIGHT_BATCH_FORWARD_SLOTS of their lights at a time, see the top of this section
+The surfaces that batchable lights reach, see the top of this section. Runs before the lights
+are drawn one by one, which skip what this lit (drawSurf_t::forwardBatched).
 ==================
 */
 void idRenderBackend::DrawForwardLightBatches()
 {
-	if( !r_lightBatching.GetBool() || !renderProgManager.ForwardLightBatchShadersReady() || s_numLightBatchLights < 1 || numLightBatchEntries < 2 )
+	if( !r_lightBatching.GetBool() || s_numLightBatchLights < 1 || numLightBatchEntries < 1 )
 	{
 		return;
 	}
@@ -7968,17 +6974,73 @@ void idRenderBackend::DrawForwardLightBatches()
 		const idMaterial*		material;
 		const drawSurf_t*		viewSurf;
 		int						firstPair;
+		int						numPairs;
 		int						numEntries;
+		int						firstChunk;		// its draws of slots follow each other
+		int						numChunks;
+		bool					world;			// drawn with the world surfaces of its material and slots
 	};
+	// the slots of one draw of a group
+	struct forwardChunk_t
+	{
+		int				group;
+		int				numSlots;
+		int				entries[LIGHT_BATCH_SLOTS];
+		int				pairs[LIGHT_BATCH_SLOTS];		// the pair of the slot's light, for its surface
+		bool			backFacesDark[LIGHT_BATCH_SLOTS];
+		bool			shadows;
+		idScreenRect	scissor;
+		int				bucket;			// world: forwardBucket_t
+		int				nextInBucket;
+		int				dataBlock;		// in the uniform buffer upload, -1 none
+	};
+	// world surfaces of one material with the same slots, one draw
+	struct forwardBucket_t
+	{
+		int				firstChunk;
+		int				lastChunk;
+		int				numChunks;
+		int				firstIndex;		// in the index upload
+		int				numIndexes;
+	};
+
 	// heap objects: nothing here may run a destructor at exit()
 	static idList<forwardPair_t>* pairList = new idList<forwardPair_t>();
 	static idList<forwardGroup_t>* groupList = new idList<forwardGroup_t>();
-	static idList<int>* groupHashList = new idList<int>();
+	static idList<forwardChunk_t>* chunkList = new idList<forwardChunk_t>();
+	static idList<forwardBucket_t>* bucketList = new idList<forwardBucket_t>();
+	static idList<int>* hashList = new idList<int>();
+	static idList<const drawSurf_t*>* viewSurfHashList = new idList<const drawSurf_t*>();
+	static idList<float>* dataList = new idList<float>();
+	static idList<uint32>* indexList = new idList<uint32>();
+	static idList<forwardTri_t>* triList = new idList<forwardTri_t>();
 	idList<forwardPair_t>& pairs = *pairList;
 	idList<forwardGroup_t>& groups = *groupList;
-	idList<int>& groupHash = *groupHashList;
+	idList<forwardChunk_t>& chunks = *chunkList;
+	idList<forwardBucket_t>& buckets = *bucketList;
+	idList<int>& groupHash = *hashList;
+	idList<const drawSurf_t*>& viewSurfHash = *viewSurfHashList;
+	idList<float>& data = *dataList;
+	idList<uint32>& indexes = *indexList;
+	idList<forwardTri_t>& tris = *triList;
+	static bool listsSized = false;
+	if( !listsSized )
+	{
+		pairs.SetGranularity( 1024 );
+		groups.SetGranularity( 1024 );
+		chunks.SetGranularity( 1024 );
+		buckets.SetGranularity( 256 );
+		data.SetGranularity( 16384 );
+		indexes.SetGranularity( 65536 );
+		tris.SetGranularity( 16384 );
+		listsSized = true;
+	}
 	pairs.SetNum( 0 );
 	groups.SetNum( 0 );
+	chunks.SetNum( 0 );
+	buckets.SetNum( 0 );
+	data.SetNum( 0 );
+	indexes.SetNum( 0 );
 
 	auto hashOf = []( const viewEntity_t * space, const void* geo, const idMaterial * material ) -> uint32
 	{
@@ -7986,10 +7048,10 @@ void idRenderBackend::DrawForwardLightBatches()
 		return ( uint32 )( h ^ ( h >> 15 ) ^ ( h >> 32 ) );
 	};
 
+	//-------------------------------------------------
 	// the surfaces of the view by model surface, to draw all of their triangles once
+	//-------------------------------------------------
 	const int hashSize = idMath::CeilPowerOfTwo( Max( 64, viewDef->numDrawSurfs * 2 ) );
-	static idList<const drawSurf_t*>* viewSurfHashList = new idList<const drawSurf_t*>();
-	idList<const drawSurf_t*>& viewSurfHash = *viewSurfHashList;
 	viewSurfHash.SetNum( hashSize );
 	memset( viewSurfHash.Ptr(), 0, hashSize * sizeof( const drawSurf_t* ) );
 	for( int i = 0; i < viewDef->numDrawSurfs; i++ )
@@ -8021,27 +7083,21 @@ void idRenderBackend::DrawForwardLightBatches()
 		return NULL;
 	};
 
+	//-------------------------------------------------
 	// the pairs of light and surface, grouped by model surface
+	//-------------------------------------------------
 	groupHash.SetNum( hashSize );
 	memset( groupHash.Ptr(), -1, hashSize * sizeof( int ) );
 	for( int li = 0; li < s_numLightBatchLights; li++ )
 	{
 		const lightBatchLight_t& light = s_lightBatchLights[li];
-		if( light.numEntries == 0 )
-		{
-			continue;
-		}
 		drawSurf_t* chains[2] = { light.vLight->localInteractions, light.vLight->globalInteractions };
 		for( int c = 0; c < 2; c++ )
 		{
 			for( drawSurf_t* surf = chains[c]; surf != NULL; surf = surf->nextOnLight )
 			{
-				// merged with the other areas of the material for this light, or lit from the G-buffer
+				// merged with the light's other world surfaces of the material: drawn with the group
 				if( surf->mergedGroup != 0 || surf->frontEndGeo == NULL || surf->material == NULL || surf->material->Coverage() == MC_TRANSLUCENT )
-				{
-					continue;
-				}
-				if( light.deferred && DeferredSurface( surf ) )
 				{
 					continue;
 				}
@@ -8070,7 +7126,11 @@ void idRenderBackend::DrawForwardLightBatches()
 					g.material = surf->material;
 					g.viewSurf = NULL;
 					g.firstPair = -1;
+					g.numPairs = 0;
 					g.numEntries = 0;
+					g.firstChunk = 0;
+					g.numChunks = 0;
+					g.world = false;
 					group = groups.Append( g );
 					groupHash[slot] = group;
 				}
@@ -8080,40 +7140,36 @@ void idRenderBackend::DrawForwardLightBatches()
 				pair.surf = surf;
 				pair.next = groups[group].firstPair;
 				groups[group].firstPair = pairs.Append( pair );
+				groups[group].numPairs++;
 				groups[group].numEntries += light.numEntries;
 			}
 		}
 	}
 
-	// the draws: a chunk is up to LIGHT_BATCH_FORWARD_SLOTS slots of one group
-	struct forwardChunk_t
-	{
-		int				group;
-		int				numSlots;
-		int				entries[LIGHT_BATCH_FORWARD_SLOTS];
-		idScreenRect	scissor;
-	};
-	static idList<forwardChunk_t>* chunkList = new idList<forwardChunk_t>();
-	idList<forwardChunk_t>& chunks = *chunkList;
-	chunks.SetNum( 0 );
-
-	const int slotsVec4s = LIGHT_BATCH_FORWARD_SLOTS * LIGHT_BATCH_VEC4S;
-	const int alignment = Max( 16, glConfig.uniformBufferOffsetAlignment );
-	const int chunkBytes = ( ( slotsVec4s * 16 + alignment - 1 ) / alignment ) * alignment;
-	static idList<float>* chunkData = new idList<float>();
-	idList<float>& data = *chunkData;
-	data.SetNum( 0 );
-
+	//-------------------------------------------------
+	// the draws of the groups: their lights by light, cut into LIGHT_BATCH_SLOTS slots
+	//-------------------------------------------------
+	bool lightUsed[MAX_LIGHT_BATCH_LIGHTS];
+	memset( lightUsed, 0, sizeof( lightUsed ) );
 	for( int gi = 0; gi < groups.Num(); gi++ )
 	{
 		forwardGroup_t& group = groups[gi];
-		if( group.numEntries < 2 )
+		group.viewSurf = findViewSurf( group.space, group.geo, group.material );
+		if( group.viewSurf == NULL || group.viewSurf->numIndexes <= 0 || group.numPairs > MAX_LIGHT_BATCH_LIGHTS )
 		{
-			// one light stage: its interaction draw is as good
 			continue;
 		}
-		group.viewSurf = findViewSurf( group.space, group.geo, group.material );
-		if( group.viewSurf == NULL || group.viewSurf->numIndexes <= 0 )
+
+		// the world surfaces with the triangles every light lit, the others whole
+		bool world = R_WorldMergeable( group.viewSurf );
+		for( int p = group.firstPair; p != -1 && world; p = pairs[p].next )
+		{
+			world = R_WorldMergeable( pairs[p].surf );
+		}
+
+		// one light stage on a model surface: its interaction draw is as good. A world surface is
+		// drawn with the others of its material and light anyway, WorldMergePass didn't merge them
+		if( group.numEntries < 2 && !world )
 		{
 			continue;
 		}
@@ -8124,6 +7180,22 @@ void idRenderBackend::DrawForwardLightBatches()
 		{
 			continue;
 		}
+
+		// a skinned model needs the skinned programs, the driver may not have them
+		if( group.viewSurf->jointCache != 0 )
+		{
+			bool shadowMapped = false;
+			for( int p = group.firstPair; p != -1 && !shadowMapped; p = pairs[p].next )
+			{
+				const lightBatchLight_t& light = s_lightBatchLights[pairs[p].light];
+				shadowMapped = lightBatchEntries[light.firstEntry].shadowMapped;
+			}
+			if( !renderProgManager.ForwardLightsShadersReady( false, true ) || ( shadowMapped && !renderProgManager.ForwardLightsShadersReady( true, true ) ) )
+			{
+				continue;
+			}
+		}
+
 		if( numInteractions == 0 )
 		{
 			// nothing to light, the interactions would find the same
@@ -8134,59 +7206,238 @@ void idRenderBackend::DrawForwardLightBatches()
 			continue;
 		}
 
-		forwardChunk_t chunk;
-		chunk.group = gi;
-		chunk.numSlots = 0;
-		chunk.scissor.Clear();
+		// by light, the same lights make the same slots on every surface
+		int sorted[MAX_LIGHT_BATCH_LIGHTS];
+		int numSorted = 0;
 		for( int p = group.firstPair; p != -1; p = pairs[p].next )
 		{
+			int j = numSorted++;
+			for( ; j > 0 && pairs[sorted[j - 1]].light > pairs[p].light; j-- )
+			{
+				sorted[j] = sorted[j - 1];
+			}
+			sorted[j] = p;
+		}
+
+		group.world = world;
+		group.firstChunk = chunks.Num();
+		forwardChunk_t chunk;
+		memset( &chunk, 0, sizeof( chunk ) );
+		chunk.group = gi;
+		chunk.scissor.Clear();
+		chunk.bucket = -1;
+		chunk.nextInBucket = -1;
+		chunk.dataBlock = -1;
+		for( int s = 0; s < numSorted; s++ )
+		{
+			const int p = sorted[s];
 			const lightBatchLight_t& light = s_lightBatchLights[pairs[p].light];
-			const bool keepBackFacesDark = !pairs[p].surf->lightBackFaces;
 			for( int e = 0; e < light.numEntries; e++ )
 			{
-				if( chunk.numSlots == LIGHT_BATCH_FORWARD_SLOTS )
+				if( chunk.numSlots == LIGHT_BATCH_SLOTS )
 				{
 					chunks.Append( chunk );
 					chunk.numSlots = 0;
+					chunk.shadows = false;
 					chunk.scissor.Clear();
 				}
 				const int entryIndex = light.firstEntry + e;
-				if( chunk.numSlots == 0 )
-				{
-					// a new chunk starts a new block of the upload
-					const int start = data.Num();
-					data.SetNum( start + chunkBytes / ( int )sizeof( float ) );
-					memset( &data[start], 0, chunkBytes );
-				}
-				const int base = ( chunks.Num() * chunkBytes ) / ( int )sizeof( float ) + chunk.numSlots * LIGHT_BATCH_VEC4S * 4;
-				memcpy( &data[base], lightBatchEntries[entryIndex].data, sizeof( lightBatchEntries[0].data ) );
-				data[base + 10 * 4 + 3] = keepBackFacesDark ? 1.0f : 0.0f;
-				chunk.entries[chunk.numSlots++] = entryIndex;
+				chunk.entries[chunk.numSlots] = entryIndex;
+				chunk.pairs[chunk.numSlots] = p;
+				chunk.backFacesDark[chunk.numSlots] = !pairs[p].surf->lightBackFaces;
+				chunk.shadows = chunk.shadows || lightBatchEntries[entryIndex].shadowMapped;
 				chunk.scissor.Union( lightBatchEntries[entryIndex].rect );
+				chunk.numSlots++;
 			}
 			// the multi light draws light the pair, its interactions are skipped
 			pairs[p].surf->forwardBatched = true;
+			lightUsed[pairs[p].light] = true;
 		}
 		if( chunk.numSlots > 0 )
 		{
 			chunks.Append( chunk );
 		}
-	}
-	if( chunks.Num() == 0 )
-	{
-		return;
+		group.numChunks = chunks.Num() - group.firstChunk;
 	}
 
-	unsigned int buffer = 0;
-	int bufferOffset = 0;
-	if( !UploadLightBatchData( data.Ptr(), data.Num() / 4, buffer, bufferOffset ) )
+	//-------------------------------------------------
+	// world surfaces of a material with the same slots: one draw
+	//-------------------------------------------------
+	auto sameSlots = []( const forwardChunk_t & a, const forwardChunk_t & b ) -> bool
 	{
-		// nothing drawn, the interactions light them all
-		for( int i = 0; i < pairs.Num(); i++ )
+		if( a.numSlots != b.numSlots )
 		{
-			pairs[i].surf->forwardBatched = false;
+			return false;
 		}
+		for( int s = 0; s < a.numSlots; s++ )
+		{
+			if( a.entries[s] != b.entries[s] || a.backFacesDark[s] != b.backFacesDark[s] )
+			{
+				return false;
+			}
+		}
+		return true;
+	};
+	const int bucketHashSize = idMath::CeilPowerOfTwo( Max( 64, chunks.Num() * 2 ) );
+	groupHash.SetNum( bucketHashSize );
+	memset( groupHash.Ptr(), -1, bucketHashSize * sizeof( int ) );
+	for( int ci = 0; ci < chunks.Num(); ci++ )
+	{
+		forwardChunk_t& chunk = chunks[ci];
+		const forwardGroup_t& group = groups[chunk.group];
+		if( !group.world )
+		{
+			continue;
+		}
+
+		uint32 h = ( uint32 )( ( uintptr_t )group.material >> 4 ) * 2654435761u;
+		for( int s = 0; s < chunk.numSlots; s++ )
+		{
+			h = ( h ^ ( uint32 )( chunk.entries[s] * 2 + ( chunk.backFacesDark[s] ? 1 : 0 ) ) ) * 16777619u;
+		}
+		uint32 slot = ( h ^ ( h >> 16 ) ) & ( bucketHashSize - 1 );
+		int bucket = -1;
+		while( groupHash[slot] != -1 )
+		{
+			const forwardBucket_t& b = buckets[groupHash[slot]];
+			const forwardChunk_t& first = chunks[b.firstChunk];
+			if( sameSlots( first, chunk ) && R_WorldMergeSameMaterial( groups[first.group].viewSurf, group.viewSurf ) )
+			{
+				bucket = groupHash[slot];
+				break;
+			}
+			slot = ( slot + 1 ) & ( bucketHashSize - 1 );
+		}
+		if( bucket == -1 )
+		{
+			forwardBucket_t b;
+			b.firstChunk = ci;
+			b.lastChunk = ci;
+			b.numChunks = 1;
+			b.firstIndex = 0;
+			b.numIndexes = 0;
+			bucket = buckets.Append( b );
+			groupHash[slot] = bucket;
+		}
+		else
+		{
+			chunks[buckets[bucket].lastChunk].nextInBucket = ci;
+			buckets[bucket].lastChunk = ci;
+			buckets[bucket].numChunks++;
+		}
+		chunk.bucket = bucket;
+	}
+
+	// the triangles of a bucket: what the lights of each surface lit, once
+	for( int bi = 0; bi < buckets.Num(); bi++ )
+	{
+		forwardBucket_t& bucket = buckets[bi];
+		bucket.firstIndex = indexes.Num();
+		for( int ci = bucket.firstChunk; ci != -1; ci = chunks[ci].nextInBucket )
+		{
+			const forwardChunk_t& chunk = chunks[ci];
+
+			// the lights of the chunk, a light of several stages has several slots
+			int lightPairs[LIGHT_BATCH_SLOTS];
+			int numLightPairs = 0;
+			for( int s = 0; s < chunk.numSlots; s++ )
+			{
+				bool known = false;
+				for( int k = 0; k < numLightPairs && !known; k++ )
+				{
+					known = ( lightPairs[k] == chunk.pairs[s] );
+				}
+				if( !known )
+				{
+					lightPairs[numLightPairs++] = chunk.pairs[s];
+				}
+			}
+
+			tris.SetNum( 0 );
+			for( int k = 0; k < numLightPairs; k++ )
+			{
+				R_AppendForwardTris( tris, pairs[lightPairs[k]].surf );
+			}
+			if( numLightPairs > 1 && tris.Num() > 1 )
+			{
+				qsort( tris.Ptr(), tris.Num(), sizeof( forwardTri_t ), R_CompareForwardTris );
+			}
+			for( int t = 0; t < tris.Num(); t++ )
+			{
+				if( t > 0 && numLightPairs > 1 && R_CompareForwardTris( &tris[t], &tris[t - 1] ) == 0 )
+				{
+					continue;
+				}
+				indexes.Append( tris[t].v[0] );
+				indexes.Append( tris[t].v[1] );
+				indexes.Append( tris[t].v[2] );
+			}
+		}
+		bucket.numIndexes = indexes.Num() - bucket.firstIndex;
+	}
+
+	//-------------------------------------------------
+	// the uploads: a block of slots per draw, the world indexes
+	//-------------------------------------------------
+	const int slotsVec4s = LIGHT_BATCH_SLOTS * LIGHT_BATCH_VEC4S;
+	const int alignment = Max( 16, glConfig.uniformBufferOffsetAlignment );
+	const int blockBytes = ( ( slotsVec4s * 16 + alignment - 1 ) / alignment ) * alignment;
+	const int blockFloats = blockBytes / ( int )sizeof( float );
+	int numBlocks = 0;
+	for( int ci = 0; ci < chunks.Num(); ci++ )
+	{
+		forwardChunk_t& chunk = chunks[ci];
+		// a world chunk is drawn by the first chunk of its bucket
+		if( chunk.bucket < 0 || buckets[chunk.bucket].firstChunk == ci )
+		{
+			chunk.dataBlock = numBlocks++;
+		}
+	}
+	if( numBlocks == 0 )
+	{
 		return;
+	}
+	data.SetNum( numBlocks * blockFloats );
+	memset( data.Ptr(), 0, numBlocks * blockBytes );
+	for( int ci = 0; ci < chunks.Num(); ci++ )
+	{
+		const forwardChunk_t& chunk = chunks[ci];
+		if( chunk.dataBlock < 0 )
+		{
+			continue;
+		}
+		for( int s = 0; s < chunk.numSlots; s++ )
+		{
+			float* slotData = &data[chunk.dataBlock * blockFloats + s * LIGHT_BATCH_VEC4S * 4];
+			memcpy( slotData, lightBatchEntries[chunk.entries[s]].data, sizeof( lightBatchEntries[0].data ) );
+			slotData[10 * 4 + 3] = chunk.backFacesDark[s] ? 1.0f : 0.0f;
+		}
+	}
+
+	unsigned int dataBuffer = 0;
+	int dataOffset = 0;
+	unsigned int indexBuffer = 0;
+	int indexOffset = 0;
+	const bool dataUploaded = UploadLightBatchData( data.Ptr(), data.Num() / 4, dataBuffer, dataOffset );
+	const bool indexesUploaded = ( indexes.Num() == 0 ) || UploadLightBatchIndexes( indexes.Ptr(), indexes.Num(), indexBuffer, indexOffset );
+	if( !dataUploaded || !indexesUploaded )
+	{
+		// what can't be drawn here the interactions light
+		for( int ci = 0; ci < chunks.Num(); ci++ )
+		{
+			if( !dataUploaded || chunks[ci].bucket >= 0 )
+			{
+				for( int s = 0; s < chunks[ci].numSlots; s++ )
+				{
+					pairs[chunks[ci].pairs[s]].surf->forwardBatched = false;
+				}
+				chunks[ci].dataBlock = -1;
+			}
+		}
+		if( !dataUploaded )
+		{
+			return;
+		}
 	}
 
 	renderLog.OpenBlock( "RB_ForwardLightBatches" );
@@ -8196,31 +7447,17 @@ void idRenderBackend::DrawForwardLightBatches()
 	currentSpace = NULL;
 	worldMergeSurf = NULL;
 	bool globalsSet = false;
-	int boundProgramSkinned = -1;
+	int boundProgram = -1;
+	int worldDraws = 0;
+	int modelDraws = 0;
 
-	for( int ci = 0; ci < chunks.Num(); )
+	auto bindProgram = [&]( bool skinned, bool shadows )
 	{
-		// the chunks of one group follow each other: one surface setup for them
-		const forwardGroup_t& group = groups[chunks[ci].group];
-		int chunkEnd = ci + 1;
-		while( chunkEnd < chunks.Num() && chunks[chunkEnd].group == chunks[ci].group )
+		const int program = ( skinned ? 1 : 0 ) | ( shadows ? 2 : 0 );
+		if( program != boundProgram )
 		{
-			chunkEnd++;
-		}
-
-		// the whole surface of the view, its own triangles, not a merged world group
-		drawSurf_t surf = *group.viewSurf;
-		surf.mergedGroup = 0;
-		surf.staticIndexes = NULL;
-
-		drawInteraction_t interactions[MAX_FORWARD_INTERACTIONS];
-		const int numInteractions = Min( CollectSurfaceInteractions( &surf, false, interactions, MAX_FORWARD_INTERACTIONS ), MAX_FORWARD_INTERACTIONS );
-
-		const bool skinned = ( surf.jointCache != 0 );
-		if( boundProgramSkinned != ( skinned ? 1 : 0 ) )
-		{
-			renderProgManager.BindShader_ForwardLightBatch( skinned );
-			boundProgramSkinned = skinned ? 1 : 0;
+			renderProgManager.BindShader_ForwardLights( skinned, shadows );
+			boundProgram = program;
 		}
 		if( !globalsSet )
 		{
@@ -8228,67 +7465,127 @@ void idRenderBackend::DrawForwardLightBatches()
 			LightBatchBindShadowImages( 3, 4, 5 );
 			globalsSet = true;
 		}
-
-		if( surf.space != currentSpace )
+	};
+	auto setSpace = [&]( const viewEntity_t* space )
+	{
+		if( space == currentSpace )
 		{
-			currentSpace = surf.space;
-			RB_SetMVP( surf.space->mvp );
-
-			idVec4 localViewOrigin( 1.0f );
-			R_GlobalPointToLocal( surf.space->modelMatrix, viewDef->renderView.vieworg, localViewOrigin.ToVec3() );
-			SetVertexParm( RENDERPARM_LOCALVIEWORIGIN, localViewOrigin.ToFloatPtr() );
-
-			// view space, like the G-buffer
-			float modelViewMatrixTranspose[16];
-			R_MatrixTranspose( surf.space->modelViewMatrix, modelViewMatrixTranspose );
-			SetVertexParms( RENDERPARM_MODELVIEWMATRIX_X, modelViewMatrixTranspose, 4 );
+			return;
 		}
+		currentSpace = space;
+		RB_SetMVP( space->mvp );
 
+		// view space, the slots are in view space
+		float modelViewMatrixTranspose[16];
+		R_MatrixTranspose( space->modelViewMatrix, modelViewMatrixTranspose );
+		SetVertexParms( RENDERPARM_MODELVIEWMATRIX_X, modelViewMatrixTranspose, 4 );
+	};
+	auto setInteraction = [&]( const drawInteraction_t& inter )
+	{
+		SetVertexParm( RENDERPARM_BUMPMATRIX_S, inter.bumpMatrix[0].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_BUMPMATRIX_T, inter.bumpMatrix[1].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_DIFFUSEMATRIX_S, inter.diffuseMatrix[0].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_DIFFUSEMATRIX_T, inter.diffuseMatrix[1].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_SPECULARMATRIX_S, inter.specularMatrix[0].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_SPECULARMATRIX_T, inter.specularMatrix[1].ToFloatPtr() );
+		RB_SetVertexColorParms( inter.vertexColor );
+		SetFragmentParm( RENDERPARM_DIFFUSEMODIFIER, inter.diffuseColor.ToFloatPtr() );
+		SetFragmentParm( RENDERPARM_SPECULARMODIFIER, inter.specularColor.ToFloatPtr() );
+
+		GL_SelectTexture( INTERACTION_TEXUNIT_BUMP );
+		inter.bumpImage->Bind();
+		GL_SelectTexture( INTERACTION_TEXUNIT_SPECULARMIX );
+		inter.specularImage->Bind();
+		GL_SelectTexture( INTERACTION_TEXUNIT_BASECOLOR );
+		inter.diffuseImage->Bind();
+	};
+	auto setSlots = [&]( const forwardChunk_t & chunk )
+	{
+		GL_Scissor( viewDef->viewport.x1 + chunk.scissor.x1, viewDef->viewport.y1 + chunk.scissor.y1,
+					chunk.scissor.x2 + 1 - chunk.scissor.x1, chunk.scissor.y2 + 1 - chunk.scissor.y1 );
+		currentScissor = chunk.scissor;
+
+		glBindBufferRange( GL_UNIFORM_BUFFER, 1, dataBuffer, dataOffset + chunk.dataBlock * blockBytes, slotsVec4s * 16 );
+		for( int slot = 0; slot < chunk.numSlots; slot++ )
+		{
+			LightBatchBindSlot( slot, 6, lightBatchEntries[chunk.entries[slot]] );
+		}
+	};
+
+	drawInteraction_t interactions[MAX_FORWARD_INTERACTIONS];
+
+	// the world: a draw per bucket and interaction of its material
+	for( int bi = 0; bi < buckets.Num(); bi++ )
+	{
+		const forwardBucket_t& bucket = buckets[bi];
+		const forwardChunk_t& chunk = chunks[bucket.firstChunk];
+		if( chunk.dataBlock < 0 || bucket.numIndexes <= 0 || chunk.scissor.IsEmpty() )
+		{
+			continue;
+		}
+		const drawSurf_t* viewSurf = groups[chunk.group].viewSurf;
+		const int numInteractions = Min( CollectSurfaceInteractions( viewSurf, false, interactions, MAX_FORWARD_INTERACTIONS ), MAX_FORWARD_INTERACTIONS );
+
+		bindProgram( false, chunk.shadows );
+		setSpace( viewSurf->space );
+		setSlots( chunk );
 		for( int ii = 0; ii < numInteractions; ii++ )
 		{
-			const drawInteraction_t& inter = interactions[ii];
+			setInteraction( interactions[ii] );
+			DrawStaticIndexRange( indexBuffer, indexOffset + bucket.firstIndex, bucket.numIndexes );
+			worldDraws++;
+		}
+		pc.c_forwardBatchPairs += chunk.numSlots * bucket.numChunks;
+	}
 
-			SetVertexParm( RENDERPARM_BUMPMATRIX_S, inter.bumpMatrix[0].ToFloatPtr() );
-			SetVertexParm( RENDERPARM_BUMPMATRIX_T, inter.bumpMatrix[1].ToFloatPtr() );
-			SetVertexParm( RENDERPARM_DIFFUSEMATRIX_S, inter.diffuseMatrix[0].ToFloatPtr() );
-			SetVertexParm( RENDERPARM_DIFFUSEMATRIX_T, inter.diffuseMatrix[1].ToFloatPtr() );
-			SetVertexParm( RENDERPARM_SPECULARMATRIX_S, inter.specularMatrix[0].ToFloatPtr() );
-			SetVertexParm( RENDERPARM_SPECULARMATRIX_T, inter.specularMatrix[1].ToFloatPtr() );
-			RB_SetVertexColorParms( inter.vertexColor );
-			SetFragmentParm( RENDERPARM_DIFFUSEMODIFIER, inter.diffuseColor.ToFloatPtr() );
-			SetFragmentParm( RENDERPARM_SPECULARMODIFIER, inter.specularColor.ToFloatPtr() );
-
-			GL_SelectTexture( INTERACTION_TEXUNIT_BUMP );
-			inter.bumpImage->Bind();
-			GL_SelectTexture( INTERACTION_TEXUNIT_SPECULARMIX );
-			inter.specularImage->Bind();
-			GL_SelectTexture( INTERACTION_TEXUNIT_BASECOLOR );
-			inter.diffuseImage->Bind();
-
-			for( int c = ci; c < chunkEnd; c++ )
-			{
-				const forwardChunk_t& chunk = chunks[c];
-				if( chunk.scissor.IsEmpty() )
-				{
-					continue;
-				}
-				GL_Scissor( viewDef->viewport.x1 + chunk.scissor.x1, viewDef->viewport.y1 + chunk.scissor.y1,
-							chunk.scissor.x2 + 1 - chunk.scissor.x1, chunk.scissor.y2 + 1 - chunk.scissor.y1 );
-				currentScissor = chunk.scissor;
-
-				glBindBufferRange( GL_UNIFORM_BUFFER, 1, buffer, bufferOffset + c * chunkBytes, slotsVec4s * 16 );
-				for( int slot = 0; slot < chunk.numSlots; slot++ )
-				{
-					LightBatchBindSlot( slot, 6, lightBatchEntries[chunk.entries[slot]] );
-				}
-
-				DrawElementsWithCounters( &surf );
-				pc.c_forwardBatchDraws++;
-				pc.c_forwardBatchPairs += chunk.numSlots;
-			}
+	// the model surfaces: the whole surface of the view, a draw per interaction and chunk
+	for( int gi = 0; gi < groups.Num(); gi++ )
+	{
+		const forwardGroup_t& group = groups[gi];
+		if( group.world || group.numChunks == 0 )
+		{
+			continue;
 		}
 
-		ci = chunkEnd;
+		// its own triangles, not a merged world group
+		drawSurf_t surf = *group.viewSurf;
+		surf.mergedGroup = 0;
+		surf.staticIndexes = NULL;
+
+		const int numInteractions = Min( CollectSurfaceInteractions( &surf, false, interactions, MAX_FORWARD_INTERACTIONS ), MAX_FORWARD_INTERACTIONS );
+		const bool skinned = ( surf.jointCache != 0 );
+
+		for( int ci = group.firstChunk; ci < group.firstChunk + group.numChunks; ci++ )
+		{
+			const forwardChunk_t& chunk = chunks[ci];
+			if( chunk.dataBlock < 0 || chunk.scissor.IsEmpty() )
+			{
+				continue;
+			}
+			bindProgram( skinned, chunk.shadows );
+			setSpace( surf.space );
+			setSlots( chunk );
+			for( int ii = 0; ii < numInteractions; ii++ )
+			{
+				setInteraction( interactions[ii] );
+				DrawElementsWithCounters( &surf );
+				modelDraws++;
+			}
+			pc.c_forwardBatchPairs += chunk.numSlots;
+		}
+	}
+
+	pc.c_forwardWorldDraws += worldDraws;
+	pc.c_forwardBatchDraws += modelDraws;
+	for( int li = 0; li < s_numLightBatchLights; li++ )
+	{
+		pc.c_batchedLights += lightUsed[li] ? 1 : 0;
+	}
+
+	if( r_showLightBatches.GetBool() )
+	{
+		idLib::Printf( "multi light interactions: %d lights, %d light stages, %d surfaces; %d world draws for %d materials, %d model draws\n",
+					   s_numLightBatchLights, numLightBatchEntries, groups.Num(), worldDraws, buckets.Num(), modelDraws );
 	}
 
 	GL_SelectTexture( 0 );
@@ -8330,16 +7627,10 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 	drawCategory = DRAW_CATEGORY_LIGHTING;
 #endif
 #if defined(ANDROID) && !defined(USE_VULKAN)
-	// multi light shading: the lights that don't need the stencil buffer several at a time, from
-	// the G-buffer and for the surfaces outside of it; what they lit is skipped below
+	// multi light interactions: the lights that don't need the stencil buffer light a surface
+	// several at once, what they lit is skipped below
 	LightBatchBeginView( _viewDef );
-	DrawDeferredLightBatches();
 	DrawForwardLightBatches();
-	if( r_showLightBatches.GetBool() )
-	{
-		idLib::Printf( "light batches: %d lights, %d light stages, %d deferred lights batched; %d tile draws, %d forward draws so far this frame\n",
-					   s_numLightBatchLights, numLightBatchEntries, numLightBatchedDeferred, pc.c_lightBatchDraws, pc.c_forwardBatchDraws );
-	}
 #endif
 	
 	//
@@ -8366,30 +7657,7 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 		renderLog.OpenBlock( lightShader->GetName() );
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
-		// TBDR: the surfaces in the G-buffer get the light from its volume in one draw,
-		// the others from their interactions as before
-		const bool deferredLight = DeferredLight( vLight );
-		if( deferredView )
-		{
-			if( deferredLight )
-			{
-				deferredLightsDeferred++;
-				pc.c_deferredLights++;
-			}
-			else
-			{
-				deferredLightsForward++;
-				pc.c_forwardLights++;
-			}
-		}
 		pc.c_visibleLights++;
-
-		// DrawDeferredLightBatches lit its G-buffer surfaces already
-		bool deferredLightBatched = false;
-		for( int i = 0; i < numLightBatchedDeferred && !deferredLightBatched; i++ )
-		{
-			deferredLightBatched = ( lightBatchedDeferred[i] == vLight );
-		}
 #endif
 
 		// set the depth bounds for the whole light
@@ -8460,24 +7728,17 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 				ResetViewportAndScissorToDefaultCamera( _viewDef );
 			}
 
-#if defined(ANDROID) && !defined(USE_VULKAN)
-			// local and global interactions get the same shadow maps
-			const bool skipDeferredSurfaces = deferredLight && ( deferredLightBatched || DrawDeferredLight( vLight, false ) );
-#else
-			const bool skipDeferredSurfaces = false;
-#endif
-
 			if( vLight->localInteractions != NULL )
 			{
 				renderLog.OpenBlock( "Local Light Interactions" );
-				RenderInteractions( vLight->localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds, skipDeferredSurfaces );
+				RenderInteractions( vLight->localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds );
 				renderLog.CloseBlock();
 			}
 
 			if( vLight->globalInteractions != NULL )
 			{
 				renderLog.OpenBlock( "Global Light Interactions" );
-				RenderInteractions( vLight->globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds, skipDeferredSurfaces );
+				RenderInteractions( vLight->globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds );
 				renderLog.CloseBlock();
 			}
 		}
@@ -8527,18 +7788,10 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 				renderLog.CloseBlock();
 			}
 
-#if defined(ANDROID) && !defined(USE_VULKAN)
-			// DeferredLight keeps the lights with local shadows on the interactions:
-			// the global shadows are all the stencil has; a batched light has no stencil test
-			const bool skipDeferredSurfaces = deferredLight && ( deferredLightBatched || DrawDeferredLight( vLight, performStencilTest ) );
-#else
-			const bool skipDeferredSurfaces = false;
-#endif
-
 			if( vLight->localInteractions != NULL )
 			{
 				renderLog.OpenBlock( "Local Light Interactions" );
-				RenderInteractions( vLight->localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds, skipDeferredSurfaces );
+				RenderInteractions( vLight->localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds );
 				renderLog.CloseBlock();
 			}
 
@@ -8552,7 +7805,7 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 			if( vLight->globalInteractions != NULL )
 			{
 				renderLog.OpenBlock( "Global Light Interactions" );
-				RenderInteractions( vLight->globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds, skipDeferredSurfaces );
+				RenderInteractions( vLight->globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds );
 				renderLog.CloseBlock();
 			}
 		}
@@ -10668,9 +9921,9 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	Framebuffer::BeginFrame();
 
 #if defined(ANDROID) && !defined( USE_VULKAN )
-	// the scene color and depth of HDR and of the deferred shading get their storage when one of them
-	// is on, before anything binds hdrFBO (the stereo path too)
-	if( r_useHDR.GetBool() || r_useDeferredShading.GetBool() )
+	// the scene color and depth of HDR get their storage when it is on, before anything binds hdrFBO
+	// (the stereo path too)
+	if( r_useHDR.GetBool() )
 	{
 		Framebuffer::EnsureSceneTargets();
 	}
@@ -10687,11 +9940,6 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	R_ResetWorldMerge();
 	worldMergeSurf = NULL;
 	worldMergeIndexBuffer = 0;
-
-	// DeferredBeginFrame decides, the stereo path draws without it
-	deferredFrame = false;
-	deferredView = false;
-	backBufferDrawnThisFrame = false;
 #endif
 
 	if( cmds->commandId == RC_NOP && !cmds->next )
@@ -10721,9 +9969,6 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 #endif
 
 #if defined(ANDROID) && !defined( USE_VULKAN )
-	// whether the 3D views of the frame get the G-buffer of the on-tile deferred shading
-	DeferredBeginFrame( cmds );
-
 	// the merged world surfaces of all views, the shadow atlas draws merged casters already
 	WorldMergePass( cmds );
 #endif
@@ -10858,17 +10103,8 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 	bool useHDR = r_useHDR.GetBool() && !_viewDef->is2Dgui;
 
 #if !defined(USE_VULKAN)
-	// the HDR target, or without HDR the scene target of the deferred shading
+	// the HDR target, without HDR the back buffer
 	const bool useSceneFBO = UseSceneFramebuffer() && !_viewDef->is2Dgui;
-
-#if defined(ANDROID)
-	// the G-buffer and the lights from it, see DrawDeferredLight
-	deferredView = deferredFrame && useSceneFBO && _viewDef->viewEntitys != NULL && !_viewDef->isXraySubview && !r_skipInteractions.GetBool();
-	if( !useSceneFBO )
-	{
-		backBufferDrawnThisFrame = true;
-	}
-#endif
 
 	// Bind the target first and clear the whole of it in one go: a tile based GPU starts
 	// the render pass from the clear values then, instead of reading the target back in.
@@ -10893,13 +10129,6 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 	// No view uses the depth or stencil of another view, so the whole target can be cleared.
 	GL_Scissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 	GL_Clear( clearColor, true, true, STENCIL_SHADOW_TEST_VALUE, 0.0f, 0.0f, 0.0f, 1.0f, false );
-#if defined(ANDROID)
-	// every view of the scene target clears the G-buffer, it is never read back into the tiles
-	if( useSceneFBO )
-	{
-		DeferredClearGBuffer();
-	}
-#endif
 	ResetViewportAndScissorToDefaultCamera( _viewDef );
 #else
 	// Clear the depth buffer and clear the stencil to 128 for stencil shadows as well as gui masking
@@ -10968,39 +10197,15 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 	//-------------------------------------------------
 	AmbientPass( drawSurfs, numDrawSurfs, true );
 
-#if defined(ANDROID) && !defined(USE_VULKAN)
-	if( deferredView )
-	{
-		//-------------------------------------------------
-		// TBDR: the G-buffer in the tile memory, and the ambient of its surfaces
-		//-------------------------------------------------
-		DeferredGBufferPass( drawSurfs, numDrawSurfs );
-
-		// the surfaces of more than one interaction keep the old ambient and interactions
-		AmbientPass( drawSurfs, numDrawSurfs, false, true );
-	}
-	else
-#endif
-	{
-		//-------------------------------------------------
-		// fill the depth buffer and the color buffer with precomputed Q3A style lighting
-		//-------------------------------------------------
-		AmbientPass( drawSurfs, numDrawSurfs, false );
-	}
+	//-------------------------------------------------
+	// fill the depth buffer and the color buffer with precomputed Q3A style lighting
+	//-------------------------------------------------
+	AmbientPass( drawSurfs, numDrawSurfs, false );
 
 	//-------------------------------------------------
 	// main light renderer
 	//-------------------------------------------------
 	DrawInteractions( _viewDef );
-
-#if defined(ANDROID) && !defined(USE_VULKAN)
-	// nothing reads the G-buffer after the lights, a render pass end must not write it to memory
-	if( useSceneFBO )
-	{
-		DeferredInvalidateGBuffer();
-	}
-	deferredView = false;
-#endif
 
 	//-------------------------------------------------
 	// capture the depth for the motion blur before rendering any post process surfaces that may contribute to the depth
@@ -11108,20 +10313,6 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
     DBG_RenderDebugTools( drawSurfs, numDrawSurfs );
 #endif
 #if !defined(USE_VULKAN)
-#if defined(ANDROID)
-	// without HDR the scene target of the deferred shading is copied to the back buffer
-	if( useSceneFBO && !useHDR )
-	{
-		// Nothing reads the depth and stencil of the view once it is drawn,
-		// don't let the end of the render pass write them out to memory.
-		globalFramebuffers.hdrFBO->Bind();
-		const GLenum sceneDepthStencilAttachment[] = { GL_DEPTH_STENCIL_ATTACHMENT };
-		globalFramebuffers.hdrFBO->InvalidateAttachments( sceneDepthStencilAttachment, 1 );
-
-		DeferredResolve( _viewDef );
-	}
-#endif
-
 	// RB: convert back from HDR to LDR range
 	if( useHDR && Framebuffer::EnsureExposureTargets() )
 	{

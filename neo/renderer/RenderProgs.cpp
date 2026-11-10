@@ -239,23 +239,12 @@ void idRenderProgManager::Init()
 		{ BUILTIN_CLASSIC, "classic.vfp", "_SRGB", IDBIT( USE_SRGB ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT }, //GK: Classic DOOM Screen Shader. Keep it with sRGB in order to keep accurate colors on both HDR or not
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
-		// TBDR: on-tile deferred shading, the sources are in the engine (DeferredShaders_GL.h), not in renderprogs/
-		{ BUILTIN_DEFERRED_GBUFFER, "_deferred_gbuffer", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		{ BUILTIN_DEFERRED_GBUFFER_SKINNED, "_deferred_gbuffer", "_skinned", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		{ BUILTIN_DEFERRED_GBUFFER_INSTANCED, "_deferred_gbuffer", "_instanced", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		{ BUILTIN_DEFERRED_LIGHT, "_deferred_light", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		{ BUILTIN_DEFERRED_LIGHT_AMBIENT, "_deferred_light", "_ambient", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		{ BUILTIN_DEFERRED_LIGHT_SPOT, "_deferred_light", "_spot", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		{ BUILTIN_DEFERRED_LIGHT_POINT, "_deferred_light", "_point", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		{ BUILTIN_DEFERRED_LIGHT_PARALLEL, "_deferred_light", "_parallel", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		{ BUILTIN_DEFERRED_RESOLVE, "_deferred_screen", "_resolve", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		{ BUILTIN_DEFERRED_TEST_WRITE, "_deferred_screen", "_testwrite", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		{ BUILTIN_DEFERRED_TEST_FETCH, "_deferred_screen", "_testfetch", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		// multi light shading and the shadow cache, engine GLSL ES as well
-		{ BUILTIN_DEFERRED_LIGHT_BATCH, "_deferred_lightbatch", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		{ BUILTIN_FORWARD_LIGHT_BATCH, "_deferred_forward", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		{ BUILTIN_FORWARD_LIGHT_BATCH_SKINNED, "_deferred_forward", "_skinned", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
-		{ BUILTIN_SHADOW_CACHE_COPY, "_deferred_shadowcopy", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		// multi light interactions and the shadow cache, GLSL ES of the engine (EngineShaders_GL.h), not renderprogs/
+		{ BUILTIN_FORWARD_LIGHTS, "_engine_forward", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_FORWARD_LIGHTS_SKINNED, "_engine_forward", "_skinned", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_FORWARD_LIGHTS_SHADOWS, "_engine_forward", "_shadows", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_FORWARD_LIGHTS_SHADOWS_SKINNED, "_engine_forward", "_shadows_skinned", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_SHADOW_CACHE_COPY, "_engine_shadowcopy", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 #endif
 	};
 	int numBuiltins = sizeof( builtins ) / sizeof( builtins[0] );
@@ -329,8 +318,8 @@ void idRenderProgManager::Init()
 		renderProgs[builtinShaders[BUILTIN_INTERACTION_SHADOW_MAPPING_PARALLEL_SKINNED]].usesJoints = true;
 		// RB end
 #if defined(ANDROID) && !defined(USE_VULKAN)
-		renderProgs[builtinShaders[BUILTIN_DEFERRED_GBUFFER_SKINNED]].usesJoints = true;
-		renderProgs[builtinShaders[BUILTIN_FORWARD_LIGHT_BATCH_SKINNED]].usesJoints = true;
+		renderProgs[builtinShaders[BUILTIN_FORWARD_LIGHTS_SKINNED]].usesJoints = true;
+		renderProgs[builtinShaders[BUILTIN_FORWARD_LIGHTS_SHADOWS_SKINNED]].usesJoints = true;
 #endif
 	}
 	

@@ -34,17 +34,9 @@ If you have questions concerning this license or the applicable additional terms
 #include "../RenderCommon.h"
 
 #if defined(ANDROID)
-#include "DeferredShaders_GL.h"
+#include "EngineShaders_GL.h"
 
 extern bool isGLES32Version();
-
-// the on-tile deferred shading needs the framebuffer fetch of four color attachments
-static bool R_DeferredShadingDriverSupport()
-{
-	GLint maxDrawBuffers = 0;
-	glGetIntegerv( GL_MAX_DRAW_BUFFERS, &maxDrawBuffers );
-	return isGLES32Version() && GLAD_GL_EXT_shader_framebuffer_fetch && maxDrawBuffers >= 4 && glConfig.maxColorAttachments >= 4;
-}
 #endif
 
 idCVar r_displayGLSLCompilerMessages( "r_displayGLSLCompilerMessages", "1", CVAR_BOOL | CVAR_ARCHIVE, "Show info messages the GPU driver outputs when compiling the shaders" );
@@ -128,22 +120,16 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	const GLenum glTarget = ( shader.stage == SHADER_STAGE_FRAGMENT ) ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER;
 
 #if defined(ANDROID)
-	if( R_IsDeferredShader( shader.name.c_str() ) )
+	if( R_IsEngineShader( shader.name.c_str() ) )
 	{
-		// the programs of the on-tile deferred shading and of the multi light shading are GLSL ES 3.20
-		// of the engine; the ones reading the framebuffer are never used without the framebuffer fetch
+		// the multi light interactions and the shadow cache copy are GLSL ES 3.20 of the engine
 		if( !isGLES32Version() )
 		{
 			return;
 		}
 		inFile = shader.name + shader.nameOutSuffix;
 		outFileGLSL = inFile;
-		bool usesFetch = false;
-		if( !R_DeferredShaderSource( shader.name.c_str(), shader.nameOutSuffix.c_str(), shader.stage, programGLSL, programUniforms, usesFetch ) )
-		{
-			return;
-		}
-		if( usesFetch && !R_DeferredShadingDriverSupport() )
+		if( !R_EngineShaderSource( shader.name.c_str(), shader.nameOutSuffix.c_str(), shader.stage, programGLSL, programUniforms ) )
 		{
 			return;
 		}
@@ -456,8 +442,8 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
     shader_t& fShader = shaders[fragmentShaderIndex];
 
 #if defined(ANDROID)
-    // the programs of the deferred shading may fail on a driver, the views are lit the old way then
-    const bool optionalProgram = R_IsDeferredShader( prog.name.c_str() );
+    // the engine programs may fail on a driver, the views are lit light by light then
+    const bool optionalProgram = R_IsEngineShader( prog.name.c_str() );
     if( optionalProgram && ( vShader.progId == INVALID_PROGID || fShader.progId == INVALID_PROGID ) )
     {
         return;
@@ -607,7 +593,7 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
         glDeleteProgram( program );
         if( optionalProgram )
         {
-            idLib::Printf( "GLSL program %s didn't link, on-tile deferred shading off\n", prog.name.c_str() );
+            idLib::Printf( "GLSL program %s didn't link, not used\n", prog.name.c_str() );
             return;
         }
         idLib::Error( "While linking GLSL program %d with vertexShader %s and fragmentShader %s\n",
@@ -777,7 +763,7 @@ void idRenderProgManager::CommitUniforms( uint64 stateBits )
 #if defined(ANDROID)
 /*
 ================================================================================================
-idRenderProgManager::DeferredShadersReady
+idRenderProgManager::EngineProgramReady
 ================================================================================================
 */
 bool idRenderProgManager::EngineProgramReady( int builtin ) const
@@ -785,19 +771,6 @@ bool idRenderProgManager::EngineProgramReady( int builtin ) const
 	// BindShader_Builtin binds the program at the index of the builtin
 	return builtin >= 0 && builtin < MAX_BUILTINS && builtinShaders[builtin] == builtin && builtin < renderProgs.Num()
 		   && renderProgs[builtin].progId != INVALID_PROGID;
-}
-
-bool idRenderProgManager::DeferredShadersReady() const
-{
-	for( int i = BUILTIN_DEFERRED_GBUFFER; i <= BUILTIN_DEFERRED_TEST_FETCH; i++ )
-	{
-		// BindShader_Builtin binds the program at the index of the builtin
-		if( builtinShaders[i] != i || i >= renderProgs.Num() || renderProgs[i].progId == INVALID_PROGID )
-		{
-			return false;
-		}
-	}
-	return true;
 }
 
 /*

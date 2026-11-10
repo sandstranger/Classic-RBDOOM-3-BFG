@@ -107,8 +107,6 @@ idRenderLightLocal::idRenderLightLocal()
 	foggedPortals			= NULL;
 	firstInteraction		= NULL;
 	lastInteraction			= NULL;
-	referencesCoverVolume	= false;
-	portalFlowReferences	= false;
 	shadowCacheGeneration	= R_NextShadowCacheGeneration();
 	shadowSelectedFrame		= -1000;
 

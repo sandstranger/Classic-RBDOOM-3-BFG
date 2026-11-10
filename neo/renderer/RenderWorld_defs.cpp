@@ -740,35 +740,13 @@ void R_CreateLightRefs( idRenderLightLocal* light )
 	if( light->parms.prelightModel != NULL && r_useLightPortalFlow.GetBool() && light->lightShader->LightCastsShadows() )
 	{
 		light->world->FlowLightThroughPortals( light );
-		light->portalFlowReferences = true;
-
-		// the light only reaches the areas visible from its center, an area its volume reaches
-		// behind a wall has no lightRef and its surfaces no interaction
-		static const int MAX_COVER_AREAS = 256;
-		int areas[MAX_COVER_AREAS];
-		const int numAreas = light->world->BoundsInAreas( light->globalLightBounds, areas, MAX_COVER_AREAS );
-		bool covered = ( numAreas < MAX_COVER_AREAS );
-		for( int i = 0; i < numAreas && covered; i++ )
-		{
-			bool referenced = false;
-			for( const areaReference_t* lref = light->references; lref != NULL && !referenced; lref = lref->ownerNext )
-			{
-				referenced = ( lref->area->areaNum == areas[i] );
-			}
-			covered = referenced;
-		}
-		light->referencesCoverVolume = covered;
 	}
 	else
 	{
 		// push the light frustum down the BSP tree into areas
 		light->world->PushFrustumIntoTree( NULL, light, light->inverseBaseLightProject, bounds_zeroOneCube );
-
-		// every area the frustum reaches
-		light->portalFlowReferences = false;
-		light->referencesCoverVolume = true;
 	}
-
+	
 	R_CreateLightDefFogPortals( light );
 }
 

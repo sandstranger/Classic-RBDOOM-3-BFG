@@ -105,7 +105,6 @@ static void R_AddSingleLight( viewLight_t* vLight )
 	vLight->removeFromList = true;
 	vLight->shadowOnlyViewEntities = NULL;
 	vLight->preLightShadowVolumes = NULL;
-	vLight->deferredVolumeOk = false;
 	vLight->shadowBudgetRejected = false;
 	vLight->shadowPriority = 0.0f;
 	vLight->shadowCacheGeneration = vLight->lightDef->shadowCacheGeneration;
@@ -348,14 +347,6 @@ static void R_AddSingleLight( viewLight_t* vLight )
 	// this one stays on the list
 	vLight->removeFromList = false;
 
-	// Lighting the whole volume of the light, as the on-tile deferred shading does, lights the
-	// surfaces the interactions below light when every area the volume reaches is referenced.
-	// A light that flows through the portals only references the areas visible from its center,
-	// but its prelight shadows darken everything else in the volume in the stencil shadow path.
-	vLight->deferredVolumeOk = light->referencesCoverVolume
-							   || ( light->portalFlowReferences && light->parms.prelightModel != NULL
-									&& !r_useShadowMapping.GetBool() && !r_skipPrelightShadows.GetBool() );
-
 	//--------------------------------------------
 	// create interactions with all entities the light may touch, and add viewEntities
 	// that may cast shadows, even if they aren't directly visible.  Any real work
@@ -379,8 +370,6 @@ static void R_AddSingleLight( viewLight_t* vLight )
 			if( !light->world->AreasAreConnected( light->areaNum, area->areaNum, PS_BLOCK_VIEW ) )
 			{
 				// can't possibly be seen or shadowed
-				// a closed door, the volume reaches surfaces that don't get the light
-				vLight->deferredVolumeOk = false;
 				continue;
 			}
 		}
@@ -445,11 +434,6 @@ static void R_AddSingleLight( viewLight_t* vLight )
 				// when the level designer knows that nearby moving lights shouldn't actually hit them
 				if( eParms.noDynamicInteractions )
 				{
-					// the volume would light it
-					if( vLight->deferredVolumeOk && edef->IsDirectlyVisible() && !R_CullModelBoundsToLight( light, edef->localReferenceBounds, edef->modelRenderMatrix ) )
-					{
-						vLight->deferredVolumeOk = false;
-					}
 					continue;
 				}
 				
@@ -721,13 +705,6 @@ static void R_SelectShadowedLights()
 		vLight->localShadows = NULL;
 		vLight->preLightShadowVolumes = NULL;
 		vLight->shadowOnlyViewEntities = NULL;
-
-		// a light flowing through the portals relied on its prelight shadows to keep its volume
-		// off the areas it doesn't reference, the deferred shading must use its interactions then
-		if( !vLight->lightDef->referencesCoverVolume )
-		{
-			vLight->deferredVolumeOk = false;
-		}
 	}
 }
 

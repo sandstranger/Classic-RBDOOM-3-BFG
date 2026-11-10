@@ -83,16 +83,10 @@ struct backEndCounters_t
 
 	// lights
 	int		c_visibleLights;		// lights with surfaces to light
-	int		c_deferredLights;		// lit from the G-buffer
-	int		c_forwardLights;		// lit by their interactions only
-	int		c_lightVolumeDraws;		// single light volume draws of the deferred shading
-	int		c_lightBatchDraws;		// multi light draws of the deferred shading
-	int		c_lightBatchEntries;	// light stages those draws evaluated
-	int		c_lightTiles;			// screen tiles with at least one batched light
-	int		c_lightTileSlots;		// sum of the batched light counts of those tiles
-	int		c_lightTileMax;			// most batched lights of one tile
-	int		c_forwardBatchDraws;	// multi light draws of surfaces outside the G-buffer
-	int		c_forwardBatchPairs;	// light / surface pairs they drew
+	int		c_batchedLights;		// lights the multi light draws took
+	int		c_forwardBatchDraws;	// multi light draws of model surfaces
+	int		c_forwardWorldDraws;	// multi light draws of the world surfaces of a material
+	int		c_forwardBatchPairs;	// light stage / surface pairs they lit
 	int		c_interactionDraws;		// single light interaction draws
 
 	// shadows
@@ -115,8 +109,8 @@ struct backEndCounters_t
 // what a draw call is for, see backEndCounters_t::c_drawsByCategory
 enum drawCategory_t
 {
-	DRAW_CATEGORY_SCENE,		// depth, ambient, G-buffer, shader passes, fog
-	DRAW_CATEGORY_LIGHTING,		// interactions and deferred lights
+	DRAW_CATEGORY_SCENE,		// depth, ambient, shader passes, fog
+	DRAW_CATEGORY_LIGHTING,		// interactions, single and multi light
 	DRAW_CATEGORY_SHADOW,		// shadow maps and stencil shadow volumes
 	DRAW_CATEGORY_POST,			// post processing and resolves
 };
@@ -369,11 +363,11 @@ private:
 	int					DrawShaderPasses( const drawSurf_t* const* const drawSurfs, const int numDrawSurfs,
 										  const float guiStereoScreenOffset, const int stereoEye );
 										  
-	// skipDeferredSurfaces: the G-buffer has the surfaces, DrawDeferredLight lights them
-	void				RenderInteractions( const drawSurf_t* surfList, const viewLight_t* vLight, int depthFunc, bool performStencilTest, bool useLightDepthBounds, bool skipDeferredSurfaces = false );
+	// the surfaces a multi light draw lit (drawSurf_t::forwardBatched) are skipped
+	void				RenderInteractions( const drawSurf_t* surfList, const viewLight_t* vLight, int depthFunc, bool performStencilTest, bool useLightDepthBounds );
 
 	// RB
-	void				AmbientPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs, bool fillGbuffer, bool skipDeferredSurfaces = false );
+	void				AmbientPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs, bool fillGbuffer );
 	void				ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side, bool restoreFramebuffer = true );
 
 	// shadow map helpers shared by ShadowMapPass and the shadow atlas
@@ -459,16 +453,14 @@ private:
 	unsigned int		shadowCacheSampler;		// sampler object without depth compare, for the copy
 
 	/*
-	Multi light shading: lights whose shadows don't need the stencil buffer and whose shadow maps,
-	if any, are in an atlas are evaluated several at once (see LIGHT BATCHES in RenderBackend.cpp):
-	- from the G-buffer: screen tiles carry a mask of the batch's lights that reach them, one
-	  instanced draw of the tiles per batch, each pixel fetches its G-buffer once for all of them
-	- surfaces outside the G-buffer that several such lights reach: one draw per interaction with
-	  all of them, instead of one per light
-	The light data goes into a uniform buffer, lightBatchSlot_t per light stage.
+	Forward multi light interactions: lights whose shadows don't need the stencil buffer (no
+	shadows, or shadow maps in the atlas or the shadow cache) light a surface several at once, one
+	draw per interaction of the surface for up to LIGHT_BATCH_SLOTS light stages, into the target
+	of the view like the interactions. The world surfaces of a material that the same lights reach
+	are drawn together. See FORWARD MULTI LIGHT INTERACTIONS in RenderBackend.cpp.
+	The light data goes into a uniform buffer, LIGHT_BATCH_VEC4S per light stage.
 	*/
-	static const int	LIGHT_BATCH_DEFERRED_SLOTS = 6;	// light stages per deferred draw: two texture units each
-	static const int	LIGHT_BATCH_FORWARD_SLOTS = 4;	// per forward draw, the surface's maps take three units
+	static const int	LIGHT_BATCH_SLOTS = 4;			// light stages per draw, the surface's maps take three units
 	static const int	LIGHT_BATCH_VEC4S = 36;			// vec4s per light stage in the uniform buffer
 	static const int	MAX_LIGHT_BATCH_ENTRIES = 256;
 
@@ -479,35 +471,27 @@ private:
 		idImage*				falloffImage;
 		idImage*				projectionImage;
 		idScreenRect			rect;				// in the viewport
+		bool					shadowMapped;		// reads a shadow atlas
 		float					data[LIGHT_BATCH_VEC4S * 4];
-		bool					deferred;			// lit from the G-buffer
 	};
 
 	void				LightBatchBeginView( const viewDef_t* _viewDef );
 	bool				LightBatchable( const viewLight_t* vLight ) const;
-	int					LightBatchAddEntries( const viewLight_t* vLight, bool deferred );
+	int					LightBatchAddEntries( const viewLight_t* vLight );
+	void				LightBatchViewParms( idRenderMatrix& worldToView, idRenderMatrix& viewToWorld );
+	int					ShadowSideMatrices( const viewLight_t* vLight, const shadowAtlasLight_t* atlasLight, idRenderMatrix worldToShadow[6] );
 	void				LightBatchSetGlobals();
 	void				LightBatchBindSlot( int slot, int firstUnit, const lightBatchEntry_t& entry );
 	void				LightBatchBindShadowImages( int frameAtlasUnit, int cacheAtlasUnit, int jitterUnit );
-	void				DrawDeferredLightBatches();
 	void				DrawForwardLightBatches();
 	int					CollectSurfaceInteractions( const drawSurf_t* surf, bool ambientLight, drawInteraction_t* out, int maxInteractions );
 	bool				UploadLightBatchData( const float* data, int numVec4s, unsigned int& buffer, int& offset );
+	// 32 bit indexes into the static vertex buffer for this frame, see DrawStaticIndexRange
+	bool				UploadLightBatchIndexes( const uint32* indexes, int numIndexes, unsigned int& buffer, int& firstIndex );
+	void				DrawStaticIndexRange( unsigned int indexBuffer, int firstIndex, int numIndexes );
 
 	lightBatchEntry_t	lightBatchEntries[MAX_LIGHT_BATCH_ENTRIES];	// the batchable light stages of the view
 	int					numLightBatchEntries;
-	const viewLight_t*	lightBatchedDeferred[MAX_LIGHT_BATCH_ENTRIES];	// lights DrawDeferredLightBatches lit
-	int					numLightBatchedDeferred;
-
-public:
-	// G-buffer renderbuffers: how many there are and their size, for listFramebuffers
-	int					DeferredGBufferInfo( int& width, int& height ) const
-	{
-		width = deferredTargetWidth;
-		height = deferredTargetHeight;
-		return deferredRenderbuffers[0] != 0 ? 3 : 0;
-	}
-private:
 #endif
 
 #if defined(ANDROID) && !defined( USE_VULKAN )
@@ -522,39 +506,9 @@ private:
 	int					worldMergeNumIndexes;
 	unsigned int		worldMergeIndexBuffer;		// this frame's 32 bit indexes into the static vertex buffer
 
-	// TBDR: on-tile deferred shading with framebuffer fetch, see DrawDeferredLight
-	void				DeferredBeginFrame( const emptyCommand_t* cmds );
-	bool				DeferredUpdateTargets();
-	bool				DeferredSelfTest();
-	void				DeferredReleaseTargets();
-	void				DeferredClearGBuffer();
-	void				DeferredInvalidateGBuffer();
-	void				DeferredSetGBufferWrites( bool enable );
-	int					DeferredSurfaceInteraction( const drawSurf_t* surf, drawInteraction_t* inter );
-	bool				DeferredSurface( const drawSurf_t* surf );
-	bool				DeferredLight( const viewLight_t* vLight ) const;
-	void				DeferredGBufferPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs );
-	bool				DrawDeferredLight( const viewLight_t* vLight, bool performStencilTest );
-	void				DeferredResolve( const viewDef_t* _viewDef );
-	// view space light parameters of the deferred light programs, shared by the single and the batched draws
-	void				DeferredViewParms( idRenderMatrix& worldToView, idRenderMatrix& viewToWorld );
-	int					ShadowSideMatrices( const viewLight_t* vLight, const shadowAtlasLight_t* atlasLight, idRenderMatrix worldToShadow[6] );
-
-	bool				deferredFrame;				// the 3D views of this frame use the G-buffer of the scene target
-	bool				deferredView;				// the view being drawn has its G-buffer
-	bool				deferredGBufferAttached;	// colors 1..3 of hdrFBO are the G-buffer
-	bool				backBufferDrawnThisFrame;	// something before the resolve of a view drew into the back buffer
-	int					deferredSelfTestResult;		// 0 not run, 1 passed, -1 failed
-	unsigned int		deferredRenderbuffers[3];
-	int					deferredTargetWidth;
-	int					deferredTargetHeight;
-	unsigned int		deferredAttachedColor;		// the scene color texture the G-buffer was attached with
-	unsigned int		deferredAttachedFBO;		// the hdrFBO it was attached to
-	int					deferredLightsDeferred;		// lights of the frame drawn from the G-buffer, r_showDeferredShading
-	int					deferredLightsForward;
 #endif
 
-	// the 3D views draw into hdrFBO: HDR, or the deferred shading's G-buffer
+	// the 3D views draw into hdrFBO: HDR
 	bool				UseSceneFramebuffer() const;
 
 	void				StencilShadowPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight );

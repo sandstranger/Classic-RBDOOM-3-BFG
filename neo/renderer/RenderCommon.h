@@ -308,12 +308,6 @@ public:
 
 	struct doublePortal_s* 	foggedPortals;
 
-	// R_CreateLightRefs: every area the light volume reaches has a lightRef, so no surface inside
-	// the volume goes without its interaction because of the area it is in. The references of a
-	// light that flows through the portals only reach the areas visible from the light center.
-	bool					referencesCoverVolume;
-	bool					portalFlowReferences;
-
 	// a new value, unique over all lights, whenever the light or a static interaction of it changes:
 	// the shadow cache of the back end only reuses static shadow maps built for the same value
 	int						shadowCacheGeneration;
@@ -449,10 +443,6 @@ struct viewLight_t
 
 	// R_AddSingleLight will build a chain of parameters here to setup shadow volumes
 	preLightShadowVolumeParms_t* 	preLightShadowVolumes;
-
-	// R_AddSingleLight: every visible surface inside the light volume has its interaction with the light,
-	// lighting the volume lights the same surfaces (on-tile deferred shading, see DrawDeferredLight)
-	bool					deferredVolumeOk;
 
 	// idRenderLightLocal::shadowCacheGeneration of this frame
 	int						shadowCacheGeneration;

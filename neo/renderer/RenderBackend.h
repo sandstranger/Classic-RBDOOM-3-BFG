@@ -69,11 +69,56 @@ struct backEndCounters_t
 	int		c_shadowIndexes;
 	
 	int		c_copyFrameBuffer;
-	
+
 	float	c_overDraw;
-	
+
 	int		totalMicroSec;		// total microseconds for backend run
 	int		shadowMicroSec;
+
+	// r_showRenderStats: what the frame cost, by what it was drawn for (draw calls, see drawCategory_t)
+	int		c_drawsByCategory[4];
+	int		c_indexesByCategory[4];
+	int		c_framebufferBinds;
+	int		c_programBinds;
+
+	// lights
+	int		c_visibleLights;		// lights with surfaces to light
+	int		c_deferredLights;		// lit from the G-buffer
+	int		c_forwardLights;		// lit by their interactions only
+	int		c_lightVolumeDraws;		// single light volume draws of the deferred shading
+	int		c_lightBatchDraws;		// multi light draws of the deferred shading
+	int		c_lightBatchEntries;	// light stages those draws evaluated
+	int		c_lightTiles;			// screen tiles with at least one batched light
+	int		c_lightTileSlots;		// sum of the batched light counts of those tiles
+	int		c_lightTileMax;			// most batched lights of one tile
+	int		c_forwardBatchDraws;	// multi light draws of surfaces outside the G-buffer
+	int		c_forwardBatchPairs;	// light / surface pairs they drew
+	int		c_interactionDraws;		// single light interaction draws
+
+	// shadows
+	int		c_shadowedLights;		// lights drawn with shadows
+	int		c_shadowMapSides;		// shadow map sides rendered this frame
+	int		c_shadowCasterDraws;	// caster draws into shadow maps
+	int		c_shadowCacheHits;		// lights sampled from the shadow cache, nothing rendered
+	int		c_shadowCacheCopies;	// lights whose cached static casters were copied under their dynamic casters
+	int		c_shadowCacheMisses;	// lights whose cache was built this frame
+	int		c_shadowCacheInvalidations;
+	int		c_shadowAtlasLights;
+	int		c_shadowAtlasOverflow;	// lights that fell back to the per light shadow maps
+	int		c_shadowAtlasDowngrades;// sides that got a smaller tile than their LOD so everything fits
+	int		c_shadowAtlasUsedTexels;
+	int		c_shadowAtlasTexels;
+	int		shadowStaticMicroSec;	// CPU time recording the shadow cache
+	int		shadowDynamicMicroSec;	// CPU time recording the frame atlas
+};
+
+// what a draw call is for, see backEndCounters_t::c_drawsByCategory
+enum drawCategory_t
+{
+	DRAW_CATEGORY_SCENE,		// depth, ambient, G-buffer, shader passes, fog
+	DRAW_CATEGORY_LIGHTING,		// interactions and deferred lights
+	DRAW_CATEGORY_SHADOW,		// shadow maps and stencil shadow volumes
+	DRAW_CATEGORY_POST,			// post processing and resolves
 };
 
 struct gfxImpParms_t
@@ -334,8 +379,19 @@ private:
 	// shadow map helpers shared by ShadowMapPass and the shadow atlas
 	void				SetupShadowMapMatrices( const viewLight_t* vLight, int side, idRenderMatrix& lightViewRenderMatrix, idRenderMatrix& lightProjectionRenderMatrix );
 	void				BeginShadowMapSide();
+	// which casters DrawShadowMapCasters draws: the shadow cache holds the static ones
+	enum shadowCasterFilter_t
+	{
+		SHADOW_CASTERS_ALL,
+		SHADOW_CASTERS_STATIC,
+		SHADOW_CASTERS_DYNAMIC,
+	};
+
+	// casterFilter: shadowCasterFilter_t, which casters of the chain are drawn
+	// cachedCasters: with SHADOW_CASTERS_DYNAMIC, the static casters that aren't in this sorted list are drawn too
 	void				DrawShadowMapCasters( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side,
-											  const idRenderMatrix& lightViewRenderMatrix, const idRenderMatrix& lightProjectionRenderMatrix );
+											  const idRenderMatrix& lightViewRenderMatrix, const idRenderMatrix& lightProjectionRenderMatrix, int casterFilter = 0,
+											  const idList<uint32>* cachedCasters = NULL );
 
 #if !defined( USE_VULKAN )
 	// tile based GPUs: render the shadow maps of all lights of the frame into one atlas
@@ -348,6 +404,8 @@ private:
 		int					tileX[6];
 		int					tileY[6];
 		idRenderMatrix		worldToShadow[6];	// world space -> atlas texture coordinates and depth
+		idImage*			image;				// the atlas that holds the sides: the frame atlas or the shadow cache
+		int					atlasSize;			// texels of that atlas, for the PCF taps
 	};
 
 	static const int	MAX_SHADOW_ATLAS_LIGHTS = 64;
@@ -360,6 +418,96 @@ private:
 	int					shadowAtlasSize;
 	bool				hdrTargetClearedThisFrame;	// the first HDR view of a frame clears the HDR color
 	bool				skipBackBufferClear;		// a HDR view's tonemap replaces the whole back buffer this frame
+	int					drawCategory;				// drawCategory_t of the draws now, for the counters
+#endif
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	/*
+	Shadow cache: the static casters of a stationary light are rendered once into tiles of a
+	persistent atlas. A light without dynamic casters is sampled straight from its cache tiles,
+	one with dynamic casters copies its cached depth into its frame atlas tiles and draws only the
+	dynamic casters on top. See the SHADOW CACHE section of RenderBackend.cpp for the rules.
+	*/
+	static const int	MAX_SHADOW_CACHE_ENTRIES = 64;
+	static const int	MAX_SHADOW_CACHE_LEVELS = 8;	// buddy levels: the cache size down to 1/128 of it
+
+	struct shadowCacheEntry_t
+	{
+		int					generation;			// viewLight_t::shadowCacheGeneration it was built for, 0 = free
+		int					tileSize;
+		int					numSides;
+		int					level;				// buddy level of its blocks
+		int					blockX[6];
+		int					blockY[6];
+		int					lastUsedFrame;
+		int					missingFrames;		// frames in a row a view needed static casters it doesn't hold
+		idList<uint32>*		casters;			// sorted drawSurf_t::shadowCacheId of the static casters it holds, allocated once
+	};
+
+	int					ShadowCacheAllocBlock( int level, int& x, int& y );
+	void				ShadowCacheFreeBlock( int level, int x, int y );
+	void				ShadowCacheFreeEntry( shadowCacheEntry_t& entry );
+	void				ShadowCacheReset( int size );
+	shadowCacheEntry_t*	ShadowCacheFind( int generation );
+	shadowCacheEntry_t*	ShadowCacheAlloc( int generation, int tileSize, int numSides );
+	void				DrawShadowCacheCopy( int cacheX, int cacheY, int frameX, int frameY, int size );
+
+	shadowCacheEntry_t	shadowCacheEntries[MAX_SHADOW_CACHE_ENTRIES];
+	idList<int>*		shadowCacheFreeBlocks[MAX_SHADOW_CACHE_LEVELS];	// packed x << 16 | y; pointers, no destructor at exit()
+	int					shadowCacheSize;		// texels of the cache atlas the entries live in, 0 = no entries
+	int					shadowCacheFrame;
+	unsigned int		shadowCacheSampler;		// sampler object without depth compare, for the copy
+
+	/*
+	Multi light shading: lights whose shadows don't need the stencil buffer and whose shadow maps,
+	if any, are in an atlas are evaluated several at once (see LIGHT BATCHES in RenderBackend.cpp):
+	- from the G-buffer: screen tiles carry a mask of the batch's lights that reach them, one
+	  instanced draw of the tiles per batch, each pixel fetches its G-buffer once for all of them
+	- surfaces outside the G-buffer that several such lights reach: one draw per interaction with
+	  all of them, instead of one per light
+	The light data goes into a uniform buffer, lightBatchSlot_t per light stage.
+	*/
+	static const int	LIGHT_BATCH_DEFERRED_SLOTS = 6;	// light stages per deferred draw: two texture units each
+	static const int	LIGHT_BATCH_FORWARD_SLOTS = 4;	// per forward draw, the surface's maps take three units
+	static const int	LIGHT_BATCH_VEC4S = 36;			// vec4s per light stage in the uniform buffer
+	static const int	MAX_LIGHT_BATCH_ENTRIES = 256;
+
+	struct lightBatchEntry_t
+	{
+		const viewLight_t*		vLight;
+		const shaderStage_t*	stage;
+		idImage*				falloffImage;
+		idImage*				projectionImage;
+		idScreenRect			rect;				// in the viewport
+		float					data[LIGHT_BATCH_VEC4S * 4];
+		bool					deferred;			// lit from the G-buffer
+	};
+
+	void				LightBatchBeginView( const viewDef_t* _viewDef );
+	bool				LightBatchable( const viewLight_t* vLight ) const;
+	int					LightBatchAddEntries( const viewLight_t* vLight, bool deferred );
+	void				LightBatchSetGlobals();
+	void				LightBatchBindSlot( int slot, int firstUnit, const lightBatchEntry_t& entry );
+	void				LightBatchBindShadowImages( int frameAtlasUnit, int cacheAtlasUnit, int jitterUnit );
+	void				DrawDeferredLightBatches();
+	void				DrawForwardLightBatches();
+	int					CollectSurfaceInteractions( const drawSurf_t* surf, bool ambientLight, drawInteraction_t* out, int maxInteractions );
+	bool				UploadLightBatchData( const float* data, int numVec4s, unsigned int& buffer, int& offset );
+
+	lightBatchEntry_t	lightBatchEntries[MAX_LIGHT_BATCH_ENTRIES];	// the batchable light stages of the view
+	int					numLightBatchEntries;
+	const viewLight_t*	lightBatchedDeferred[MAX_LIGHT_BATCH_ENTRIES];	// lights DrawDeferredLightBatches lit
+	int					numLightBatchedDeferred;
+
+public:
+	// G-buffer renderbuffers: how many there are and their size, for listFramebuffers
+	int					DeferredGBufferInfo( int& width, int& height ) const
+	{
+		width = deferredTargetWidth;
+		height = deferredTargetHeight;
+		return deferredRenderbuffers[0] != 0 ? 3 : 0;
+	}
+private:
 #endif
 
 #if defined(ANDROID) && !defined( USE_VULKAN )
@@ -388,6 +536,9 @@ private:
 	void				DeferredGBufferPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs );
 	bool				DrawDeferredLight( const viewLight_t* vLight, bool performStencilTest );
 	void				DeferredResolve( const viewDef_t* _viewDef );
+	// view space light parameters of the deferred light programs, shared by the single and the batched draws
+	void				DeferredViewParms( idRenderMatrix& worldToView, idRenderMatrix& viewToWorld );
+	int					ShadowSideMatrices( const viewLight_t* vLight, const shadowAtlasLight_t* atlasLight, idRenderMatrix worldToShadow[6] );
 
 	bool				deferredFrame;				// the 3D views of this frame use the G-buffer of the scene target
 	bool				deferredView;				// the view being drawn has its G-buffer

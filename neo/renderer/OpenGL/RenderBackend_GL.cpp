@@ -45,6 +45,7 @@ extern void RB_InitExposureReadback();
 extern void RB_ShutdownExposureReadback();
 extern void RB_ShutdownWorldMerge();
 static void R_ShutdownInstanceStream();
+static void R_ShutdownLightBatchStream();
 #endif
 #if ANDROID
 
@@ -855,6 +856,25 @@ void idRenderBackend::Shutdown()
 	// the same for the streaming rings, they must not outlive the context in static destructors
 	RB_ShutdownWorldMerge();
 	R_ShutdownInstanceStream();
+	R_ShutdownLightBatchStream();
+	if( shadowCacheSampler != 0 )
+	{
+		GLuint sampler = shadowCacheSampler;
+		glDeleteSamplers( 1, &sampler );
+		shadowCacheSampler = 0;
+	}
+	ShadowCacheReset( 0 );
+	for( int i = 0; i < MAX_SHADOW_CACHE_ENTRIES; i++ )
+	{
+		delete shadowCacheEntries[i].casters;
+		shadowCacheEntries[i].casters = NULL;
+	}
+	for( int i = 0; i < MAX_SHADOW_CACHE_LEVELS; i++ )
+	{
+		delete shadowCacheFreeBlocks[i];
+		shadowCacheFreeBlocks[i] = NULL;
+	}
+	shadowCacheSize = 0;
 	// Framebuffer::Shutdown deleted hdrFBO already, only the renderbuffers are left
 	deferredGBufferAttached = false;
 	DeferredReleaseTargets();
@@ -1282,6 +1302,8 @@ void idRenderBackend::DrawWorldMergeRange( int firstIndex, int numIndexes )
 
 	pc.c_drawElements++;
 	pc.c_drawIndexes += numIndexes;
+	pc.c_drawsByCategory[drawCategory]++;
+	pc.c_indexesByCategory[drawCategory] += numIndexes;
 }
 
 /*
@@ -1353,6 +1375,89 @@ static void R_ShutdownInstanceStream()
 	}
 	s_instanceRingSlot = -1;
 	s_instanceRingUsed = 0;
+}
+
+/*
+=============
+idRenderBackend::UploadLightBatchData
+
+The light data of the multi light draws of a view, for glBindBufferRange at binding 1. A ring of
+uniform buffers, a slot per frame the fences protect, persistently mapped when the driver has
+EXT_buffer_storage; otherwise a buffer of its own that is orphaned for every upload.
+=============
+*/
+static idGLBufferRing*	s_lightBatchRing = NULL;
+static int				s_lightBatchRingSlot = -1;
+static GLsizeiptr		s_lightBatchRingUsed = 0;
+static GLuint			s_lightBatchBuffer = 0;
+static const GLsizeiptr	LIGHT_BATCH_RING_SIZE = 512 * 1024;
+
+bool idRenderBackend::UploadLightBatchData( const float* data, int numVec4s, unsigned int& buffer, int& offset )
+{
+	const GLsizeiptr bytes = ( GLsizeiptr )numVec4s * 4 * sizeof( float );
+	const GLsizeiptr alignment = Max( ( GLsizeiptr )glConfig.uniformBufferOffsetAlignment, ( GLsizeiptr )16 );
+
+	if( R_HasBufferStorage() && bytes <= LIGHT_BATCH_RING_SIZE )
+	{
+		if( s_lightBatchRing == NULL )
+		{
+			s_lightBatchRing = new idGLBufferRing;
+			if( !s_lightBatchRing->Create( GL_COPY_WRITE_BUFFER, LIGHT_BATCH_RING_SIZE, true ) || !s_lightBatchRing->IsPersistent() )
+			{
+				// keep the object, the persistent path is off from now on
+				s_lightBatchRing->Destroy();
+			}
+		}
+		if( s_lightBatchRing->IsPersistent() )
+		{
+			const int slot = g_frameFences.CurrentSlot();
+			if( slot != s_lightBatchRingSlot )
+			{
+				s_lightBatchRingSlot = slot;
+				s_lightBatchRingUsed = 0;
+			}
+			const GLsizeiptr start = ( s_lightBatchRingUsed + alignment - 1 ) / alignment * alignment;
+			byte* mapped = ( byte* )s_lightBatchRing->PersistentPointer( slot );
+			if( mapped != NULL && start + bytes <= LIGHT_BATCH_RING_SIZE )
+			{
+				memcpy( mapped + start, data, bytes );
+				s_lightBatchRing->FlushRange( slot, start, bytes );
+				s_lightBatchRingUsed = start + bytes;
+				buffer = s_lightBatchRing->Buffer( slot );
+				offset = ( int )start;
+				return true;
+			}
+		}
+	}
+
+	// a fresh allocation, the driver renames the storage the GPU may still read
+	if( s_lightBatchBuffer == 0 )
+	{
+		glGenBuffers( 1, &s_lightBatchBuffer );
+	}
+	glBindBuffer( GL_UNIFORM_BUFFER, s_lightBatchBuffer );
+	glBufferData( GL_UNIFORM_BUFFER, bytes, data, GL_STREAM_DRAW );
+	glBindBuffer( GL_UNIFORM_BUFFER, 0 );
+	buffer = s_lightBatchBuffer;
+	offset = 0;
+	return s_lightBatchBuffer != 0;
+}
+
+static void R_ShutdownLightBatchStream()
+{
+	if( s_lightBatchRing != NULL )
+	{
+		s_lightBatchRing->Destroy();
+		delete s_lightBatchRing;
+		s_lightBatchRing = NULL;
+	}
+	if( s_lightBatchBuffer != 0 )
+	{
+		glDeleteBuffers( 1, &s_lightBatchBuffer );
+		s_lightBatchBuffer = 0;
+	}
+	s_lightBatchRingSlot = -1;
+	s_lightBatchRingUsed = 0;
 }
 #endif
 
@@ -1636,6 +1741,8 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
         }
         pc.c_drawElements++;
         pc.c_drawIndexes += surf->numIndexes;
+        pc.c_drawsByCategory[drawCategory]++;
+        pc.c_indexesByCategory[drawCategory] += surf->numIndexes;
         if (g_multiDrawCommands.size() >= MAX_GLES_MDI_BATCH_COMMANDS)
         {
             FlushMultiDrawBatch();
@@ -1668,6 +1775,8 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 	}
 	pc.c_drawElements++;
 	pc.c_drawIndexes += surf->numIndexes * (useInstancing ? instanceCount : 1);
+	pc.c_drawsByCategory[drawCategory]++;
+	pc.c_indexesByCategory[drawCategory] += surf->numIndexes * (useInstancing ? instanceCount : 1);
 #else
 	if (!isGLES32Version())
 	{
@@ -2915,6 +3024,7 @@ if (!isGLES32Version()) {
             g_multiDrawBatchLayout = MDI_LAYOUT_SHADOW_VERT;
         }
         pc.c_shadowElements++;
+        pc.c_drawsByCategory[DRAW_CATEGORY_SHADOW]++;
         pc.c_shadowIndexes += drawSurf->numIndexes;
         if (g_multiDrawCommands.size() >= MAX_GLES_MDI_BATCH_COMMANDS)
         {
@@ -2960,6 +3070,7 @@ if (!isGLES32Version()) {
 	
 	// RB: added stats
 	pc.c_shadowElements++;
+	pc.c_drawsByCategory[DRAW_CATEGORY_SHADOW]++;
 	#if defined(ANDROID) && !defined(USE_VULKAN)
 	pc.c_shadowIndexes += drawSurf->numIndexes * ( useInstancing ? instanceCount : 1 );
 #else
@@ -3009,6 +3120,7 @@ if (!isGLES32Version()) {
 		
 		// RB: added stats
 		pc.c_shadowElements++;
+		pc.c_drawsByCategory[DRAW_CATEGORY_SHADOW]++;
 		#if defined(ANDROID) && !defined(USE_VULKAN)
 	pc.c_shadowIndexes += drawSurf->numIndexes * ( useInstancing ? instanceCount : 1 );
 #else
@@ -3171,7 +3283,25 @@ idRenderBackend::idRenderBackend()
 	deferredAttachedFBO = 0;
 	deferredLightsDeferred = 0;
 	deferredLightsForward = 0;
+
+	for( int i = 0; i < MAX_SHADOW_CACHE_ENTRIES; i++ )
+	{
+		shadowCacheEntries[i].generation = 0;
+		shadowCacheEntries[i].lastUsedFrame = 0;
+		shadowCacheEntries[i].missingFrames = 0;
+		shadowCacheEntries[i].casters = NULL;
+	}
+	for( int i = 0; i < MAX_SHADOW_CACHE_LEVELS; i++ )
+	{
+		shadowCacheFreeBlocks[i] = NULL;
+	}
+	shadowCacheSize = 0;
+	shadowCacheFrame = 0;
+	shadowCacheSampler = 0;
+	numLightBatchEntries = 0;
+	numLightBatchedDeferred = 0;
 #endif
+	drawCategory = DRAW_CATEGORY_SCENE;
 }
 
 /*

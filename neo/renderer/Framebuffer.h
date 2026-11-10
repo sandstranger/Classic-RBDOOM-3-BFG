@@ -51,39 +51,74 @@ class idCmdArgs;
 
 
 
+/*
+================================================================================================
+
+RENDER TARGET POOL
+
+Every 2D render target texture of an idImage goes through the pool on Android (idImage::AllocImage).
+A physical texture is described by RenderTargetDesc and held by:
+	- logical references: the idImages that use it as their texnum
+	- attachment references: the framebuffers it is attached to
+It is only handed to another image, or deleted, when both are zero. A texture nobody holds stays
+cached for maxFrameAge frames, so a resize or a toggled feature finds it again, then it is deleted.
+
+Aliasing: transient targets whose lifetimes never overlap within a frame share one texture when
+their images carry the same alias key (idImage::SetRenderTargetAliasKey) and the same description.
+The keys are only given to targets whose passes are known not to overlap, see renderTargetAlias_t.
+
+GL keeps the order of the commands that read and write a texture, so a texture can be handed to
+another image or deleted while the GPU still has commands for it in flight: no fence is needed.
+
+================================================================================================
+*/
+
+// the alias keys, each groups targets that are written and read in passes that never overlap
+enum renderTargetAlias_t
+{
+	RT_ALIAS_NONE = 0,
+	RT_ALIAS_QUARTER_A,		// _bloomRender0 (Bloom -> BloomComposite) and _ao0 (SSAO / SSGI of a view)
+	RT_ALIAS_QUARTER_B,		// _bloomRender1 and _ao1
+	RT_ALIAS_FULL_A,		// _currentNormals (ambient pass -> SSAO / SSGI of a view) and _smaaEdges (PostProcess)
+};
+
 struct RenderTargetDesc
 {
+    GLenum target;
     int width;
     int height;
+    int layers;
     GLenum internalFormat;
     GLenum format;
     GLenum type;
     int samples;
     int levels;
     bool isDepth;
+    bool linearFilter;
 
-    RenderTargetDesc() : width(0), height(0), internalFormat(0), format(0), type(0), samples(0), levels(1), isDepth(false) {}
+    RenderTargetDesc() : target(0x0DE1 /* GL_TEXTURE_2D */), width(0), height(0), layers(1), internalFormat(0), format(0), type(0), samples(0), levels(1), isDepth(false), linearFilter(true) {}
 
     bool operator==(const RenderTargetDesc& other) const
     {
-        return width == other.width && height == other.height &&
+        return target == other.target && width == other.width && height == other.height && layers == other.layers &&
                internalFormat == other.internalFormat && format == other.format &&
                type == other.type && samples == other.samples &&
-               levels == other.levels && isDepth == other.isDepth;
+               levels == other.levels && isDepth == other.isDepth && linearFilter == other.linearFilter;
     }
 };
 
 struct RenderTarget
 {
     GLuint textureID;
-    GLuint fboID;
     RenderTargetDesc desc;
-    bool inUse;
-    std::string debugName;
+    int aliasKey;
+    int logicalRefs;			// idImages using the texture
+    int attachmentRefs;			// framebuffer attachments of the texture
     int lastUsedFrame;
-    int attachmentRefs;
+    int64_t bytes;
+    std::vector<std::string> owners;	// names of the images holding it
 
-    RenderTarget() : textureID(0), fboID(0), inUse(false), lastUsedFrame(0), attachmentRefs(0) {}
+    RenderTarget() : textureID(0), aliasKey(0), logicalRefs(0), attachmentRefs(0), lastUsedFrame(0), bytes(0) {}
 };
 
 class RenderTargetPool
@@ -106,12 +141,27 @@ public:
         }
     };
 
+    struct Stats
+    {
+        int cacheHits;			// an unused texture of the description was handed out again
+        int cacheMisses;		// a new texture had to be created
+        int aliasHits;			// a texture held by another image of the alias key was shared
+        int allocations;		// textures created
+        int deallocations;		// textures deleted
+        int evictions;			// deleted because nobody held them for maxFrameAge frames, or for room
+        int allocationFailures;
+        int peakTextures;
+        int64_t peakBytes;
+
+        Stats() { memset( this, 0, sizeof( *this ) ); }
+    };
+
 private:
     std::vector<RenderTarget> _pool;
-    std::unordered_map<std::string, size_t> _nameToIndex;
     int _currentFrame;
     PoolConfig _config;
     bool _initialized;
+    Stats _stats;
 
 public:
     RenderTargetPool();
@@ -122,39 +172,40 @@ public:
     RenderTargetPool(const RenderTargetPool&) = delete;
     RenderTargetPool& operator=(const RenderTargetPool&) = delete;
 
+    // a texture for the image called name, shared with the holders of aliasKey when it isn't 0
+    GLuint Acquire(const std::string& name, const RenderTargetDesc& desc, int aliasKey = RT_ALIAS_NONE);
 
-    GLuint Acquire(const std::string& name, const RenderTargetDesc& desc);
-
-
-    void Release(const std::string& name);
+    // the image called name doesn't use textureID any more
+    void Release(GLuint textureID, const std::string& name);
     bool RetainTexture(GLuint textureID);
     void ReleaseAttachmentRef(GLuint textureID);
     bool IsInitialized() const { return _initialized; }
 
-
-    GLuint GetFBO(const std::string& name) const;
-
-
-    GLuint GetTexture(const std::string& name) const;
-
+    const RenderTarget* FindTexture(GLuint textureID) const;
 
     void BeginFrame();
-
-
     void EndFrame();
-
-
     void Shutdown();
-
 
     size_t GetPoolSize() const { return _pool.size(); }
     size_t GetActiveCount() const;
+    int64_t GetAllocatedBytes() const;
+    int64_t GetIdleBytes() const;		// cached textures nobody holds
+    const Stats& GetStats() const { return _stats; }
+    void Print() const;
+
+    static int64_t TextureBytes(const RenderTargetDesc& desc);
 
 private:
-    RenderTarget CreateRenderTarget(const RenderTargetDesc& desc, const std::string& name);
+    bool CreateRenderTarget(const RenderTargetDesc& desc, const std::string& name, int aliasKey, RenderTarget& rt);
     bool CanReuse(const RenderTarget& rt, const RenderTargetDesc& desc) const;
     void DestroyRenderTarget(RenderTarget& rt);
+    static void RemoveOwner(RenderTarget& rt, const std::string& name);
 };
+
+// bytes per pixel of a GL internal format, a logical estimate: drivers may pad or compress
+int R_InternalFormatBytes( GLenum internalFormat );
+const char* R_InternalFormatName( GLenum internalFormat );
 
 
 
@@ -178,6 +229,30 @@ public:
     static void InitializePool();
     static void BeginFrame();
     static void EndFrame();
+
+    // Optional render targets get their storage when their feature runs and give it back when
+    // the feature is turned off (Android, see the top of Framebuffer_GL.cpp). The other builds
+    // allocate everything in Init, these only report that the targets are there.
+    static bool EnsureSceneTargets();					// hdrFBO: scene color and depth stencil, HDR or deferred shading
+    static bool EnsureExposureTargets();				// hdr64FBO, the HDR luminance
+    static bool EnsureBloomTargets();					// bloomRenderFBO[]
+    static bool EnsureAmbientOcclusionTargets();		// ambientOcclusionFBO[], SSAO / SSGI filtering
+    static bool EnsureHierarchicalDepthTargets();		// csDepthFBO[], SSAO / SSGI
+    static bool EnsureGeometryBufferTargets();			// geometryBufferFBO, the normals of SSAO / SSGI
+    static bool EnsureSMAATargets();					// smaaEdgesFBO, smaaBlendFBO
+    static bool EnsureShadowMapTargets( int lod );		// shadowFBO[lod], the per light shadow maps
+    static bool EnsureShadowAtlasTarget( int size );	// shadowAtlasFBO
+    static bool EnsureShadowCacheTarget( int size );	// shadowCacheFBO
+    static void ReleaseShadowCacheTarget();
+
+    // once per frame after the back end: frees the targets of features that are off
+    static void UpdateOptionalTargets();
+
+    // listFramebuffers
+    static void PrintRenderTargets( bool verbose );
+
+    // drop all attachments, the references to the pool go with them
+    void DetachAll();
 
 
     void Bind();
@@ -218,31 +293,42 @@ public:
         width = width_;
         height = height_;
     }
+    const char* GetName() const { return fboName.c_str(); }
+    GLuint GetColorAttachment( int index ) const { return ( index >= 0 && index < MAX_COLOR_ATTACHMENTS ) ? attachedColor[index] : 0; }
+    GLuint GetDepthAttachment() const { return attachedDepth; }
+    int GetNumAttachments() const;
+
     static idList<Framebuffer*> framebuffers;
     static RenderTargetPool renderTargetPool;
     static Framebuffer* currentBoundFramebuffer;
 
 private:
+    void TrackColorAttachment( int index, GLuint texture );
+    void TrackDepthAttachment( GLuint texture, GLenum attachmentPoint );
+
     idStr fboName;
 
 
-    uint32_t frameBuffer;
+    uint32_t frameBuffer = 0;
 
-    GLuint colorTextures[MAX_COLOR_ATTACHMENTS] = {};
-    GLuint attachedImageColorTextures[MAX_COLOR_ATTACHMENTS] = {};
-    GLuint attachedImageDepthTexture = 0;
-    int colorFormat;
-    uint32_t depthBuffer;
-    GLuint depthTexture;
-    int depthFormat;
+    GLuint colorTextures[MAX_COLOR_ATTACHMENTS] = {};		// textures AddColorBuffer created for this framebuffer
+    GLuint attachedColor[MAX_COLOR_ATTACHMENTS] = {};		// what is attached at each color, any texture
+    bool attachedColorRetained[MAX_COLOR_ATTACHMENTS] = {};	// the pool counts that attachment
+    GLuint attachedDepth = 0;
+    GLenum attachedDepthPoint = 0;
+    bool attachedDepthRetained = false;
+    int colorFormat = 0;
+    uint32_t depthBuffer = 0;
+    GLuint depthTexture = 0;
+    int depthFormat = 0;
 
-    uint32_t stencilBuffer;
-    int stencilFormat;
+    uint32_t stencilBuffer = 0;
+    int stencilFormat = 0;
 
-    int width;
-    int height;
+    int width = 0;
+    int height = 0;
 
-    bool msaaSamples;
+    bool msaaSamples = false;
 };
 
 
@@ -253,6 +339,7 @@ struct globalFramebuffers_t
 {
     Framebuffer* shadowFBO[MAX_SHADOWMAP_RESOLUTIONS];
     Framebuffer* shadowAtlasFBO;
+    Framebuffer* shadowCacheFBO;		// the static casters of stationary lights, see ShadowAtlasPass
     Framebuffer* hdrFBO;
 #if defined(USE_HDR_MSAA)
     Framebuffer* hdrNonMSAAFBO;

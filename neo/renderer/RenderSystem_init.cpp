@@ -246,6 +246,8 @@ idCVar r_useVirtualScreenResolution( "r_useVirtualScreenResolution", "1", CVAR_R
 
 // RB: shadow mapping parameters
 idCVar r_useShadowMapping( "r_useShadowMapping", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "use shadow mapping instead of stencil shadows" );
+idCVar r_shadowMapDepth16( "r_shadowMapDepth16", "0", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "GLES: 16 bit instead of 24 bit depth for the shadow atlas, the shadow cache and the shadow map arrays, half their storage and bandwidth. The polygon offset scales with the format, the depth steps stay below a unit up to about 600 units from the light; check large lights for acne before turning it on" );
+idCVar r_maxShadowedLights( "r_maxShadowedLights", "8", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "most lights of a view that render shadows, stencil or shadow maps: the ones covering the most of the screen with the brightest light, with hysteresis so the choice doesn't flicker. The other lights still light the view, without shadows. Parallel lights are always shadowed and don't count. 0 = no limit", 0, 256 );
 idCVar r_shadowMapFrustumFOV( "r_shadowMapFrustumFOV", "92", CVAR_RENDERER | CVAR_FLOAT, "oversize FOV for point light side matching" );
 idCVar r_shadowMapSingleSide( "r_shadowMapSingleSide", "-1", CVAR_RENDERER | CVAR_INTEGER, "only draw a single side (0-5) of point lights" );
 idCVar r_shadowMapImageSize( "r_shadowMapImageSize", "256", CVAR_RENDERER | CVAR_INTEGER, "", 128, 2048 );

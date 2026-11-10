@@ -500,6 +500,10 @@ CopyDepthbuffer
 ====================
 */
 void idImage::CopyDepthbuffer(int x, int y, int imageWidth, int imageHeight) {
+    // a lazy render target gets its storage first, there is no texture name to bind before
+    if (lazyRenderTarget && !IsLoaded() && !EnsureAllocated()) {
+        return;
+    }
 #ifndef ANDROID
     if (!glConfig.directStateAccess)
 #endif
@@ -1516,13 +1520,14 @@ void idImage::AllocImage() {
 #ifndef ANDROID
             internalFormat = glConfig.directStateAccess? GL_DEPTH_COMPONENT24 : GL_DEPTH_COMPONENT;
 #else
-            internalFormat = GL_DEPTH_COMPONENT24;
+            // r_shadowMapDepth16: half the storage and bandwidth of the shadow maps, see its help
+            internalFormat = r_shadowMapDepth16.GetBool() ? GL_DEPTH_COMPONENT16 : GL_DEPTH_COMPONENT24;
 #endif
             dataFormat = GL_DEPTH_COMPONENT;
 #ifndef ANDROID
             dataType = GL_UNSIGNED_BYTE;
 #else
-            dataType = GL_UNSIGNED_INT;
+            dataType = ( internalFormat == GL_DEPTH_COMPONENT16 ) ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
 #endif
             break;
 
@@ -1592,17 +1597,29 @@ void idImage::AllocImage() {
     int w = opts.width;
     int h = opts.height;
 #endif
+    if (opts.isRenderTarget) {
+        renderTargetCounters.allocations++;
+    }
 #if ANDROID
     bool allocatedFromPool=false;
     if(opts.isRenderTarget&&opts.textureType==TT_2D&&!IsCompressed())
     {
-        int skip=getMipmapSkipLevel(opts.numLevels),levels=opts.numLevels-skip;if(levels<1)levels=1;
-        RenderTargetDesc d;d.width=Max(1,w>>skip);d.height=Max(1,h>>skip);
-        d.internalFormat=internalFormat;d.format=dataFormat;d.type=dataType;d.samples=0;d.levels=levels;
+        // render targets don't skip mip levels, the shrinking is for the textures of the game data
+        RenderTargetDesc d;
+        d.target=GL_TEXTURE_2D;
+        d.width=Max(1,w);
+        d.height=Max(1,h);
+        d.layers=1;
+        d.internalFormat=internalFormat;
+        d.format=dataFormat;
+        d.type=dataType;
+        d.samples=0;
+        d.levels=Max(1,opts.numLevels);
         d.isDepth=(dataFormat==GL_DEPTH_COMPONENT||dataFormat==GL_DEPTH_STENCIL||
                    internalFormat==GL_DEPTH_COMPONENT16||internalFormat==GL_DEPTH_COMPONENT24||
                    internalFormat==GL_DEPTH24_STENCIL8||internalFormat==GL_DEPTH_COMPONENT32F);
-        texnum=Framebuffer::renderTargetPool.Acquire(GetName(),d);
+        d.linearFilter=(filter!=TF_NEAREST&&filter!=TF_NEAREST_MIPMAP);
+        texnum=Framebuffer::renderTargetPool.Acquire(GetName(),d,renderTargetAliasKey);
         if(texnum){renderTargetPoolAllocated=true;allocatedFromPool=true;}
     }
     if(allocatedFromPool)R_DirectBindTexture(target,texnum);
@@ -1619,9 +1636,15 @@ void idImage::AllocImage() {
 #ifndef ANDROID
             glTexImage3D(uploadTarget, 0, internalFormat, w, h, numSides, 0, dataFormat, GL_UNSIGNED_BYTE, NULL);
 #else
+            // D16 takes unsigned shorts, D24 unsigned ints
+            GLenum arrayDataType = GL_FLOAT;
+            if (internalFormat == GL_DEPTH_COMPONENT24) {
+                arrayDataType = GL_UNSIGNED_INT;
+            } else if (internalFormat == GL_DEPTH_COMPONENT16) {
+                arrayDataType = GL_UNSIGNED_SHORT;
+            }
             glTexImage3D(uploadTarget, 0, internalFormat, opts.width, opts.height, numSides, 0,
-                         dataFormat,
-                         internalFormat == GL_DEPTH_COMPONENT24 ? GL_UNSIGNED_INT : GL_FLOAT, NULL);
+                         dataFormat, arrayDataType, NULL);
 #endif
         } else if (opts.textureType == TT_2D_MULTISAMPLE) {
 #ifndef ANDROID
@@ -1767,8 +1790,13 @@ idImage::PurgeImage
 */
 void idImage::PurgeImage() {
     if (texnum != TEXTURE_NOT_LOADED) {
+        if (opts.isRenderTarget) {
+            renderTargetCounters.deallocations++;
+        }
         if(renderTargetPoolAllocated) {
-            Framebuffer::renderTargetPool.Release(GetName());
+            // the pool keeps the texture for the next target of the same description,
+            // or for the other targets of its alias key that still hold it
+            Framebuffer::renderTargetPool.Release(texnum, GetName());
             renderTargetPoolAllocated=false;
         } else R_DirectDeleteTextures(1,(GLuint *)&texnum);
         texnum=TEXTURE_NOT_LOADED;
@@ -1795,6 +1823,10 @@ void idImage::Resize(int width, int height, bool recalculateLevels) {
     if (recalculateLevels) {
         opts.numLevels = 0;
         DeriveOpts();
+    }
+    // a lazy render target without storage keeps the new size for its EnsureAllocated
+    if (lazyRenderTarget && !IsLoaded()) {
+        return;
     }
     AllocImage();
 }

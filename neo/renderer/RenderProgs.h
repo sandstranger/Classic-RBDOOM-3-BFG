@@ -737,8 +737,39 @@ public:
 		BindShader_Builtin( BUILTIN_DEFERRED_TEST_FETCH );
 	}
 
+	// multi light shading, see LIGHT BATCHES in RenderBackend.cpp
+	void	BindShader_DeferredLightBatch()
+	{
+		BindShader_Builtin( BUILTIN_DEFERRED_LIGHT_BATCH );
+	}
+
+	void	BindShader_ForwardLightBatch( bool skinned )
+	{
+		BindShader_Builtin( skinned ? BUILTIN_FORWARD_LIGHT_BATCH_SKINNED : BUILTIN_FORWARD_LIGHT_BATCH );
+	}
+
+	void	BindShader_ShadowCacheCopy()
+	{
+		BindShader_Builtin( BUILTIN_SHADOW_CACHE_COPY );
+	}
+
 	// every program of the deferred shading compiled and linked, the driver has the framebuffer fetch
 	bool	DeferredShadersReady() const;
+
+	// the optional engine programs of the multi light shading and of the shadow cache
+	bool	DeferredLightBatchShaderReady() const
+	{
+		return EngineProgramReady( BUILTIN_DEFERRED_LIGHT_BATCH );
+	}
+	bool	ForwardLightBatchShadersReady() const
+	{
+		return EngineProgramReady( BUILTIN_FORWARD_LIGHT_BATCH ) && EngineProgramReady( BUILTIN_FORWARD_LIGHT_BATCH_SKINNED );
+	}
+	bool	ShadowCacheCopyShaderReady() const
+	{
+		return EngineProgramReady( BUILTIN_SHADOW_CACHE_COPY );
+	}
+	bool	EngineProgramReady( int builtin ) const;
 #endif
 	// the joints buffer should only be bound for vertex programs that use joints
 	bool		ShaderUsesJoints() const
@@ -925,6 +956,11 @@ private:
 		BUILTIN_DEFERRED_RESOLVE,
 		BUILTIN_DEFERRED_TEST_WRITE,
 		BUILTIN_DEFERRED_TEST_FETCH,
+		// optional, DeferredShadersReady doesn't wait for them
+		BUILTIN_DEFERRED_LIGHT_BATCH,
+		BUILTIN_FORWARD_LIGHT_BATCH,
+		BUILTIN_FORWARD_LIGHT_BATCH_SKINNED,
+		BUILTIN_SHADOW_CACHE_COPY,
 #endif
 
 		MAX_BUILTINS

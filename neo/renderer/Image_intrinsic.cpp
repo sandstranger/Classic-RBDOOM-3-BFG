@@ -222,6 +222,12 @@ static void R_SMAAImage_ResNative( idImage* image )
 	image->GenerateImage( NULL, renderSystem->GetWidth(), renderSystem->GetHeight(), TF_LINEAR, TR_CLAMP, TD_LOOKUP_TABLE_RGBA );
 }
 
+// the SSAO / SSGI ping pong targets, ambientOcclusionFBO[] is a quarter of the screen
+static void R_AmbientOcclusionImage_ResQuarter( idImage* image )
+{
+	image->GenerateImage( NULL, Max( 1, renderSystem->GetWidth() / 4 ), Max( 1, renderSystem->GetHeight() / 4 ), TF_LINEAR, TR_CLAMP, TD_LOOKUP_TABLE_RGBA );
+}
+
 static void R_HierarchicalZBufferImage_ResNative( idImage* image )
 {
 	image->GenerateImage( NULL, renderSystem->GetWidth(), renderSystem->GetHeight(), TF_NEAREST_MIPMAP, TR_CLAMP, TD_R32F );
@@ -575,7 +581,8 @@ static void R_CreateShadowMapImage_Res4( idImage* image )
 	image->GenerateShadowArray( size, size, TF_LINEAR, TR_CLAMP_TO_ZERO_ALPHA, TD_SHADOW_ARRAY );
 }
 
-// a placeholder until the back end needs the atlas, it resizes the image to r_shadowAtlasSize then
+// a placeholder until the back end needs the atlas, it resizes the image to r_shadowAtlasSize then;
+// on Android the image is a lazy render target and the placeholder has no storage at all
 static void R_CreateShadowAtlasImage( idImage* image )
 {
 	const int size = shadowMapResolutions[MAX_SHADOWMAP_RESOLUTIONS - 1];
@@ -877,13 +884,23 @@ void idImageManager::CreateIntrinsicImages()
 	noFalloffImage = ImageFromFunction( "_noFalloff", R_CreateNoFalloffImage );
 	ImageFromFunction( "_quadratic", R_QuadraticImage );
 	
+#if defined( ANDROID ) && !defined( USE_VULKAN )
+	// Render targets of features that may never run get no GPU storage here: the feature
+	// allocates them when it runs and Framebuffer::UpdateOptionalTargets frees them when it is
+	// turned off, see the top of Framebuffer_GL.cpp. The other builds keep the eager allocation.
+	idImage* ( idImageManager::*RenderTargetFromFunction )( const char*, void ( * )( idImage* ) ) = &idImageManager::LazyRenderTargetFromFunction;
+#else
+	idImage* ( idImageManager::*RenderTargetFromFunction )( const char*, void ( * )( idImage* ) ) = &idImageManager::ImageFromFunction;
+#endif
+
 	// RB begin
-	shadowImage[0] = ImageFromFunction( va( "_shadowMapArray0_%i", shadowMapResolutions[0] ), R_CreateShadowMapImage_Res0 );
-	shadowImage[1] = ImageFromFunction( va( "_shadowMapArray1_%i", shadowMapResolutions[1] ), R_CreateShadowMapImage_Res1 );
-	shadowImage[2] = ImageFromFunction( va( "_shadowMapArray2_%i", shadowMapResolutions[2] ), R_CreateShadowMapImage_Res2 );
-	shadowImage[3] = ImageFromFunction( va( "_shadowMapArray3_%i", shadowMapResolutions[3] ), R_CreateShadowMapImage_Res3 );
-	shadowImage[4] = ImageFromFunction( va( "_shadowMapArray4_%i", shadowMapResolutions[4] ), R_CreateShadowMapImage_Res4 );
-	shadowAtlasImage = ImageFromFunction( "_shadowAtlas", R_CreateShadowAtlasImage );
+	shadowImage[0] = ( this->*RenderTargetFromFunction )( va( "_shadowMapArray0_%i", shadowMapResolutions[0] ), R_CreateShadowMapImage_Res0 );
+	shadowImage[1] = ( this->*RenderTargetFromFunction )( va( "_shadowMapArray1_%i", shadowMapResolutions[1] ), R_CreateShadowMapImage_Res1 );
+	shadowImage[2] = ( this->*RenderTargetFromFunction )( va( "_shadowMapArray2_%i", shadowMapResolutions[2] ), R_CreateShadowMapImage_Res2 );
+	shadowImage[3] = ( this->*RenderTargetFromFunction )( va( "_shadowMapArray3_%i", shadowMapResolutions[3] ), R_CreateShadowMapImage_Res3 );
+	shadowImage[4] = ( this->*RenderTargetFromFunction )( va( "_shadowMapArray4_%i", shadowMapResolutions[4] ), R_CreateShadowMapImage_Res4 );
+	shadowAtlasImage = ( this->*RenderTargetFromFunction )( "_shadowAtlas", R_CreateShadowAtlasImage );
+	shadowCacheImage = ( this->*RenderTargetFromFunction )( "_shadowCache", R_CreateShadowAtlasImage );
 
 	jitterImage1 = globalImages->ImageFromFunction( "_jitter1", R_CreateJitterImage1 );
 	jitterImage4 = globalImages->ImageFromFunction( "_jitter4", R_CreateJitterImage4 );
@@ -891,43 +908,61 @@ void idImageManager::CreateIntrinsicImages()
 	
 	randomImage256 = globalImages->ImageFromFunction( "_random256", R_CreateRandom256Image );
 	
-	currentRenderHDRImage = globalImages->ImageFromFunction( "_currentRenderHDR", R_HDR_RGBA16FImage_ResNative );
+	// the scene color of HDR and of the on-tile deferred shading, see Framebuffer::EnsureSceneTargets
+	currentRenderHDRImage = ( this->*RenderTargetFromFunction )( "_currentRenderHDR", R_HDR_RGBA16FImage_ResNative );
 #if defined(USE_HDR_MSAA)
 	currentRenderHDRImageNoMSAA = globalImages->ImageFromFunction( "_currentRenderHDRNoMSAA", R_HDR_RGBA16FImage_ResNative_NoMSAA );
 #endif
-	currentRenderHDRImageQuarter = globalImages->ImageFromFunction( "_currentRenderHDRQuarter", R_HDR_RGBA16FImage_ResQuarter );
-	currentRenderHDRImage64 = globalImages->ImageFromFunction( "_currentRenderHDR64", R_HDR_RGBA16FImage_Res64 );
-	
-	bloomRenderImage[0] = globalImages->ImageFromFunction( "_bloomRender0", R_HDR_RGBA16FImage_ResQuarter_Linear );
-	bloomRenderImage[1] = globalImages->ImageFromFunction( "_bloomRender1", R_HDR_RGBA16FImage_ResQuarter_Linear );
-	
+	// nothing reads or writes the quarter HDR image, it only gets storage if something ever binds it
+	currentRenderHDRImageQuarter = ( this->*RenderTargetFromFunction )( "_currentRenderHDRQuarter", R_HDR_RGBA16FImage_ResQuarter );
+	currentRenderHDRImage64 = ( this->*RenderTargetFromFunction )( "_currentRenderHDR64", R_HDR_RGBA16FImage_Res64 );
+
+	bloomRenderImage[0] = ( this->*RenderTargetFromFunction )( "_bloomRender0", R_HDR_RGBA16FImage_ResQuarter_Linear );
+	bloomRenderImage[1] = ( this->*RenderTargetFromFunction )( "_bloomRender1", R_HDR_RGBA16FImage_ResQuarter_Linear );
+
 	heatmap5Image = ImageFromFunction( "_heatmap5", R_CreateHeatmap5ColorsImage );
 	heatmap7Image = ImageFromFunction( "_heatmap7", R_CreateHeatmap7ColorsImage );
-	
+
 	grainImage1 = globalImages->ImageFromFunction( "_grain1", R_CreateGrainImage1 );
-	
+
 	smaaInputImage = ImageFromFunction( "_smaaInput", R_RGBA8LinearImage );
-	
+
 	smaaAreaImage = globalImages->ImageFromFunction( "_smaaArea", R_CreateSMAAAreaImage );
 	smaaSearchImage = globalImages->ImageFromFunction( "_smaaSearch", R_CreateSMAASearchImage );
-	
-	smaaEdgesImage = globalImages->ImageFromFunction( "_smaaEdges", R_SMAAImage_ResNative );
-	smaaBlendImage = globalImages->ImageFromFunction( "_smaaBlend", R_SMAAImage_ResNative );
-	
-	currentNormalsImage = ImageFromFunction( "_currentNormals", R_GeometryBufferImage_ResNative );
-	
+
+	smaaEdgesImage = ( this->*RenderTargetFromFunction )( "_smaaEdges", R_SMAAImage_ResNative );
+	smaaBlendImage = ( this->*RenderTargetFromFunction )( "_smaaBlend", R_SMAAImage_ResNative );
+
+	currentNormalsImage = ( this->*RenderTargetFromFunction )( "_currentNormals", R_GeometryBufferImage_ResNative );
+
+#if defined( ANDROID ) && !defined( USE_VULKAN )
+	// allocated at the quarter resolution of ambientOcclusionFBO[] from the start
+	ambientOcclusionImage[0] = ( this->*RenderTargetFromFunction )( "_ao0", R_AmbientOcclusionImage_ResQuarter );
+	ambientOcclusionImage[1] = ( this->*RenderTargetFromFunction )( "_ao1", R_AmbientOcclusionImage_ResQuarter );
+#else
 	ambientOcclusionImage[0] = ImageFromFunction( "_ao0", R_SMAAImage_ResNative );
 	ambientOcclusionImage[1] = ImageFromFunction( "_ao1", R_SMAAImage_ResNative );
-	
-	hierarchicalZbufferImage = ImageFromFunction( "_cszBuffer", R_HierarchicalZBufferImage_ResNative );
+#endif
+
+	hierarchicalZbufferImage = ( this->*RenderTargetFromFunction )( "_cszBuffer", R_HierarchicalZBufferImage_ResNative );
 	// RB end
-	
+
+#if defined( ANDROID ) && !defined( USE_VULKAN )
+	// transient targets whose passes never overlap share their storage, see renderTargetAlias_t
+	bloomRenderImage[0]->SetRenderTargetAliasKey( RT_ALIAS_QUARTER_A );
+	ambientOcclusionImage[0]->SetRenderTargetAliasKey( RT_ALIAS_QUARTER_A );
+	bloomRenderImage[1]->SetRenderTargetAliasKey( RT_ALIAS_QUARTER_B );
+	ambientOcclusionImage[1]->SetRenderTargetAliasKey( RT_ALIAS_QUARTER_B );
+	currentNormalsImage->SetRenderTargetAliasKey( RT_ALIAS_FULL_A );
+	smaaEdgesImage->SetRenderTargetAliasKey( RT_ALIAS_FULL_A );
+#endif
+
 	// scratchImage is used for screen wipes/doublevision etc..
 	scratchImage = ImageFromFunction( "_scratch", R_RGBA8Image );
 	scratchImage2 = ImageFromFunction( "_scratch2", R_RGBA8Image );
 	accumImage = ImageFromFunction( "_accum", R_RGBA8Image );
 	currentRenderImage = ImageFromFunction( "_currentRender", R_RGBA8Image );
-	currentDepthImage = ImageFromFunction( "_currentDepth", R_DepthImage );
+	currentDepthImage = ( this->*RenderTargetFromFunction )( "_currentDepth", R_DepthImage );
 	
 	// save a copy of this for material comparison, because currentRenderImage may get
 	// reassigned during stereo rendering

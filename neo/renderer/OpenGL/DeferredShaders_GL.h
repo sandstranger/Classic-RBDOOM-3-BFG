@@ -181,6 +181,9 @@ static const char* const deferredGBufferVertexShader =
 	"out mediump vec4 vofi_Color;\n"
 	"out mediump vec3 vofi_AmbientHalfAngle;\n"
 	"out mediump vec3 vofi_AmbientLight;\n"
+	"#if defined( FORWARD_LIGHTS )\n"
+	"out highp vec3 vofi_ViewPosition;\n"
+	"#endif\n"
 	"\n"
 	"void main()\n"
 	"{\n"
@@ -251,6 +254,9 @@ static const char* const deferredGBufferVertexShader =
 	"\n"
 	"	// the depth hacks of the weapon change the depth buffer, not this\n"
 	"	vofi_ViewDepth = -dot( modelPosition, modelViewZ );\n"
+	"#if defined( FORWARD_LIGHTS )\n"
+	"	vofi_ViewPosition = vec3( dot( modelPosition, modelViewX ), dot( modelPosition, modelViewY ), dot( modelPosition, modelViewZ ) );\n"
+	"#endif\n"
 	"\n"
 	"	// the ambient pass lights from a fixed direction in model space, see ambient_lighting.vs\n"
 	"	const vec3 ambientLight = vec3( 0.0, 0.5, 1.0 ) / 1.5;\n"
@@ -578,6 +584,381 @@ static const char* const deferredLightFragmentShader =
 
 /*
 ================================================================================================
+Multi light shading
+
+Up to LB_SLOTS light stages per draw, their parameters in lightbatch_ubo, LB_VEC4S vec4s each,
+in the view space of the G-buffer (see idRenderBackend::LightBatchAddEntries):
+	0		origin xyz, w type: 0 no shadows, 1 ambient, 2 spot, 3 point, 4 parallel shadow mapped
+	1..4	the volume, view space to the 0..1 cube of the light (texgen 0 of DrawDeferredLight)
+	5..8	projection s t q and falloff s, with the texture matrix of the stage
+	9		light color rgb, the specular is twice it like the interactions
+	10		x shadow atlas texel size, y depth bias scale, z 1 when the cache atlas holds the maps,
+			w 1 when the triangles facing away from the light stay dark (forward draws)
+	11		parallel light cascade distances
+	12..35	view space to shadow atlas, 4 rows per side
+An unused slot has a zero volume and lights nothing. The math is DrawDeferredLight's, a light of
+the batch adds what it adds alone.
+================================================================================================
+*/
+
+static const char* const deferredLightBatchCommon =
+	"#define LB_VEC4S 36\n"
+	"layout( std140 ) uniform lightbatch_ubo\n"
+	"{\n"
+	"	vec4 lightBatch[ LB_SLOTS * LB_VEC4S ];\n"
+	"};\n"
+	"\n"
+	"uniform mediump sampler2DArrayShadow LB_FRAME_ATLAS;	// the shadow atlas of the frame\n"
+	"uniform mediump sampler2DArrayShadow LB_CACHE_ATLAS;	// the shadow cache\n"
+	"uniform mediump sampler2D LB_JITTER;\n"
+	"\n"
+	"bool LB_Inside( int b, vec4 position )\n"
+	"{\n"
+	"	vec4 volume = vec4( dot( position, lightBatch[ b + 1 ] ), dot( position, lightBatch[ b + 2 ] ), dot( position, lightBatch[ b + 3 ] ), dot( position, lightBatch[ b + 4 ] ) );\n"
+	"	return !( volume.w <= 0.0 || any( lessThan( volume.xyz, vec3( 0.0 ) ) ) || any( greaterThan( volume.xyz, vec3( volume.w ) ) ) );\n"
+	"}\n"
+	"\n"
+	// interactionSM.ps with TBR_MOBILE, four Poisson taps
+	"float LB_PCF( mediump sampler2DArrayShadow atlas, vec4 shadowTexcoord, float shadowTexelSize, vec2 rot )\n"
+	"{\n"
+	"	const vec2 poissonDisk[4] = vec2[](\n"
+	"		vec2( 0.6111618, 0.1050905 ),\n"
+	"		vec2( 0.3030421, -0.6292974 ),\n"
+	"		vec2( -0.6411021, -0.4748057 ),\n"
+	"		vec2( -0.1314865, 0.8404058 ) );\n"
+	"	float shadow = 4.0 / 12.0;\n"
+	"	for( int i = 0; i < 4; i++ )\n"
+	"	{\n"
+	"		vec2 jitter = poissonDisk[i];\n"
+	"		vec2 jitterRotated = vec2( jitter.x * rot.x - jitter.y * rot.y, jitter.x * rot.y + jitter.y * rot.x );\n"
+	"		shadow += textureGrad( atlas, vec4( shadowTexcoord.xy + jitterRotated * shadowTexelSize, shadowTexcoord.w, shadowTexcoord.z ), vec2( 0.0 ), vec2( 0.0 ) );\n"
+	"	}\n"
+	"	return shadow * 0.25;\n"
+	"}\n"
+	"\n"
+	"float LB_Shadow( int b, float type, vec4 position, float viewDepth, vec3 toLight )\n"
+	"{\n"
+	"	int shadowIndex = 0;\n"
+	"	if( type == 3.0 )\n"
+	"	{\n"
+	"		vec3 toLightGlobal = vec3( dot( rpModelMatrixX.xyz, toLight ), dot( rpModelMatrixY.xyz, toLight ), dot( rpModelMatrixZ.xyz, toLight ) );\n"
+	"		vec3 absToLightGlobal = abs( toLightGlobal );\n"
+	"		if( absToLightGlobal.x >= absToLightGlobal.y && absToLightGlobal.x >= absToLightGlobal.z )\n"
+	"		{\n"
+	"			shadowIndex = ( toLightGlobal.x > 0.0 ) ? 1 : 0;\n"
+	"		}\n"
+	"		else if( absToLightGlobal.y >= absToLightGlobal.z )\n"
+	"		{\n"
+	"			shadowIndex = ( toLightGlobal.y > 0.0 ) ? 3 : 2;\n"
+	"		}\n"
+	"		else\n"
+	"		{\n"
+	"			shadowIndex = ( toLightGlobal.z > 0.0 ) ? 5 : 4;\n"
+	"		}\n"
+	"	}\n"
+	"	else if( type == 4.0 )\n"
+	"	{\n"
+	"		vec4 cascades = lightBatch[ b + 11 ];\n"
+	"		shadowIndex = int( viewDepth >= cascades.x ) + int( viewDepth >= cascades.y ) + int( viewDepth >= cascades.z ) + int( viewDepth >= cascades.w );\n"
+	"	}\n"
+	"\n"
+	"	int m = b + 12 + shadowIndex * 4;\n"
+	"	vec4 shadowParms = lightBatch[ b + 10 ];\n"
+	"	vec4 shadowTexcoord = vec4( dot( position, lightBatch[ m ] ), dot( position, lightBatch[ m + 1 ] ), dot( position, lightBatch[ m + 2 ] ), dot( position, lightBatch[ m + 3 ] ) );\n"
+	"	shadowTexcoord.xyz /= shadowTexcoord.w;\n"
+	"	shadowTexcoord.z = shadowTexcoord.z * shadowParms.y;\n"
+	// the atlases are a single layer
+	"	shadowTexcoord.w = 0.0;\n"
+	"\n"
+	// a main may have returned for some pixels already, implicit derivatives are undefined here
+	"	vec2 jitterTC = gl_FragCoord.xy * rpScreenCorrectionFactor.xy + rpJitterTexOffset.xy;\n"
+	"	float randomAngle = textureLod( LB_JITTER, jitterTC, 0.0 ).x * PI;\n"
+	"	vec2 rot = vec2( cos( randomAngle ), sin( randomAngle ) );\n"
+	"	float shadowTexelSize = shadowParms.x * rpJitterTexScale.x;\n"
+	"	if( shadowParms.z > 0.5 )\n"
+	"	{\n"
+	"		return LB_PCF( LB_CACHE_ATLAS, shadowTexcoord, shadowTexelSize, rot );\n"
+	"	}\n"
+	"	return LB_PCF( LB_FRAME_ATLAS, shadowTexcoord, shadowTexelSize, rot );\n"
+	"}\n"
+	"\n"
+	// what the light stage of slot b adds to the pixel, see DrawDeferredLight
+	"vec3 LB_Light( int b, mediump sampler2D falloffMap, mediump sampler2D projectionMap, vec4 position, vec3 normal, vec3 viewVector,\n"
+	"			   vec3 albedo, vec3 specular, float viewDepth, vec3 facingNormal )\n"
+	"{\n"
+	"	if( !LB_Inside( b, position ) )\n"
+	"	{\n"
+	"		return vec3( 0.0 );\n"
+	"	}\n"
+	"\n"
+	"	vec4 origin = lightBatch[ b ];\n"
+	"	float type = origin.w;\n"
+	"	vec3 toLight = origin.xyz - position.xyz;\n"
+	"\n"
+	// the interaction culled the triangles facing away from the light, 10.w is 1 then
+	"	if( lightBatch[ b + 10 ].w > 0.5 && type != 1.0 && dot( facingNormal, toLight ) < 0.0 )\n"
+	"	{\n"
+	"		return vec3( 0.0 );\n"
+	"	}\n"
+	"\n"
+	"	vec3 lightProjection = vec3( dot( position, lightBatch[ b + 5 ] ), dot( position, lightBatch[ b + 6 ] ), dot( position, lightBatch[ b + 7 ] ) );\n"
+	"	float falloff = dot( position, lightBatch[ b + 8 ] );\n"
+	"	mediump vec4 lightFalloff = textureLod( falloffMap, vec2( falloff, 0.5 ), 0.0 );\n"
+	"	mediump vec4 lightProj = textureLod( projectionMap, lightProjection.xy / lightProjection.z, 0.0 );\n"
+	"	vec3 lightColorParm = lightBatch[ b + 9 ].rgb;\n"
+	"\n"
+	"	if( type == 1.0 )\n"
+	"	{\n"
+	// interactionAmbient.ps, the specular map of an ambient light is black
+	"		return albedo * sRGBToLinearRGB( lightColorParm ) * lightProj.rgb * lightFalloff.rgb;\n"
+	"	}\n"
+	"\n"
+	"	vec3 lightVector = normalize( toLight );\n"
+	"	float ldotN = clamp( dot( normal, lightVector ), 0.0, 1.0 );\n"
+	"#if defined( USE_HALF_LAMBERT )\n"
+	"	float halfLdotN = dot( normal, lightVector ) * 0.5 + 0.5;\n"
+	"	halfLdotN *= halfLdotN;\n"
+	"	float lambert = mix( ldotN, halfLdotN, 0.5 );\n"
+	"#else\n"
+	"	float lambert = ldotN;\n"
+	"#endif\n"
+	"\n"
+	"	vec3 halfAngleVector = normalize( lightVector + viewVector );\n"
+	"	float hdotN = clamp( dot( halfAngleVector, normal ), 0.0, 1.0 );\n"
+	"	float specularBase2 = hdotN * hdotN;\n"
+	"	float specularBase4 = specularBase2 * specularBase2;\n"
+	"	float specularBase8 = specularBase4 * specularBase4;\n"
+	"\n"
+	"	vec3 diffuseColor = albedo * sRGBToLinearRGB( lightColorParm );\n"
+	"	vec3 specularColor = specular * ( specularBase8 * specularBase2 ) * sRGBToLinearRGB( lightColorParm * 2.0 );\n"
+	"	vec3 lightColor = sRGBToLinearRGB( lightProj.rgb * lightFalloff.rgb );\n"
+	"\n"
+	"	vec3 color = ( diffuseColor + specularColor ) * lambert * lightColor;\n"
+	"	if( type >= 2.0 )\n"
+	"	{\n"
+	"		color *= LB_Shadow( b, type, position, viewDepth, toLight );\n"
+	"	}\n"
+	"	return color;\n"
+	"}\n"
+	"\n";
+
+// globals of the batch programs, the per light data is in lightbatch_ubo
+static const renderParm_t deferredLightBatchFragmentParms[] =
+{
+	RENDERPARM_USER0,				// window coordinates to normalized device coordinates
+	RENDERPARM_USER1,				// 1 / P00, P02, P03, P32 of the projection
+	RENDERPARM_USER2,				// 1 / P11, P12, P13, P33 of the projection
+	RENDERPARM_SCREENCORRECTIONFACTOR,	// xy the jitter texture coordinates of a pixel
+	RENDERPARM_JITTERTEXSCALE,
+	RENDERPARM_JITTERTEXOFFSET,
+	RENDERPARM_MODELMATRIX_X,		// view space to world space
+	RENDERPARM_MODELMATRIX_Y,
+	RENDERPARM_MODELMATRIX_Z,
+};
+
+/*
+------------------------------------------------
+From the G-buffer: an instance per screen tile rectangle, with the mask of the batch's lights
+that reach it. Every pixel fetches its G-buffer once for all of them.
+------------------------------------------------
+*/
+
+static const char* const deferredLightBatchVertexShader =
+	"in vec4 in_Position;\n"
+	"in vec4 in_InstanceMVPX;	// the tiles: x1 y1 x2 y2 in normalized device coordinates\n"
+	"in vec4 in_InstanceMVPY;	// x: the mask of the slots that reach them\n"
+	"\n"
+	"flat out highp uint vofi_LightMask;\n"
+	"\n"
+	"void main()\n"
+	"{\n"
+	"	vec2 corner = in_Position.xy * 0.5 + 0.5;\n"
+	"	gl_Position = vec4( mix( in_InstanceMVPX.xy, in_InstanceMVPX.zw, corner ), 0.0, 1.0 );\n"
+	"	vofi_LightMask = uint( in_InstanceMVPY.x + 0.5 );\n"
+	"}\n";
+
+static const char* const deferredLightBatchFragmentShader =
+	"layout( location = 0 ) inout mediump vec4 fb_Color;\n"
+	"layout( location = 1 ) inout highp vec4 fb_GBuffer0;\n"
+	"layout( location = 2 ) inout highp vec4 fb_GBuffer1;\n"
+	"layout( location = 3 ) inout highp vec4 fb_GBuffer2;\n"
+	"\n"
+	"uniform mediump sampler2D samp3;	// falloff and projection of slot 0\n"
+	"uniform mediump sampler2D samp4;\n"
+	"uniform mediump sampler2D samp5;\n"
+	"uniform mediump sampler2D samp6;\n"
+	"uniform mediump sampler2D samp7;\n"
+	"uniform mediump sampler2D samp8;\n"
+	"uniform mediump sampler2D samp9;\n"
+	"uniform mediump sampler2D samp10;\n"
+	"uniform mediump sampler2D samp11;\n"
+	"uniform mediump sampler2D samp12;\n"
+	"uniform mediump sampler2D samp13;\n"
+	"uniform mediump sampler2D samp14;\n"
+	"\n"
+	"flat in highp uint vofi_LightMask;\n"
+	"\n"
+	"void main()\n"
+	"{\n"
+	"	vec4 gbuffer0 = fb_GBuffer0;\n"
+	"	vec4 gbuffer1 = fb_GBuffer1;\n"
+	"	vec4 gbuffer2 = fb_GBuffer2;\n"
+	"\n"
+	"	vec3 albedo = gbuffer0.rgb * gbuffer0.rgb;\n"
+	"	vec3 specular = vec3( gbuffer0.a, gbuffer1.a, gbuffer2.a );\n"
+	"	specular *= specular;\n"
+	"\n"
+	// sky, surfaces without lighting and the ones the interactions light
+	"	if( max( max( max( albedo.r, albedo.g ), max( albedo.b, specular.r ) ), max( specular.g, specular.b ) ) <= 0.0 )\n"
+	"	{\n"
+	"		return;\n"
+	"	}\n"
+	"\n"
+	"	float viewDepth = UnpackDepth( gbuffer2.rgb );\n"
+	"	vec2 ndc = gl_FragCoord.xy * rpUser0.xy + rpUser0.zw;\n"
+	"	float z = -viewDepth;\n"
+	"	float w = rpUser1.w * z + rpUser2.w;\n"
+	"	vec4 position = vec4( ( ndc.x * w - rpUser1.y * z - rpUser1.z ) * rpUser1.x,\n"
+	"						  ( ndc.y * w - rpUser2.y * z - rpUser2.z ) * rpUser2.x, z, 1.0 );\n"
+	"	vec3 normal = UnpackNormal( gbuffer1.rgb );\n"
+	"	vec3 viewVector = normalize( -position.xyz );\n"
+	"\n"
+	"	uint mask = vofi_LightMask;\n"
+	"	vec3 color = vec3( 0.0 );\n"
+	"	if( ( mask & 1u ) != 0u ) color += LB_Light( 0 * LB_VEC4S, samp3, samp4, position, normal, viewVector, albedo, specular, viewDepth, normal );\n"
+	"	if( ( mask & 2u ) != 0u ) color += LB_Light( 1 * LB_VEC4S, samp5, samp6, position, normal, viewVector, albedo, specular, viewDepth, normal );\n"
+	"	if( ( mask & 4u ) != 0u ) color += LB_Light( 2 * LB_VEC4S, samp7, samp8, position, normal, viewVector, albedo, specular, viewDepth, normal );\n"
+	"	if( ( mask & 8u ) != 0u ) color += LB_Light( 3 * LB_VEC4S, samp9, samp10, position, normal, viewVector, albedo, specular, viewDepth, normal );\n"
+	"	if( ( mask & 16u ) != 0u ) color += LB_Light( 4 * LB_VEC4S, samp11, samp12, position, normal, viewVector, albedo, specular, viewDepth, normal );\n"
+	"	if( ( mask & 32u ) != 0u ) color += LB_Light( 5 * LB_VEC4S, samp13, samp14, position, normal, viewVector, albedo, specular, viewDepth, normal );\n"
+	"\n"
+	"	fb_Color = vec4( fb_Color.rgb + color, 1.0 );\n"
+	"}\n";
+
+/*
+------------------------------------------------
+A surface outside the G-buffer with several lights: what the G-buffer pass would have stored is
+computed in place, then every light of the draw adds to it, blended one one like the interactions.
+------------------------------------------------
+*/
+
+static const renderParm_t deferredForwardFragmentParms[] =
+{
+	RENDERPARM_DIFFUSEMODIFIER,		// color of the diffuse stage
+	RENDERPARM_SPECULARMODIFIER,	// color of the specular stage
+	RENDERPARM_SCREENCORRECTIONFACTOR,
+	RENDERPARM_JITTERTEXSCALE,
+	RENDERPARM_JITTERTEXOFFSET,
+	RENDERPARM_MODELMATRIX_X,
+	RENDERPARM_MODELMATRIX_Y,
+	RENDERPARM_MODELMATRIX_Z,
+};
+
+static const char* const deferredForwardFragmentShader =
+	"uniform mediump sampler2D samp0;	// bump map\n"
+	"uniform mediump sampler2D samp1;	// specular map\n"
+	"uniform mediump sampler2D samp2;	// diffuse map, YCoCg\n"
+	"uniform mediump sampler2D samp6;	// falloff and projection of slot 0\n"
+	"uniform mediump sampler2D samp7;\n"
+	"uniform mediump sampler2D samp8;\n"
+	"uniform mediump sampler2D samp9;\n"
+	"uniform mediump sampler2D samp10;\n"
+	"uniform mediump sampler2D samp11;\n"
+	"uniform mediump sampler2D samp12;\n"
+	"uniform mediump sampler2D samp13;\n"
+	"uniform float " TEXTURE_LOD_BIAS_UNIFORM_NAME ";\n"
+	"\n"
+	"in highp vec4 vofi_TexCoordBumpDiffuse;\n"
+	"in highp vec2 vofi_TexCoordSpecular;\n"
+	"in mediump vec3 vofi_Tangent;\n"
+	"in mediump vec3 vofi_Bitangent;\n"
+	"in mediump vec3 vofi_Normal;\n"
+	"in highp float vofi_ViewDepth;\n"
+	"in mediump vec4 vofi_Color;\n"
+	"in mediump vec3 vofi_AmbientHalfAngle;\n"
+	"in mediump vec3 vofi_AmbientLight;\n"
+	"in highp vec3 vofi_ViewPosition;\n"
+	"\n"
+	"layout( location = 0 ) out mediump vec4 fo_Color;\n"
+	"\n"
+	"vec3 ConvertYCoCgToRGB( vec4 YCoCg )\n"
+	"{\n"
+	"	YCoCg.z = ( YCoCg.z * 31.875 ) + 1.0;\n"
+	"	YCoCg.z = 1.0 / YCoCg.z;\n"
+	"	YCoCg.xy *= YCoCg.z;\n"
+	"	vec3 rgbColor;\n"
+	"	rgbColor.x = dot( YCoCg, vec4( 1.0, -1.0, 0.0, 1.0 ) );\n"
+	"	rgbColor.y = dot( YCoCg, vec4( 0.0, 1.0, -0.50196078, 1.0 ) );\n"
+	"	rgbColor.z = dot( YCoCg, vec4( -1.0, -1.0, 1.00392156, 1.0 ) );\n"
+	"	return rgbColor;\n"
+	"}\n"
+	"\n"
+	"void main()\n"
+	"{\n"
+	"	vec4 position = vec4( vofi_ViewPosition, 1.0 );\n"
+	"\n"
+	// nothing to sample where none of the lights reach
+	"	if( !LB_Inside( 0 * LB_VEC4S, position ) && !LB_Inside( 1 * LB_VEC4S, position ) && !LB_Inside( 2 * LB_VEC4S, position ) && !LB_Inside( 3 * LB_VEC4S, position ) )\n"
+	"	{\n"
+	"		fo_Color = vec4( 0.0 );\n"
+	"		return;\n"
+	"	}\n"
+	"\n"
+	// the G-buffer values of the surface, see deferredGBufferFragmentShader
+	"	mediump vec4 bumpMap = texture( samp0, vofi_TexCoordBumpDiffuse.xy, " TEXTURE_LOD_BIAS_UNIFORM_NAME " );\n"
+	"	mediump vec4 YCoCG = texture( samp2, vofi_TexCoordBumpDiffuse.zw, " TEXTURE_LOD_BIAS_UNIFORM_NAME " );\n"
+	"	mediump vec4 specMapSRGB = texture( samp1, vofi_TexCoordSpecular, " TEXTURE_LOD_BIAS_UNIFORM_NAME " );\n"
+	"\n"
+	"	vec3 diffuseMap = sRGBToLinearRGB( ConvertYCoCgToRGB( YCoCG ) );\n"
+	"	vec3 specMap = sRGBToLinearRGB( specMapSRGB.rgb );\n"
+	"\n"
+	"	vec3 localNormal;\n"
+	"	localNormal.xy = bumpMap.wy - 0.5;\n"
+	"	localNormal.z = sqrt( abs( dot( localNormal.xy, localNormal.xy ) - 0.25 ) );\n"
+	"	localNormal = normalize( localNormal );\n"
+	"\n"
+	"	vec3 normal = localNormal.x * vofi_Tangent + localNormal.y * vofi_Bitangent + localNormal.z * vofi_Normal;\n"
+	"	float normalLengthSqr = dot( normal, normal );\n"
+	"	normal = ( normalLengthSqr > 1e-12 ) ? normal * inversesqrt( normalLengthSqr ) : vec3( 0.0, 0.0, 1.0 );\n"
+	"\n"
+	"	vec3 albedo = clamp( diffuseMap * sRGBToLinearRGB( rpDiffuseModifier.rgb ) * vofi_Color.rgb, 0.0, 1.0 );\n"
+	"	vec3 specular = clamp( specMap * sRGBToLinearRGB( rpSpecularModifier.rgb ) * vofi_Color.rgb, 0.0, 1.0 );\n"
+	"\n"
+	"	vec3 viewVector = normalize( -position.xyz );\n"
+	"	vec3 facingNormal = vofi_Normal;\n"
+	"	float viewDepth = vofi_ViewDepth;\n"
+	"\n"
+	"	vec3 color = LB_Light( 0 * LB_VEC4S, samp6, samp7, position, normal, viewVector, albedo, specular, viewDepth, facingNormal );\n"
+	"	color += LB_Light( 1 * LB_VEC4S, samp8, samp9, position, normal, viewVector, albedo, specular, viewDepth, facingNormal );\n"
+	"	color += LB_Light( 2 * LB_VEC4S, samp10, samp11, position, normal, viewVector, albedo, specular, viewDepth, facingNormal );\n"
+	"	color += LB_Light( 3 * LB_VEC4S, samp12, samp13, position, normal, viewVector, albedo, specular, viewDepth, facingNormal );\n"
+	"\n"
+	"	fo_Color = vec4( color, 1.0 );\n"
+	"}\n";
+
+/*
+------------------------------------------------
+The static casters of a light from the shadow cache into its frame atlas tile, under the dynamic
+casters drawn next. The viewport is the destination tile, rpUser0.xy the offset to the source.
+------------------------------------------------
+*/
+
+static const renderParm_t deferredShadowCopyFragmentParms[] =
+{
+	RENDERPARM_USER0,
+};
+
+static const char* const deferredShadowCopyFragmentShader =
+	"uniform highp sampler2DArray samp0;	// the shadow cache, bound with a sampler without depth compare\n"
+	"\n"
+	"void main()\n"
+	"{\n"
+	"	ivec2 texel = ivec2( gl_FragCoord.xy ) + ivec2( rpUser0.xy );\n"
+	"	gl_FragDepth = texelFetch( samp0, ivec3( texel, 0 ), 0 ).x;\n"
+	"}\n";
+
+/*
+================================================================================================
 Full screen programs: the scene color to the back buffer without HDR, and the start up test
 of the framebuffer fetch with four color attachments
 ================================================================================================
@@ -689,9 +1070,10 @@ The source and the uniform layout of a program of the deferred shading, by the n
 idRenderProgManager::Init gives it
 ==================
 */
-static bool R_DeferredShaderSource( const char* name, const char* suffix, rpStage_t stage, idStr& glsl, idStr& layout )
+static bool R_DeferredShaderSource( const char* name, const char* suffix, rpStage_t stage, idStr& glsl, idStr& layout, bool& usesFetch )
 {
 	const char* body = NULL;
+	const char* lightBatchFunctions = NULL;
 	const renderParm_t* parms = NULL;
 	int numParms = 0;
 	bool fetch = false;
@@ -699,7 +1081,61 @@ static bool R_DeferredShaderSource( const char* name, const char* suffix, rpStag
 	bool packFunctions = false;
 	idStr defines;
 
-	if( idStr::Icmp( name, "_deferred_gbuffer" ) == 0 )
+	if( idStr::Icmp( name, "_deferred_lightbatch" ) == 0 )
+	{
+		if( stage == SHADER_STAGE_VERTEX )
+		{
+			body = deferredLightBatchVertexShader;
+		}
+		else
+		{
+			body = deferredLightBatchFragmentShader;
+			parms = deferredLightBatchFragmentParms;
+			numParms = sizeof( deferredLightBatchFragmentParms ) / sizeof( deferredLightBatchFragmentParms[0] );
+			fetch = true;
+			colorFunctions = true;
+			packFunctions = true;
+			lightBatchFunctions = deferredLightBatchCommon;
+			defines += "#define LB_SLOTS 6\n#define LB_FRAME_ATLAS samp0\n#define LB_CACHE_ATLAS samp1\n#define LB_JITTER samp2\n";
+		}
+	}
+	else if( idStr::Icmp( name, "_deferred_forward" ) == 0 )
+	{
+		if( stage == SHADER_STAGE_VERTEX )
+		{
+			body = deferredGBufferVertexShader;
+			parms = deferredGBufferVertexParms;
+			numParms = sizeof( deferredGBufferVertexParms ) / sizeof( deferredGBufferVertexParms[0] );
+			defines += "#define FORWARD_LIGHTS\n";
+			if( idStr::Icmp( suffix, "_skinned" ) == 0 )
+			{
+				defines += "#define USE_GPU_SKINNING\n";
+			}
+		}
+		else
+		{
+			body = deferredForwardFragmentShader;
+			parms = deferredForwardFragmentParms;
+			numParms = sizeof( deferredForwardFragmentParms ) / sizeof( deferredForwardFragmentParms[0] );
+			colorFunctions = true;
+			lightBatchFunctions = deferredLightBatchCommon;
+			defines += "#define LB_SLOTS 4\n#define LB_FRAME_ATLAS samp3\n#define LB_CACHE_ATLAS samp4\n#define LB_JITTER samp5\n";
+		}
+	}
+	else if( idStr::Icmp( name, "_deferred_shadowcopy" ) == 0 )
+	{
+		if( stage == SHADER_STAGE_VERTEX )
+		{
+			body = deferredScreenVertexShader;
+		}
+		else
+		{
+			body = deferredShadowCopyFragmentShader;
+			parms = deferredShadowCopyFragmentParms;
+			numParms = sizeof( deferredShadowCopyFragmentParms ) / sizeof( deferredShadowCopyFragmentParms[0] );
+		}
+	}
+	else if( idStr::Icmp( name, "_deferred_gbuffer" ) == 0 )
 	{
 		if( stage == SHADER_STAGE_VERTEX )
 		{
@@ -828,8 +1264,13 @@ static bool R_DeferredShaderSource( const char* name, const char* suffix, rpStag
 	{
 		glsl += deferredShaderPackFunctions;
 	}
+	if( lightBatchFunctions != NULL )
+	{
+		glsl += lightBatchFunctions;
+	}
 	glsl += body;
 
+	usesFetch = fetch;
 	return true;
 }
 

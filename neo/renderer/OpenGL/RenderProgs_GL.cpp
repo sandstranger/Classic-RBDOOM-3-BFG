@@ -74,6 +74,7 @@ void idRenderProgManager::BindProgram( int index )
 
 	#if defined(ANDROID) && !defined(USE_VULKAN)
 	tr.backend.FlushMultiDrawBatch();
+	tr.backend.pc.c_programBinds++;
 	#endif
 	current = index;
 
@@ -129,15 +130,20 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 #if defined(ANDROID)
 	if( R_IsDeferredShader( shader.name.c_str() ) )
 	{
-		// the programs of the on-tile deferred shading are GLSL ES of the engine,
-		// without the framebuffer fetch they are never used
-		if( !R_DeferredShadingDriverSupport() )
+		// the programs of the on-tile deferred shading and of the multi light shading are GLSL ES 3.20
+		// of the engine; the ones reading the framebuffer are never used without the framebuffer fetch
+		if( !isGLES32Version() )
 		{
 			return;
 		}
 		inFile = shader.name + shader.nameOutSuffix;
 		outFileGLSL = inFile;
-		if( !R_DeferredShaderSource( shader.name.c_str(), shader.nameOutSuffix.c_str(), shader.stage, programGLSL, programUniforms ) )
+		bool usesFetch = false;
+		if( !R_DeferredShaderSource( shader.name.c_str(), shader.nameOutSuffix.c_str(), shader.stage, programGLSL, programUniforms, usesFetch ) )
+		{
+			return;
+		}
+		if( usesFetch && !R_DeferredShadingDriverSupport() )
 		{
 			return;
 		}
@@ -503,6 +509,16 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
                 glUniformBlockBinding( program, blockIndex, 0 );
             }
         }
+#if defined(ANDROID)
+        // the light data of the multi light programs, see idRenderBackend::UploadLightBatchData
+        {
+            GLint lightBatchBlock = glGetUniformBlockIndex( program, "lightbatch_ubo" );
+            if( lightBatchBlock != -1 )
+            {
+                glUniformBlockBinding( program, lightBatchBlock, 1 );
+            }
+        }
+#endif
 
         glUseProgram( program );
         for( int i = 0; i < MAX_PROG_TEXTURE_PARMS; ++i )
@@ -624,6 +640,16 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
             glUniformBlockBinding( program, blockIndex, 0 );
         }
     }
+#if defined(ANDROID)
+    // the light data of the multi light programs, see idRenderBackend::UploadLightBatchData
+    {
+        GLint lightBatchBlock = glGetUniformBlockIndex( program, "lightbatch_ubo" );
+        if( lightBatchBlock != -1 )
+        {
+            glUniformBlockBinding( program, lightBatchBlock, 1 );
+        }
+    }
+#endif
 
     glUseProgram( program );
     for( int i = 0; i < MAX_PROG_TEXTURE_PARMS; ++i )
@@ -754,6 +780,13 @@ void idRenderProgManager::CommitUniforms( uint64 stateBits )
 idRenderProgManager::DeferredShadersReady
 ================================================================================================
 */
+bool idRenderProgManager::EngineProgramReady( int builtin ) const
+{
+	// BindShader_Builtin binds the program at the index of the builtin
+	return builtin >= 0 && builtin < MAX_BUILTINS && builtinShaders[builtin] == builtin && builtin < renderProgs.Num()
+		   && renderProgs[builtin].progId != INVALID_PROGID;
+}
+
 bool idRenderProgManager::DeferredShadersReady() const
 {
 	for( int i = BUILTIN_DEFERRED_GBUFFER; i <= BUILTIN_DEFERRED_TEST_FETCH; i++ )

@@ -404,6 +404,21 @@ public:
 	{
 		return actuallyloaded;
 	}
+
+	// Render targets of optional features (shadow maps, bloom, SSAO, SMAA, ...) are created
+	// without GPU storage: the generator only fills in the options, Framebuffer allocates the
+	// storage when the feature runs (EnsureAllocated) and gives it back when it stops (ReleaseStorage).
+	// Bind() of an unallocated lazy target still allocates it, nothing ever samples a missing texture.
+	bool		IsLazyRenderTarget() const
+	{
+		return lazyRenderTarget;
+	}
+	void		SetLazyRenderTarget()
+	{
+		lazyRenderTarget = true;
+	}
+	bool		EnsureAllocated();
+	void		ReleaseStorage();
 	GLuint				texnum;				// gl texture binding
 private:
 	friend class idImageManager;
@@ -473,6 +488,29 @@ private:
 #endif
 	bool				renderTargetPoolAllocated;
 	bool				actuallyloaded;
+	bool				lazyRenderTarget = false;		// see IsLazyRenderTarget
+	bool				forceAllocation = false;		// the generator runs for a real allocation
+	int					renderTargetAliasKey = 0;		// RenderTargetPool: transient targets of this key share storage
+public:
+	// transient render targets whose lifetimes never overlap share one texture, see RenderTargetPool
+	void				SetRenderTargetAliasKey( int key )
+	{
+		renderTargetAliasKey = key;
+	}
+	int					GetRenderTargetAliasKey() const
+	{
+		return renderTargetAliasKey;
+	}
+	bool				IsRenderTargetPoolAllocated() const
+	{
+		return renderTargetPoolAllocated;
+	}
+#if !defined( USE_VULKAN )
+	GLuint				GetInternalFormat() const
+	{
+		return internalFormat;
+	}
+#endif
 };
 
 // data is RGBA
@@ -519,6 +557,9 @@ public:
 	// The callback will be issued immediately, and later if images are reloaded or vid_restart
 	// The callback function should call one of the idImage::Generate* functions to fill in the data
 	idImage* 			ImageFromFunction( const char* name, void ( *generatorFunction )( idImage* image ) );
+
+	// A render target the callback only describes: no GPU storage until idImage::EnsureAllocated
+	idImage* 			LazyRenderTargetFromFunction( const char* name, void ( *generatorFunction )( idImage* image ) );
 	
 	// scratch images are for internal renderer use.  ScratchImage names should always begin with an underscore
 	idImage* 			ScratchImage( const char* name, idImageOpts* imgOpts, textureFilter_t filter, textureRepeat_t repeat, textureUsage_t usage );
@@ -558,6 +599,7 @@ public:
 	// RB begin
 	idImage*			shadowImage[5];
 	idImage*			shadowAtlasImage;			// shadow maps of all lights of a frame, see idRenderBackend::ShadowAtlasPass
+	idImage*			shadowCacheImage;			// shadow maps of the static casters of stationary lights, kept between frames
 	idImage*			jitterImage1;				// shadow jitter
 	idImage*			jitterImage4;
 	idImage*			jitterImage16;
@@ -605,6 +647,17 @@ public:
 };
 
 extern idImageManager*	globalImages;		// pointer to global list for the rest of the system
+
+// render target allocation counters, see listFramebuffers
+struct renderTargetCounters_t
+{
+	int		lazyAllocationsSkipped;		// a lazy target described without storage
+	int		lateAllocations;			// a lazy target allocated by Bind(), not by its feature
+	int		allocations;				// render target textures allocated (pool hits included)
+	int		deallocations;				// render target textures given back
+	int		temporaryAttachmentsAvoided;// Framebuffer attaches the image storage directly, no throwaway texture
+};
+extern renderTargetCounters_t renderTargetCounters;
 
 /*
 ====================================================================

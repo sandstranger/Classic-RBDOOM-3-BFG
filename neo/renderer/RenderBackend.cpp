@@ -1460,6 +1460,7 @@ struct worldMergeCasters_t
 	const viewLight_t*	vLight;
 	int					firstIndex[6];	// per shadow map side, a projected light only has the first
 	int					numIndexes[6];
+	bool				allStatic;		// every merged caster may be kept by the shadow cache
 };
 
 struct worldMergeWriter_t
@@ -1769,6 +1770,14 @@ static void R_WorldMergeCasters( worldMergeWriter_t& writer, const viewLight_t* 
 
 	worldMergeCasters_t& merged = s_worldMergeCasters[s_numWorldMergeCasters++];
 	merged.vLight = vLight;
+	merged.allStatic = true;
+	for( int i = 0; i < numCasters; i++ )
+	{
+		if( casters[i]->shadowCacheId == 0 )
+		{
+			merged.allStatic = false;
+		}
+	}
 
 	const drawSurf_t** sideCasters = ( const drawSurf_t** )_alloca( numCasters * sizeof( const drawSurf_t* ) );
 	for( int side = 0; side < 6; side++ )
@@ -2608,7 +2617,7 @@ void idRenderBackend::DrawSingleInteraction( drawInteraction_t* din, const gpuIn
 	// texture 2 is the per-surface diffuse map
 	GL_SelectTexture( INTERACTION_TEXUNIT_BASECOLOR );
 	din->diffuseImage->Bind();
-	
+
 #if defined(ANDROID) && !defined(USE_VULKAN)
 	if( instances != NULL && instanceCount > 1 ) DrawElementsWithCounters( din->surf, instances, instanceCount );
 	else
@@ -2616,6 +2625,7 @@ void idRenderBackend::DrawSingleInteraction( drawInteraction_t* din, const gpuIn
 	{
 		DrawElementsWithCounters( din->surf );
 	}
+	pc.c_interactionDraws++;
 }
 
 /*
@@ -2727,6 +2737,11 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 		{
 			continue;
 		}
+		// a multi light draw lit it with this light, see DrawForwardLightBatches
+		if( walk->forwardBatched )
+		{
+			continue;
+		}
 #endif
 
 		const idMaterial* surfaceShader = walk->material;
@@ -2832,7 +2847,7 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 		screenCorrectionParm[1] = 1.0f / JITTER_SIZE;
 		// texel size for the PCF taps, the atlas texel is as big as a texel of the light's own resolution
 #if !defined(USE_VULKAN)
-		screenCorrectionParm[2] = ( atlasLight != NULL ) ? 1.0f / shadowAtlasSize : 1.0f / shadowMapResolutions[vLight->shadowLOD];
+		screenCorrectionParm[2] = ( atlasLight != NULL ) ? 1.0f / atlasLight->atlasSize : 1.0f / shadowMapResolutions[vLight->shadowLOD];
 #else
 		screenCorrectionParm[2] = 1.0f / shadowMapResolutions[vLight->shadowLOD];
 #endif
@@ -2920,7 +2935,8 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 #if !defined(USE_VULKAN)
 			if( atlasLight != NULL )
 			{
-				globalImages->shadowAtlasImage->Bind();
+				// the frame atlas, or the shadow cache for a light without dynamic casters
+				atlasLight->image->Bind();
 			}
 			else
 #endif
@@ -3281,7 +3297,8 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 #else
 				DrawElementsWithCounters( surf );
 #endif
-				
+				pc.c_interactionDraws++;
+
 				renderLog.CloseBlock();
 				continue;
 			}
@@ -3475,8 +3492,17 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 
 	if( fillGbuffer )
 	{
+#if !defined(USE_VULKAN)
+		// the normals of SSAO / SSGI get their storage when one of them is on
+		if( !Framebuffer::EnsureGeometryBufferTargets() )
+		{
+			renderLog.CloseBlock();
+			renderLog.CloseMainBlock();
+			return;
+		}
+#endif
 		globalFramebuffers.geometryBufferFBO->Bind();
-	
+
 		GL_Clear(true, false, false, 0, 0.0f, 0.0f, 0.0f, 1.0f, false);
 	}
 	
@@ -4748,25 +4774,110 @@ void idRenderBackend::SetupShadowMapMatrices( const viewLight_t* vLight, int sid
 
 /*
 =====================
+R_SortedContains / R_SortShadowCacheIds
+=====================
+*/
+static bool R_SortedContains( const idList<uint32>& list, uint32 value )
+{
+	int low = 0;
+	int high = list.Num() - 1;
+	while( low <= high )
+	{
+		const int mid = ( low + high ) >> 1;
+		if( list[mid] == value )
+		{
+			return true;
+		}
+		if( list[mid] < value )
+		{
+			low = mid + 1;
+		}
+		else
+		{
+			high = mid - 1;
+		}
+	}
+	return false;
+}
+
+static int R_CompareShadowCacheIds( const void* a, const void* b )
+{
+	const uint32 ia = *( const uint32* )a;
+	const uint32 ib = *( const uint32* )b;
+	return ( ia < ib ) ? -1 : ( ( ia > ib ) ? 1 : 0 );
+}
+
+static void R_SortShadowCacheIds( idList<uint32>& list )
+{
+	if( list.Num() > 1 )
+	{
+		qsort( list.Ptr(), list.Num(), sizeof( uint32 ), R_CompareShadowCacheIds );
+	}
+}
+
+/*
+=====================
 idRenderBackend::DrawShadowMapCasters
 
 Draws the casters of one shadow map side into the bound target and viewport
 =====================
 */
 void idRenderBackend::DrawShadowMapCasters( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side,
-		const idRenderMatrix& lightViewRenderMatrix, const idRenderMatrix& lightProjectionRenderMatrix )
+		const idRenderMatrix& lightViewRenderMatrix, const idRenderMatrix& lightProjectionRenderMatrix, int casterFilter,
+		const idList<uint32>* cachedCasters )
 {
 	// the front end flags the point light sides a caster can't reach
 	const int culledSideBit = ( vLight->pointLight && !vLight->parallel && side >= 0 ) ? ( 1 << side ) : 0;
 
+	// the shadow cache holds the static casters (drawSurf_t::shadowCacheId), the frame atlas the dynamic ones on top,
+	// with the static ones the cache entry doesn't have yet
+	auto casterPasses = [casterFilter, cachedCasters]( const drawSurf_t * surf ) -> bool
+	{
+		if( casterFilter == SHADOW_CASTERS_STATIC )
+		{
+			return surf->shadowCacheId != 0;
+		}
+		if( casterFilter == SHADOW_CASTERS_DYNAMIC )
+		{
+			return surf->shadowCacheId == 0 || ( cachedCasters != NULL && !R_SortedContains( *cachedCasters, surf->shadowCacheId ) );
+		}
+		return true;
+	};
+
 	// process the chain of shadows with the current rendering state
 	currentSpace = NULL;
+
+	pc.c_shadowMapSides++;
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
 	// the opaque world casters of this side with one call, in the identity transform of the world areas
 	const worldMergeCasters_t* mergedCasters = R_FindWorldMergeCasters( vLight );
 	const int mergedSide = ( side < 0 ) ? 0 : side;
-	if( mergedCasters != NULL && mergedSide < 6 && mergedCasters->numIndexes[mergedSide] > 0 )
+
+	// the merged block holds whole sets of casters: drawn when the filter wants any of them, else the
+	// filter picks the merged casters one by one below
+	bool mergedHandled = false;
+	if( mergedCasters != NULL )
+	{
+		if( casterFilter == SHADOW_CASTERS_ALL )
+		{
+			mergedHandled = true;
+		}
+		else if( casterFilter == SHADOW_CASTERS_STATIC )
+		{
+			mergedHandled = mergedCasters->allStatic;
+		}
+		else
+		{
+			// drawing cached casters again only rewrites their depth
+			mergedHandled = !mergedCasters->allStatic;
+			for( const drawSurf_t* scan = drawSurfs; scan != NULL && !mergedHandled; scan = scan->nextOnLight )
+			{
+				mergedHandled = ( scan->mergedGroup == WORLD_MERGE_SHADOW_CASTER && casterPasses( scan ) );
+			}
+		}
+	}
+	if( mergedHandled && mergedSide < 6 && mergedCasters->numIndexes[mergedSide] > 0 )
 	{
 		idRenderMatrix clipMVP;
 		idRenderMatrix::Multiply( lightProjectionRenderMatrix, lightViewRenderMatrix, clipMVP );
@@ -4784,12 +4895,13 @@ void idRenderBackend::DrawShadowMapCasters( const drawSurf_t* drawSurfs, const v
 		
 		renderProgManager.BindShader_Depth();
 		DrawWorldMergeRange( mergedCasters->firstIndex[mergedSide], mergedCasters->numIndexes[mergedSide] );
+		pc.c_shadowCasterDraws++;
 	}
-	
+
 	int numShadowDrawSurfs = 0;
 	for( const drawSurf_t* scan = drawSurfs; scan != NULL; scan = scan->nextOnLight )
 	{
-		if( !( scan->shadowMapCulledSides & culledSideBit ) && scan->mergedGroup != WORLD_MERGE_SHADOW_CASTER )
+		if( !( scan->shadowMapCulledSides & culledSideBit ) && !( mergedHandled && scan->mergedGroup == WORLD_MERGE_SHADOW_CASTER ) && casterPasses( scan ) )
 		{
 			++numShadowDrawSurfs;
 		}
@@ -4803,7 +4915,7 @@ void idRenderBackend::DrawShadowMapCasters( const drawSurf_t* drawSurfs, const v
 	int shadowArrayIndex = 0;
 	for( const drawSurf_t* scan = drawSurfs; scan != NULL; scan = scan->nextOnLight )
 	{
-		if( !( scan->shadowMapCulledSides & culledSideBit ) && scan->mergedGroup != WORLD_MERGE_SHADOW_CASTER )
+		if( !( scan->shadowMapCulledSides & culledSideBit ) && !( mergedHandled && scan->mergedGroup == WORLD_MERGE_SHADOW_CASTER ) && casterPasses( scan ) )
 		{
 			shadowDrawSurfs[shadowArrayIndex++] = scan;
 		}
@@ -4821,7 +4933,7 @@ void idRenderBackend::DrawShadowMapCasters( const drawSurf_t* drawSurfs, const v
 #else
 	for( const drawSurf_t* drawSurf = drawSurfs; drawSurf != NULL; drawSurf = drawSurf->nextOnLight )
 	{
-		if( drawSurf->shadowMapCulledSides & culledSideBit )
+		if( ( drawSurf->shadowMapCulledSides & culledSideBit ) || !casterPasses( drawSurf ) )
 		{
 			continue;
 		}
@@ -5011,6 +5123,7 @@ void idRenderBackend::DrawShadowMapCasters( const drawSurf_t* drawSurfs, const v
 #else
 				DrawElementsWithCounters( drawSurf );
 #endif
+				pc.c_shadowCasterDraws++;
 				
 				// clean up
 				FinishStageTexturing( pStage, drawSurf );
@@ -5053,6 +5166,7 @@ void idRenderBackend::DrawShadowMapCasters( const drawSurf_t* drawSurfs, const v
 #else
 			DrawElementsWithCounters( drawSurf );
 #endif
+			pc.c_shadowCasterDraws++;
 		}
 	}
 
@@ -5096,6 +5210,12 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 
 	// FIXME
 #if !defined(USE_VULKAN)
+	// the array of the light's resolution gets its storage the first time a light needs it
+	if( !Framebuffer::EnsureShadowMapTargets( vLight->shadowLOD ) )
+	{
+		return;
+	}
+	drawCategory = DRAW_CATEGORY_SHADOW;
 	globalFramebuffers.shadowFBO[vLight->shadowLOD]->Bind();
 
 	if( side < 0 )
@@ -5116,6 +5236,9 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 #endif
 
 	DrawShadowMapCasters( drawSurfs, vLight, side, lightViewRenderMatrix, lightProjectionRenderMatrix );
+#if !defined(USE_VULKAN)
+	drawCategory = DRAW_CATEGORY_LIGHTING;
+#endif
 
 	// Restore the main target only when requested. For cubemap/directional shadow
 	// sets, the caller keeps the shadow FBO active across all faces/splits and
@@ -5196,17 +5319,361 @@ const idRenderBackend::shadowAtlasLight_t* idRenderBackend::FindShadowAtlasLight
 	return NULL;
 }
 
+#if defined(ANDROID)
+idCVar r_shadowCacheSize( "r_shadowCacheSize", "2048", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "GLES: size of the depth atlas that keeps the shadow maps of the static casters of stationary lights between frames: a light without moving casters renders no shadow map at all, one with moving casters copies its cached depth and draws only those. 0 renders all casters every frame", 0, 8192 );
+idCVar r_showShadowCache( "r_showShadowCache", "0", CVAR_RENDERER | CVAR_BOOL, "print every frame what the shadow cache and the shadow atlas did" );
+idCVar r_shadowCacheRebuildFrames( "r_shadowCacheRebuildFrames", "30", CVAR_RENDERER | CVAR_INTEGER, "frames in a row a light draws static casters its shadow cache entry misses on top of it, before the entry is drawn again with them", 0, 10000 );
+
+/*
+==============================================================================================
+
+SHADOW CACHE
+
+The static casters of a light are drawn once into tiles of a persistent depth atlas, the cache
+(r_shadowCacheSize). A caster is static when the front end found it through a static interaction
+(drawSurf_t::shadowCacheId): such an interaction only exists while neither the entity nor the
+light changed since the level was loaded, and freeing it, or changing the light, gives the light
+a new shadowCacheGeneration (see idInteraction::FreeSurfaces, UpdateLightDef). An entry of the
+cache belongs to one generation, so a moved light, a moved, removed or added static caster can
+never be shadowed by an old entry.
+
+Every frame, for every shadowed light:
+- the casters the view needs are not all in its entry (the camera moved and a caster now casts
+  into the view): the entry is drawn again with the casters of this frame
+- no dynamic casters: the light reads its cache tiles directly, nothing is rendered
+- dynamic casters: its frame atlas tiles get the cached depth copied in (one quad per side,
+  gl_FragDepth from the cache) and only the dynamic casters drawn on top
+
+A moving character only makes the lights it is near render it, the static world of those lights
+comes from the cache; lights it doesn't reach aren't touched. Parallel lights follow the camera
+with their cascades and are never cached.
+
+The tiles are allocated with a buddy allocator of power of two squares, the least recently used
+entries make room. An entry used by a view of this frame is never evicted or rebuilt in the same
+frame, a second view with other casters renders that light the uncached way.
+
+==============================================================================================
+*/
+
+/*
+=====================
+idRenderBackend::ShadowCacheReset
+
+Drops every entry, the cache is size texels big now (0 = no cache)
+=====================
+*/
+void idRenderBackend::ShadowCacheReset( int size )
+{
+	// heap lists: nothing here may run a destructor at exit(), Shutdown deletes them
+	for( int i = 0; i < MAX_SHADOW_CACHE_ENTRIES; i++ )
+	{
+		if( shadowCacheEntries[i].casters == NULL )
+		{
+			shadowCacheEntries[i].casters = new idList<uint32>();
+		}
+		shadowCacheEntries[i].generation = 0;
+		shadowCacheEntries[i].missingFrames = 0;
+		shadowCacheEntries[i].casters->Clear();
+	}
+	for( int level = 0; level < MAX_SHADOW_CACHE_LEVELS; level++ )
+	{
+		if( shadowCacheFreeBlocks[level] == NULL )
+		{
+			shadowCacheFreeBlocks[level] = new idList<int>();
+		}
+		( *shadowCacheFreeBlocks[level] ).Clear();
+	}
+	shadowCacheSize = size;
+	if( size > 0 )
+	{
+		( *shadowCacheFreeBlocks[0] ).Append( 0 );
+	}
+}
+
+int idRenderBackend::ShadowCacheAllocBlock( int level, int& x, int& y )
+{
+	int from = level;
+	while( from >= 0 && ( *shadowCacheFreeBlocks[from] ).Num() == 0 )
+	{
+		from--;
+	}
+	if( from < 0 )
+	{
+		return false;
+	}
+
+	const int packed = ( *shadowCacheFreeBlocks[from] )[( *shadowCacheFreeBlocks[from] ).Num() - 1];
+	( *shadowCacheFreeBlocks[from] ).RemoveIndex( ( *shadowCacheFreeBlocks[from] ).Num() - 1 );
+	x = packed >> 16;
+	y = packed & 0xffff;
+
+	// split down to the level, the three other quarters are free
+	while( from < level )
+	{
+		from++;
+		const int half = shadowCacheSize >> from;
+		( *shadowCacheFreeBlocks[from] ).Append( ( ( x + half ) << 16 ) | y );
+		( *shadowCacheFreeBlocks[from] ).Append( ( x << 16 ) | ( y + half ) );
+		( *shadowCacheFreeBlocks[from] ).Append( ( ( x + half ) << 16 ) | ( y + half ) );
+	}
+	return true;
+}
+
+void idRenderBackend::ShadowCacheFreeBlock( int level, int x, int y )
+{
+	// merge with the three free buddies into the parent
+	while( level > 0 )
+	{
+		const int size = shadowCacheSize >> level;
+		const int parentX = ( x / ( size * 2 ) ) * ( size * 2 );
+		const int parentY = ( y / ( size * 2 ) ) * ( size * 2 );
+		int buddies[3];
+		int numBuddies = 0;
+		for( int i = 0; i < 4; i++ )
+		{
+			const int bx = parentX + ( i & 1 ) * size;
+			const int by = parentY + ( i >> 1 ) * size;
+			if( bx == x && by == y )
+			{
+				continue;
+			}
+			if( ( *shadowCacheFreeBlocks[level] ).FindIndex( ( bx << 16 ) | by ) == -1 )
+			{
+				break;
+			}
+			buddies[numBuddies++] = ( bx << 16 ) | by;
+		}
+		if( numBuddies != 3 )
+		{
+			break;
+		}
+		for( int i = 0; i < 3; i++ )
+		{
+			( *shadowCacheFreeBlocks[level] ).Remove( buddies[i] );
+		}
+		x = parentX;
+		y = parentY;
+		level--;
+	}
+	( *shadowCacheFreeBlocks[level] ).Append( ( x << 16 ) | y );
+}
+
+void idRenderBackend::ShadowCacheFreeEntry( shadowCacheEntry_t& entry )
+{
+	if( entry.generation == 0 )
+	{
+		return;
+	}
+	for( int side = 0; side < entry.numSides; side++ )
+	{
+		ShadowCacheFreeBlock( entry.level, entry.blockX[side], entry.blockY[side] );
+	}
+	entry.generation = 0;
+	entry.casters->Clear();
+}
+
+idRenderBackend::shadowCacheEntry_t* idRenderBackend::ShadowCacheFind( int generation )
+{
+	for( int i = 0; i < MAX_SHADOW_CACHE_ENTRIES; i++ )
+	{
+		if( shadowCacheEntries[i].generation == generation )
+		{
+			return &shadowCacheEntries[i];
+		}
+	}
+	return NULL;
+}
+
+/*
+=====================
+idRenderBackend::ShadowCacheAlloc
+
+Tiles for a light, the least recently used entries of earlier frames make room. NULL when even
+that isn't enough.
+=====================
+*/
+idRenderBackend::shadowCacheEntry_t* idRenderBackend::ShadowCacheAlloc( int generation, int tileSize, int numSides )
+{
+	if( shadowCacheSize <= 0 || tileSize > shadowCacheSize || tileSize <= 0 )
+	{
+		return NULL;
+	}
+	int level = 0;
+	while( ( shadowCacheSize >> level ) > tileSize && level < MAX_SHADOW_CACHE_LEVELS - 1 )
+	{
+		level++;
+	}
+	if( ( shadowCacheSize >> level ) != tileSize )
+	{
+		return NULL;
+	}
+
+	auto evictOne = [this]() -> bool
+	{
+		shadowCacheEntry_t* oldest = NULL;
+		for( int i = 0; i < MAX_SHADOW_CACHE_ENTRIES; i++ )
+		{
+			shadowCacheEntry_t& entry = shadowCacheEntries[i];
+			if( entry.generation != 0 && entry.lastUsedFrame != shadowCacheFrame && ( oldest == NULL || entry.lastUsedFrame < oldest->lastUsedFrame ) )
+			{
+				oldest = &entry;
+			}
+		}
+		if( oldest == NULL )
+		{
+			return false;
+		}
+		ShadowCacheFreeEntry( *oldest );
+		return true;
+	};
+
+	// a free slot
+	shadowCacheEntry_t* entry = NULL;
+	while( entry == NULL )
+	{
+		for( int i = 0; i < MAX_SHADOW_CACHE_ENTRIES && entry == NULL; i++ )
+		{
+			if( shadowCacheEntries[i].generation == 0 )
+			{
+				entry = &shadowCacheEntries[i];
+			}
+		}
+		if( entry == NULL && !evictOne() )
+		{
+			return NULL;
+		}
+	}
+
+	// the tiles of all sides
+	for( ;; )
+	{
+		int allocated = 0;
+		for( ; allocated < numSides; allocated++ )
+		{
+			if( !ShadowCacheAllocBlock( level, entry->blockX[allocated], entry->blockY[allocated] ) )
+			{
+				break;
+			}
+		}
+		if( allocated == numSides )
+		{
+			break;
+		}
+		for( int i = 0; i < allocated; i++ )
+		{
+			ShadowCacheFreeBlock( level, entry->blockX[i], entry->blockY[i] );
+		}
+		if( !evictOne() )
+		{
+			return NULL;
+		}
+	}
+
+	entry->generation = generation;
+	entry->tileSize = tileSize;
+	entry->numSides = numSides;
+	entry->level = level;
+	entry->lastUsedFrame = shadowCacheFrame;
+	entry->missingFrames = 0;
+	entry->casters->Clear();
+	return entry;
+}
+
+/*
+=====================
+idRenderBackend::DrawShadowCacheCopy
+
+The cached depth of one side into the frame atlas tile, before its dynamic casters
+=====================
+*/
+void idRenderBackend::DrawShadowCacheCopy( int cacheX, int cacheY, int frameX, int frameY, int size )
+{
+	if( shadowCacheSampler == 0 )
+	{
+		GLuint sampler = 0;
+		glGenSamplers( 1, &sampler );
+		glSamplerParameteri( sampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+		glSamplerParameteri( sampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+		glSamplerParameteri( sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+		glSamplerParameteri( sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+		glSamplerParameteri( sampler, GL_TEXTURE_COMPARE_MODE, GL_NONE );
+		shadowCacheSampler = sampler;
+	}
+
+	GL_ViewportAndScissor( frameX, frameY, size, size );
+
+	// depth writes with the test off: the copy is the first thing in the tile
+	GL_State( GLS_DEPTHFUNC_ALWAYS | GLS_CULL_TWOSIDED );
+	renderProgManager.BindShader_ShadowCacheCopy();
+
+	const float offset[4] = { ( float )( cacheX - frameX ), ( float )( cacheY - frameY ), 0.0f, 0.0f };
+	SetFragmentParm( RENDERPARM_USER0, offset );
+
+	// a plain fetch of the depth: the sampler object overrides the compare mode of the texture
+	GL_SelectTexture( 0 );
+	globalImages->shadowCacheImage->Bind();
+	glBindSampler( 0, shadowCacheSampler );
+
+	DrawElementsWithCounters( &unitSquareSurface );
+
+	FlushMultiDrawBatch();
+	glBindSampler( 0, 0 );
+	pc.c_shadowCacheCopies++;
+}
+#endif // ANDROID
+
+/*
+=====================
+R_AtlasTileMatrix
+
+World space -> 0..1 texture coordinates and depth of the inner part of a tile, before the divide by w
+=====================
+*/
+static void R_AtlasTileMatrix( int side, const idRenderMatrix& lightViewRenderMatrix, const idRenderMatrix& lightProjectionRenderMatrix,
+							   int innerX, int innerY, int innerSize, int atlasSize, idRenderMatrix& worldToShadow )
+{
+	idRenderMatrix lightViewProjection;
+	idRenderMatrix::Multiply( lightProjectionRenderMatrix, lightViewRenderMatrix, lightViewProjection );
+
+	idRenderMatrix worldToWindow;
+	if( side < 0 )
+	{
+		// the base light projection of a projected light is 0..1 already
+		worldToWindow = lightViewProjection;
+	}
+	else
+	{
+		idRenderMatrix::Multiply( renderMatrix_clipSpaceToWindowSpace, lightViewProjection, worldToWindow );
+	}
+
+	const float tileScale = ( float )innerSize / ( float )atlasSize;
+	const idRenderMatrix tileMatrix(
+		tileScale, 0.0f, 0.0f, ( float )innerX / ( float )atlasSize,
+		0.0f, tileScale, 0.0f, ( float )innerY / ( float )atlasSize,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		0.0f, 0.0f, 0.0f, 1.0f );
+	idRenderMatrix::Multiply( tileMatrix, worldToWindow, worldToShadow );
+}
+
 /*
 =====================
 idRenderBackend::ShadowAtlasPass
 
 Runs before the first command of the frame, while nothing is bound that a
 render pass switch would have to write out.
+
+Admission: the lights are placed by priority (r_maxShadowedLights' importance, else the screen
+area). When their sides at the resolution of their LOD don't fit, the tiles of the least important
+lights are halved, down to the smallest resolution, before any light has to fall back to the per
+light shadow maps, which interrupt the main render pass.
 =====================
 */
 void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 {
 	numShadowAtlasLights = 0;
+#if defined(ANDROID)
+	shadowCacheFrame++;
+#endif
 
 	if( !r_useShadowMapping.GetBool() || r_skipShadows.GetBool() || r_skipInteractions.GetBool() || r_skipRender.GetBool() )
 	{
@@ -5237,12 +5704,18 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 	{
 		const viewDef_t*	view;
 		const viewLight_t*	vLight;
-		int					size;
+		int					lodSize;		// the side resolution of the light's LOD
+		int					size;			// the side resolution of its frame atlas tiles, lodSize or smaller
 		int					numSides;
+		float				priority;
+		int					cacheEntry;		// shadowCacheEntries index, -1 = the light isn't cached
+		bool				cacheDirect;	// no dynamic casters: sampled from the cache, no frame tiles
+		bool				cacheRebuild;	// the cache entry is drawn this frame
+		bool				placed;			// has frame atlas tiles
 	};
 	atlasRequest_t requests[MAX_SHADOW_ATLAS_LIGHTS];
 	int numRequests = 0;
-	int minSize = shadowMapResolutions[0];
+	const int minTileSize = shadowMapResolutions[MAX_SHADOWMAP_RESOLUTIONS - 1];
 
 	for( const emptyCommand_t* cmd = cmds; cmd != NULL && numRequests < MAX_SHADOW_ATLAS_LIGHTS; cmd = ( const emptyCommand_t* )cmd->next )
 	{
@@ -5258,6 +5731,7 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 			continue;
 		}
 
+		const float viewArea = Max( 1.0f, ( float )view->viewport.GetWidth() * ( float )view->viewport.GetHeight() );
 		for( const viewLight_t* vLight = view->viewLights; vLight != NULL && numRequests < MAX_SHADOW_ATLAS_LIGHTS; vLight = vLight->next )
 		{
 			if( vLight->lightShader->IsFogLight() || vLight->lightShader->IsBlendLight() )
@@ -5277,10 +5751,11 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 			atlasRequest_t& request = requests[numRequests++];
 			request.view = view;
 			request.vLight = vLight;
-			request.size = shadowMapResolutions[vLight->shadowLOD];
+			request.lodSize = shadowMapResolutions[vLight->shadowLOD];
+			request.size = request.lodSize;
 			if( vLight->parallel )
 			{
-				request.numSides = r_shadowMapSplits.GetInteger() + 1;
+				request.numSides = Min( r_shadowMapSplits.GetInteger() + 1, 6 );
 			}
 			else if( vLight->pointLight )
 			{
@@ -5290,163 +5765,553 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 			{
 				request.numSides = 1;
 			}
-			minSize = Min( minSize, request.size );
+			// parallel lights have their own priority: the sun is placed first
+			request.priority = vLight->parallel ? 1e30f : ( vLight->shadowPriority > 0.0f ? vLight->shadowPriority : ( float )vLight->scissorRect.GetArea() / viewArea );
+			request.cacheEntry = -1;
+			request.cacheDirect = false;
+			request.cacheRebuild = false;
+			request.placed = false;
 		}
 	}
+	pc.c_shadowedLights += numRequests;
 	if( numRequests == 0 )
-	{
-		return;
-	}
-
-	// largest sides first, so every tile lands aligned to its own size
-	for( int i = 1; i < numRequests; i++ )
-	{
-		const atlasRequest_t request = requests[i];
-		int j = i - 1;
-		for( ; j >= 0 && requests[j].size < request.size; j-- )
-		{
-			requests[j + 1] = requests[j];
-		}
-		requests[j + 1] = request;
-	}
-
-	//-------------------------------------------------
-	// place the tiles
-	//-------------------------------------------------
-	const atlasRequest_t* atlasRequests[MAX_SHADOW_ATLAS_LIGHTS];
-	const int cellsPerRow = atlasSize / minSize;
-	const int totalCells = cellsPerRow * cellsPerRow;
-	int nextCell = 0;
-	int usedWidth = 0;
-	int usedHeight = 0;
-
-	for( int i = 0; i < numRequests; i++ )
-	{
-		const atlasRequest_t& request = requests[i];
-		if( request.size > atlasSize || request.size <= SHADOW_ATLAS_TILE_BORDER * 2 )
-		{
-			continue;
-		}
-
-		const int cellsPerSide = ( request.size / minSize ) * ( request.size / minSize );
-		const int firstCell = ( ( nextCell + cellsPerSide - 1 ) / cellsPerSide ) * cellsPerSide;
-		if( firstCell + cellsPerSide * request.numSides > totalCells )
-		{
-			// no room, this light renders its shadow maps the old way
-			continue;
-		}
-		nextCell = firstCell + cellsPerSide * request.numSides;
-
-		atlasRequests[numShadowAtlasLights] = &request;
-		shadowAtlasLight_t& atlasLight = shadowAtlasLights[numShadowAtlasLights++];
-		atlasLight.vLight = request.vLight;
-		atlasLight.numSides = request.numSides;
-		atlasLight.tileSize = request.size;
-		for( int side = 0; side < request.numSides; side++ )
-		{
-			const int cell = firstCell + side * cellsPerSide;
-			atlasLight.tileX[side] = R_MortonCompactBits( cell ) * minSize;
-			atlasLight.tileY[side] = R_MortonCompactBits( cell >> 1 ) * minSize;
-			usedWidth = Max( usedWidth, atlasLight.tileX[side] + request.size );
-			usedHeight = Max( usedHeight, atlasLight.tileY[side] + request.size );
-		}
-	}
-	if( numShadowAtlasLights == 0 )
 	{
 		return;
 	}
 
 	renderLog.OpenBlock( "RB_ShadowAtlasPass" );
 
-	idImage* atlasImage = globalImages->shadowAtlasImage;
-	if( !atlasImage->IsLoaded() || atlasImage->GetUploadWidth() != atlasSize )
+	//-------------------------------------------------
+	// the shadow cache: which lights reuse their static casters
+	//-------------------------------------------------
+#if defined(ANDROID)
+	int cacheSize = 0;
+	if( r_shadowCacheSize.GetInteger() > 0 && renderProgManager.ShadowCacheCopyShaderReady() )
 	{
-		atlasImage->GenerateShadowArray( atlasSize, atlasSize, TF_LINEAR, TR_CLAMP_TO_ZERO_ALPHA, TD_SHADOW_ATLAS );
+		cacheSize = idMath::FloorPowerOfTwo( Min( r_shadowCacheSize.GetInteger(), glConfig.maxTextureSize > 0 ? glConfig.maxTextureSize : 2048 ) );
+		cacheSize = ( cacheSize >= 256 ) ? cacheSize : 0;
 	}
-	shadowAtlasSize = atlasSize;
+	// a new size, or the storage went (UpdateOptionalTargets frees it when idle): the entries are gone
+	if( cacheSize != shadowCacheSize || ( shadowCacheSize > 0 && !globalImages->shadowCacheImage->IsLoaded() ) )
+	{
+		ShadowCacheReset( cacheSize );
+	}
 
-	// one render pass for every shadow map of the frame
-	globalFramebuffers.shadowAtlasFBO->Bind();
-	globalFramebuffers.shadowAtlasFBO->AttachImageDepthLayer( atlasImage, 0 );
-	globalFramebuffers.shadowAtlasFBO->Check();
+	bool anyCacheRebuild = false;
+	if( cacheSize > 0 )
+	{
+		idList<uint32> staticCasters;
+		for( int i = 0; i < numRequests; i++ )
+		{
+			atlasRequest_t& request = requests[i];
+			const viewLight_t* vLight = request.vLight;
+			if( vLight->parallel || request.lodSize > cacheSize )
+			{
+				continue;
+			}
 
-	// nothing of the previous frame is needed, so nothing gets loaded into the tiles
-	const GLenum depthAttachment[] = { GL_DEPTH_ATTACHMENT };
-	globalFramebuffers.shadowAtlasFBO->InvalidateAttachments( depthAttachment, 1 );
+			staticCasters.SetNum( 0 );
+			bool hasDynamic = false;
+			for( const drawSurf_t* caster = vLight->globalShadows; caster != NULL; caster = caster->nextOnLight )
+			{
+				if( caster->shadowCacheId != 0 )
+				{
+					staticCasters.Append( caster->shadowCacheId );
+				}
+				else
+				{
+					hasDynamic = true;
+				}
+			}
+			if( staticCasters.Num() == 0 )
+			{
+				// nothing to keep
+				continue;
+			}
+			R_SortShadowCacheIds( staticCasters );
 
-	glBindVertexArray( glConfig.global_vao );
+			shadowCacheEntry_t* entry = ShadowCacheFind( vLight->shadowCacheGeneration );
+			const bool valid = ( entry != NULL && entry->tileSize == request.lodSize && entry->numSides == request.numSides );
 
-	// depth writes must be on for the clear, the guard borders keep the cleared depth
-	GL_State( GLS_DEFAULT );
-	GL_ViewportAndScissor( 0, 0, usedWidth, usedHeight );
-	glClear( GL_DEPTH_BUFFER_BIT );
+			// static casters the entry doesn't hold yet (the camera moved, now they cast into the view):
+			// drawn on top of the copy like dynamic ones, the entry is only drawn again when they stay
+			bool missingStatic = false;
+			for( int c = 0; c < staticCasters.Num() && valid && !missingStatic; c++ )
+			{
+				missingStatic = !R_SortedContains( *entry->casters, staticCasters[c] );
+			}
+			bool rebuild = !valid;
+			if( valid )
+			{
+				entry->missingFrames = missingStatic ? entry->missingFrames + 1 : 0;
+				rebuild = ( entry->missingFrames > r_shadowCacheRebuildFrames.GetInteger() );
+			}
+
+			if( rebuild && entry != NULL )
+			{
+				if( entry->lastUsedFrame == shadowCacheFrame )
+				{
+					// another view of this frame reads the entry: this one renders all of its casters
+					continue;
+				}
+				ShadowCacheFreeEntry( *entry );
+				pc.c_shadowCacheInvalidations++;
+				entry = NULL;
+			}
+			if( entry == NULL )
+			{
+				entry = ShadowCacheAlloc( vLight->shadowCacheGeneration, request.lodSize, request.numSides );
+				if( entry == NULL )
+				{
+					continue;
+				}
+				*entry->casters = staticCasters;
+				entry->missingFrames = 0;
+				missingStatic = false;
+				request.cacheRebuild = true;
+				anyCacheRebuild = true;
+				pc.c_shadowCacheMisses++;
+			}
+			else if( !hasDynamic && !missingStatic )
+			{
+				pc.c_shadowCacheHits++;
+			}
+			entry->lastUsedFrame = shadowCacheFrame;
+			request.cacheEntry = ( int )( entry - shadowCacheEntries );
+			request.cacheDirect = !hasDynamic && !missingStatic;
+		}
+	}
+#endif
+
+	//-------------------------------------------------
+	// fit the frame atlas: halve the tiles of the least important lights, then drop lights
+	//-------------------------------------------------
+	const int cellsPerRow = atlasSize / minTileSize;
+	const int totalCells = cellsPerRow * cellsPerRow;
+	auto sideCells = [minTileSize]( int size ) -> int
+	{
+		return ( size / minTileSize ) * ( size / minTileSize );
+	};
+
+	// by priority, the most important first
+	int order[MAX_SHADOW_ATLAS_LIGHTS];
+	for( int i = 0; i < numRequests; i++ )
+	{
+		order[i] = i;
+	}
+	for( int i = 1; i < numRequests; i++ )
+	{
+		const int current = order[i];
+		int j = i - 1;
+		for( ; j >= 0 && requests[order[j]].priority < requests[current].priority; j-- )
+		{
+			order[j + 1] = order[j];
+		}
+		order[j + 1] = current;
+	}
+
+	int neededCells = 0;
+	bool wanted[MAX_SHADOW_ATLAS_LIGHTS];
+	for( int i = 0; i < numRequests; i++ )
+	{
+		atlasRequest_t& request = requests[i];
+		request.size = Min( request.lodSize, atlasSize );
+		wanted[i] = !request.cacheDirect && request.size > SHADOW_ATLAS_TILE_BORDER * 2;
+		if( wanted[i] )
+		{
+			neededCells += sideCells( request.size ) * request.numSides;
+		}
+	}
+	while( neededCells > totalCells )
+	{
+		// the least important light whose tiles can still be halved
+		int victim = -1;
+		for( int k = numRequests - 1; k >= 0 && victim == -1; k-- )
+		{
+			const int i = order[k];
+			if( wanted[i] && requests[i].size > minTileSize )
+			{
+				victim = i;
+			}
+		}
+		if( victim != -1 )
+		{
+			atlasRequest_t& request = requests[victim];
+			neededCells -= ( sideCells( request.size ) - sideCells( request.size / 2 ) ) * request.numSides;
+			request.size /= 2;
+			pc.c_shadowAtlasDowngrades += request.numSides;
+			continue;
+		}
+
+		// all at the smallest size: the least important light keeps its per light shadow maps
+		bool dropped = false;
+		for( int k = numRequests - 1; k >= 0 && !dropped; k-- )
+		{
+			const int i = order[k];
+			if( wanted[i] )
+			{
+				wanted[i] = false;
+				neededCells -= sideCells( requests[i].size ) * requests[i].numSides;
+				pc.c_shadowAtlasOverflow++;
+				dropped = true;
+			}
+		}
+		if( !dropped )
+		{
+			break;
+		}
+	}
+
+	// a cached light that didn't keep its full tile can't take a copy of its cache: all casters this frame
+	for( int i = 0; i < numRequests; i++ )
+	{
+		atlasRequest_t& request = requests[i];
+		if( request.cacheEntry >= 0 && !request.cacheDirect && request.size != request.lodSize )
+		{
+			request.cacheEntry = -1;
+		}
+	}
+
+	//-------------------------------------------------
+	// place the tiles: largest first, so every tile lands aligned to its own size and Morton
+	// order packs them without gaps
+	//-------------------------------------------------
+	int placeOrder[MAX_SHADOW_ATLAS_LIGHTS];
+	int numPlace = 0;
+	for( int k = 0; k < numRequests; k++ )
+	{
+		if( wanted[order[k]] )
+		{
+			placeOrder[numPlace++] = order[k];
+		}
+	}
+	for( int i = 1; i < numPlace; i++ )
+	{
+		const int current = placeOrder[i];
+		int j = i - 1;
+		for( ; j >= 0 && requests[placeOrder[j]].size < requests[current].size; j-- )
+		{
+			placeOrder[j + 1] = placeOrder[j];
+		}
+		placeOrder[j + 1] = current;
+	}
+
+	int atlasLightOfRequest[MAX_SHADOW_ATLAS_LIGHTS];
+	for( int i = 0; i < numRequests; i++ )
+	{
+		atlasLightOfRequest[i] = -1;
+	}
+
+	int nextCell = 0;
+	int usedWidth = 0;
+	int usedHeight = 0;
+	int usedTexels = 0;
+	for( int k = 0; k < numPlace; k++ )
+	{
+		const int r = placeOrder[k];
+		atlasRequest_t& request = requests[r];
+		const int cellsPerSide = sideCells( request.size );
+		const int firstCell = ( ( nextCell + cellsPerSide - 1 ) / cellsPerSide ) * cellsPerSide;
+		if( firstCell + cellsPerSide * request.numSides > totalCells )
+		{
+			// can't happen after the fitting above, the light keeps its per light shadow maps
+			pc.c_shadowAtlasOverflow++;
+			continue;
+		}
+		nextCell = firstCell + cellsPerSide * request.numSides;
+		request.placed = true;
+
+		atlasLightOfRequest[r] = numShadowAtlasLights;
+		shadowAtlasLight_t& atlasLight = shadowAtlasLights[numShadowAtlasLights++];
+		atlasLight.vLight = request.vLight;
+		atlasLight.numSides = request.numSides;
+		atlasLight.tileSize = request.size;
+		atlasLight.image = globalImages->shadowAtlasImage;
+		atlasLight.atlasSize = atlasSize;
+		for( int side = 0; side < request.numSides; side++ )
+		{
+			const int cell = firstCell + side * cellsPerSide;
+			atlasLight.tileX[side] = R_MortonCompactBits( cell ) * minTileSize;
+			atlasLight.tileY[side] = R_MortonCompactBits( cell >> 1 ) * minTileSize;
+			usedWidth = Max( usedWidth, atlasLight.tileX[side] + request.size );
+			usedHeight = Max( usedHeight, atlasLight.tileY[side] + request.size );
+			usedTexels += request.size * request.size;
+		}
+	}
+	pc.c_shadowAtlasUsedTexels += usedTexels;
+	pc.c_shadowAtlasTexels += atlasSize * atlasSize;
+
+	// the lights read straight from the cache
+#if defined(ANDROID)
+	for( int i = 0; i < numRequests && numShadowAtlasLights < MAX_SHADOW_ATLAS_LIGHTS; i++ )
+	{
+		const atlasRequest_t& request = requests[i];
+		if( !request.cacheDirect || request.cacheEntry < 0 )
+		{
+			continue;
+		}
+		const shadowCacheEntry_t& entry = shadowCacheEntries[request.cacheEntry];
+		atlasLightOfRequest[i] = numShadowAtlasLights;
+		shadowAtlasLight_t& atlasLight = shadowAtlasLights[numShadowAtlasLights++];
+		atlasLight.vLight = request.vLight;
+		atlasLight.numSides = request.numSides;
+		atlasLight.tileSize = entry.tileSize;
+		atlasLight.image = globalImages->shadowCacheImage;
+		atlasLight.atlasSize = shadowCacheSize;
+		for( int side = 0; side < request.numSides; side++ )
+		{
+			atlasLight.tileX[side] = entry.blockX[side];
+			atlasLight.tileY[side] = entry.blockY[side];
+		}
+	}
+#endif
+
+	if( numShadowAtlasLights == 0 )
+	{
+		renderLog.CloseBlock();
+		return;
+	}
 
 	const viewDef_t* savedViewDef = viewDef;
+	glBindVertexArray( glConfig.global_vao );
+	drawCategory = DRAW_CATEGORY_SHADOW;
 
-	for( int i = 0; i < numShadowAtlasLights; i++ )
+	//-------------------------------------------------
+	// the cache entries that are drawn again: their static casters only
+	//-------------------------------------------------
+#if defined(ANDROID)
+	if( anyCacheRebuild && Framebuffer::EnsureShadowCacheTarget( shadowCacheSize ) )
 	{
-		shadowAtlasLight_t& atlasLight = shadowAtlasLights[i];
-		const viewLight_t* vLight = atlasLight.vLight;
+		const uint64 cacheStart = Sys_Microseconds();
+		renderLog.OpenBlock( "RB_ShadowCacheUpdate" );
 
-		// parallel light cascades follow the camera of their view
-		viewDef = atlasRequests[i]->view;
+		// the other entries stay, the render pass loads the cache
+		globalFramebuffers.shadowCacheFBO->Bind();
 
-		renderLog.OpenBlock( vLight->lightShader->GetName() );
-
-		const int innerSize = atlasLight.tileSize - SHADOW_ATLAS_TILE_BORDER * 2;
-		const float tileScale = ( float )innerSize / ( float )atlasSize;
-
-		for( int s = 0; s < atlasLight.numSides; s++ )
+		for( int i = 0; i < numRequests; i++ )
 		{
-			// projected lights have a single side that ShadowMapPass calls -1
-			const int side = ( vLight->parallel || vLight->pointLight ) ? s : -1;
-			const int innerX = atlasLight.tileX[s] + SHADOW_ATLAS_TILE_BORDER;
-			const int innerY = atlasLight.tileY[s] + SHADOW_ATLAS_TILE_BORDER;
-
-			BeginShadowMapSide();
-
-			idRenderMatrix lightViewRenderMatrix;
-			idRenderMatrix lightProjectionRenderMatrix;
-			SetupShadowMapMatrices( vLight, side, lightViewRenderMatrix, lightProjectionRenderMatrix );
-
-			GL_ViewportAndScissor( innerX, innerY, innerSize, innerSize );
-
-			DrawShadowMapCasters( vLight->globalShadows, vLight, side, lightViewRenderMatrix, lightProjectionRenderMatrix );
-
-			// world space -> 0..1 shadow map space, like RenderInteractions builds it
-			idRenderMatrix lightViewProjection;
-			idRenderMatrix::Multiply( lightProjectionRenderMatrix, lightViewRenderMatrix, lightViewProjection );
-
-			idRenderMatrix worldToWindow;
-			if( side < 0 )
+			const atlasRequest_t& request = requests[i];
+			if( !request.cacheRebuild || request.cacheEntry < 0 )
 			{
-				// the base light projection of a projected light is 0..1 already
-				worldToWindow = lightViewProjection;
+				continue;
 			}
-			else
-			{
-				idRenderMatrix::Multiply( renderMatrix_clipSpaceToWindowSpace, lightViewProjection, worldToWindow );
-			}
+			const shadowCacheEntry_t& entry = shadowCacheEntries[request.cacheEntry];
+			const viewLight_t* vLight = request.vLight;
+			viewDef = request.view;
 
-			// and 0..1 into this side's tile, before the divide by w
-			const idRenderMatrix tileMatrix(
-				tileScale, 0.0f, 0.0f, ( float )innerX / ( float )atlasSize,
-				0.0f, tileScale, 0.0f, ( float )innerY / ( float )atlasSize,
-				0.0f, 0.0f, 1.0f, 0.0f,
-				0.0f, 0.0f, 0.0f, 1.0f );
-			idRenderMatrix::Multiply( tileMatrix, worldToWindow, atlasLight.worldToShadow[s] );
+			const int innerSize = entry.tileSize - SHADOW_ATLAS_TILE_BORDER * 2;
+			for( int s = 0; s < entry.numSides; s++ )
+			{
+				const int side = vLight->pointLight ? s : -1;
+
+				// the whole tile with its guard border, depth writes on for the clear
+				GL_State( GLS_DEFAULT );
+				GL_ViewportAndScissor( entry.blockX[s], entry.blockY[s], entry.tileSize, entry.tileSize );
+				glClear( GL_DEPTH_BUFFER_BIT );
+
+				BeginShadowMapSide();
+				idRenderMatrix lightViewRenderMatrix;
+				idRenderMatrix lightProjectionRenderMatrix;
+				SetupShadowMapMatrices( vLight, side, lightViewRenderMatrix, lightProjectionRenderMatrix );
+				GL_ViewportAndScissor( entry.blockX[s] + SHADOW_ATLAS_TILE_BORDER, entry.blockY[s] + SHADOW_ATLAS_TILE_BORDER, innerSize, innerSize );
+				DrawShadowMapCasters( vLight->globalShadows, vLight, side, lightViewRenderMatrix, lightProjectionRenderMatrix, SHADOW_CASTERS_STATIC );
+			}
 		}
 
 		renderLog.CloseBlock();
+		pc.shadowStaticMicroSec += ( int )( Sys_Microseconds() - cacheStart );
+	}
+	else if( anyCacheRebuild )
+	{
+		// no storage for the cache: nothing can come from it this frame
+		ShadowCacheReset( 0 );
+		int kept = 0;
+		for( int i = 0; i < numShadowAtlasLights; i++ )
+		{
+			if( shadowAtlasLights[i].image != globalImages->shadowCacheImage )
+			{
+				shadowAtlasLights[kept++] = shadowAtlasLights[i];
+			}
+		}
+		numShadowAtlasLights = kept;
+		for( int i = 0; i < numRequests; i++ )
+		{
+			requests[i].cacheEntry = -1;
+			if( requests[i].cacheDirect )
+			{
+				// it renders its per light shadow maps
+				atlasLightOfRequest[i] = -1;
+			}
+		}
+	}
+#endif
+
+	//-------------------------------------------------
+	// the frame atlas: one render pass for every shadow map of the frame that isn't read from the cache
+	//-------------------------------------------------
+	bool anyPlaced = false;
+	for( int i = 0; i < numRequests; i++ )
+	{
+		anyPlaced = anyPlaced || requests[i].placed;
 	}
 
+#if defined(ANDROID)
+	const bool atlasReady = !anyPlaced || Framebuffer::EnsureShadowAtlasTarget( atlasSize );
+#else
+	idImage* atlasImage = globalImages->shadowAtlasImage;
+	if( anyPlaced && ( !atlasImage->IsLoaded() || atlasImage->GetUploadWidth() != atlasSize ) )
+	{
+		atlasImage->GenerateShadowArray( atlasSize, atlasSize, TF_LINEAR, TR_CLAMP_TO_ZERO_ALPHA, TD_SHADOW_ATLAS );
+	}
+	const bool atlasReady = true;
+	if( anyPlaced )
+	{
+		globalFramebuffers.shadowAtlasFBO->Bind();
+		globalFramebuffers.shadowAtlasFBO->AttachImageDepthLayer( atlasImage, 0 );
+		globalFramebuffers.shadowAtlasFBO->Check();
+	}
+#endif
+	shadowAtlasSize = atlasSize;
+
+	if( anyPlaced && atlasReady )
+	{
+		const uint64 frameStart = Sys_Microseconds();
+
+		globalFramebuffers.shadowAtlasFBO->Bind();
+
+		// nothing of the previous frame is needed, so nothing gets loaded into the tiles
+		const GLenum depthAttachment[] = { GL_DEPTH_ATTACHMENT };
+		globalFramebuffers.shadowAtlasFBO->InvalidateAttachments( depthAttachment, 1 );
+
+		// depth writes must be on for the clear, the guard borders keep the cleared depth
+		GL_State( GLS_DEFAULT );
+		GL_ViewportAndScissor( 0, 0, usedWidth, usedHeight );
+		glClear( GL_DEPTH_BUFFER_BIT );
+
+		for( int i = 0; i < numRequests; i++ )
+		{
+			const atlasRequest_t& request = requests[i];
+			if( !request.placed || atlasLightOfRequest[i] < 0 )
+			{
+				continue;
+			}
+			const shadowAtlasLight_t& atlasLight = shadowAtlasLights[atlasLightOfRequest[i]];
+			const viewLight_t* vLight = atlasLight.vLight;
+
+			// parallel light cascades follow the camera of their view
+			viewDef = request.view;
+
+			renderLog.OpenBlock( vLight->lightShader->GetName() );
+
+			const int innerSize = atlasLight.tileSize - SHADOW_ATLAS_TILE_BORDER * 2;
+#if defined(ANDROID)
+			const shadowCacheEntry_t* entry = ( request.cacheEntry >= 0 ) ? &shadowCacheEntries[request.cacheEntry] : NULL;
+#endif
+
+			for( int s = 0; s < atlasLight.numSides; s++ )
+			{
+				// projected lights have a single side that ShadowMapPass calls -1
+				const int side = ( vLight->parallel || vLight->pointLight ) ? s : -1;
+				const int innerX = atlasLight.tileX[s] + SHADOW_ATLAS_TILE_BORDER;
+				const int innerY = atlasLight.tileY[s] + SHADOW_ATLAS_TILE_BORDER;
+
+				int casterFilter = SHADOW_CASTERS_ALL;
+				const idList<uint32>* cachedCasters = NULL;
+#if defined(ANDROID)
+				if( entry != NULL )
+				{
+					// the cached static casters, then the dynamic ones and the static ones the entry misses on top
+					DrawShadowCacheCopy( entry->blockX[s] + SHADOW_ATLAS_TILE_BORDER, entry->blockY[s] + SHADOW_ATLAS_TILE_BORDER, innerX, innerY, innerSize );
+					casterFilter = SHADOW_CASTERS_DYNAMIC;
+					cachedCasters = entry->casters;
+				}
+#endif
+
+				BeginShadowMapSide();
+
+				idRenderMatrix lightViewRenderMatrix;
+				idRenderMatrix lightProjectionRenderMatrix;
+				SetupShadowMapMatrices( vLight, side, lightViewRenderMatrix, lightProjectionRenderMatrix );
+
+				GL_ViewportAndScissor( innerX, innerY, innerSize, innerSize );
+
+				DrawShadowMapCasters( vLight->globalShadows, vLight, side, lightViewRenderMatrix, lightProjectionRenderMatrix, casterFilter, cachedCasters );
+			}
+
+			renderLog.CloseBlock();
+		}
+
+		pc.shadowDynamicMicroSec += ( int )( Sys_Microseconds() - frameStart );
+	}
+	else if( anyPlaced )
+	{
+		// no storage for the atlas: these lights render their per light shadow maps
+		int kept = 0;
+		for( int i = 0; i < numShadowAtlasLights; i++ )
+		{
+			if( shadowAtlasLights[i].image != globalImages->shadowAtlasImage )
+			{
+				shadowAtlasLights[kept++] = shadowAtlasLights[i];
+			}
+		}
+		numShadowAtlasLights = kept;
+		for( int i = 0; i < numRequests; i++ )
+		{
+			if( requests[i].placed )
+			{
+				atlasLightOfRequest[i] = -1;
+			}
+		}
+	}
+
+	//-------------------------------------------------
+	// world space -> shadow map space of every side, in the atlas that holds it
+	//-------------------------------------------------
+	for( int a = 0; a < numShadowAtlasLights; a++ )
+	{
+		shadowAtlasLight_t& atlasLight = shadowAtlasLights[a];
+
+		// the view of the light, for the cascades of a parallel light
+		for( int i = 0; i < numRequests; i++ )
+		{
+			if( requests[i].vLight == atlasLight.vLight )
+			{
+				viewDef = requests[i].view;
+				break;
+			}
+		}
+
+		const int innerSize = atlasLight.tileSize - SHADOW_ATLAS_TILE_BORDER * 2;
+		for( int s = 0; s < atlasLight.numSides; s++ )
+		{
+			const int side = ( atlasLight.vLight->parallel || atlasLight.vLight->pointLight ) ? s : -1;
+			idRenderMatrix lightViewRenderMatrix;
+			idRenderMatrix lightProjectionRenderMatrix;
+			SetupShadowMapMatrices( atlasLight.vLight, side, lightViewRenderMatrix, lightProjectionRenderMatrix );
+			R_AtlasTileMatrix( side, lightViewRenderMatrix, lightProjectionRenderMatrix,
+							   atlasLight.tileX[s] + SHADOW_ATLAS_TILE_BORDER, atlasLight.tileY[s] + SHADOW_ATLAS_TILE_BORDER,
+							   innerSize, atlasLight.atlasSize, atlasLight.worldToShadow[s] );
+		}
+	}
+	pc.c_shadowAtlasLights += numShadowAtlasLights;
+
 	viewDef = savedViewDef;
+	drawCategory = DRAW_CATEGORY_SCENE;
 
 	renderProgManager.Unbind();
 	GL_State( GLS_DEFAULT );
 	SetFragmentParm( RENDERPARM_ALPHA_TEST, vec4_zero.ToFloatPtr() );
 
 	Framebuffer::Unbind();
+
+#if defined(ANDROID)
+	if( r_showShadowCache.GetBool() )
+	{
+		idLib::Printf( "shadow atlas: %d lights, %d in the frame atlas (%d%% of %d^2), %d from the cache, %d copies, %d cache misses, %d invalidations, %d smaller sides, %d overflow\n",
+					   numRequests, numPlace, ( int )( 100.0 * usedTexels / ( ( double )atlasSize * atlasSize ) ), atlasSize,
+					   pc.c_shadowCacheHits, pc.c_shadowCacheCopies, pc.c_shadowCacheMisses, pc.c_shadowCacheInvalidations, pc.c_shadowAtlasDowngrades, pc.c_shadowAtlasOverflow );
+	}
+#endif
 
 	renderLog.CloseBlock();
 }
@@ -6148,7 +7013,7 @@ bool idRenderBackend::DrawDeferredLight( const viewLight_t* vLight, bool perform
 		screenCorrectionParm[0] = 1.0f / ( JITTER_SIZE * shadowMapSamples ) ;
 		screenCorrectionParm[1] = 1.0f / JITTER_SIZE;
 		// texel size for the PCF taps, the atlas texel is as big as a texel of the light's own resolution
-		screenCorrectionParm[2] = ( atlasLight != NULL ) ? 1.0f / shadowAtlasSize : 1.0f / shadowMapResolutions[vLight->shadowLOD];
+		screenCorrectionParm[2] = ( atlasLight != NULL ) ? 1.0f / atlasLight->atlasSize : 1.0f / shadowMapResolutions[vLight->shadowLOD];
 		screenCorrectionParm[3] = vLight->parallel ? r_shadowMapSunDepthBiasScale.GetFloat() : r_shadowMapRegularDepthBiasScale.GetFloat();
 		SetFragmentParm( RENDERPARM_SCREENCORRECTIONFACTOR, screenCorrectionParm ); // rpScreenCorrectionFactor
 
@@ -6188,7 +7053,7 @@ bool idRenderBackend::DrawDeferredLight( const viewLight_t* vLight, bool perform
 		GL_SelectTexture( INTERACTION_TEXUNIT_SHADOWMAPS );
 		if( atlasLight != NULL )
 		{
-			globalImages->shadowAtlasImage->Bind();
+			atlasLight->image->Bind();
 		}
 		else
 		{
@@ -6273,6 +7138,7 @@ bool idRenderBackend::DrawDeferredLight( const viewLight_t* vLight, bool perform
 		lightStage->texture.image->Bind();
 
 		DrawElementsWithCounters( &zeroOneCubeSurface );
+		pc.c_lightVolumeDraws++;
 	}
 
 	GL_SelectTexture( 0 );
@@ -6324,6 +7190,1113 @@ void idRenderBackend::DeferredResolve( const viewDef_t* _viewDef )
 
 	renderLog.CloseBlock();
 }
+
+/*
+==============================================================================================
+
+LIGHT BATCHES
+
+The deferred shading drew a volume per light, the forward interactions draw every surface once
+per light. Lights whose shadows don't need the stencil buffer (no shadows, or shadow maps in the
+atlas or the shadow cache) are evaluated several at once instead:
+
+From the G-buffer (DrawDeferredLightBatches): the lights are sorted by where they are on the
+screen and grouped LIGHT_BATCH_DEFERRED_SLOTS at a time. The screen is cut into tiles of
+r_lightBatchTileSize pixels; every tile gets the mask of the batch's lights whose scissor
+reaches it, runs of tiles with the same mask become one instance of a quad, and one instanced
+draw per batch covers them all. Each pixel fetches its G-buffer once and adds every light of its
+mask. A tile with more lights than a batch holds is drawn by several batches: no light is ever
+dropped or truncated, a pixel only pays for the lights that reach its tile, and the number of
+draws is the number of batches, not of lights.
+
+Surfaces outside the G-buffer (DrawForwardLightBatches): a surface several such lights reach is
+drawn once per interaction with up to LIGHT_BATCH_FORWARD_SLOTS of them, blended one one like the
+interactions; the G-buffer values are computed in the fragment program instead of stored. A
+surface reached by a single light keeps its interaction draw, and the world surfaces a light's
+interactions merge into one draw per material (WorldMergePass) keep that.
+
+Both evaluate a light like DrawDeferredLight: the light's stages with their colors, projection,
+falloff and texture matrices, the shadow maps of interactionSM. Every stage is a slot of its own,
+so a light of several animated stages is batched as well. The parameters of all slots of a view
+go into one uniform buffer upload (UploadLightBatchData).
+
+Not batched, one draw per light as before: fog and blend lights, lights of an invisible ink
+spectrum, lights with stencil shadows (the stencil test is per light), lights whose shadow maps
+didn't get an atlas tile (per light shadow map arrays, rendered right before the light).
+
+==============================================================================================
+*/
+
+idCVar r_lightBatching( "r_lightBatching", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "multi light shading: the lights of the on-tile deferred shading several per draw over screen tiles, and the surfaces outside the G-buffer that several lights reach drawn once for all of them. Lights with stencil shadows or per light shadow maps are drawn one by one" );
+idCVar r_lightBatchTileSize( "r_lightBatchTileSize", "64", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_INTEGER, "pixels of the screen tiles the batched lights of the deferred shading are assigned to", 16, 512 );
+idCVar r_showLightBatches( "r_showLightBatches", "0", CVAR_RENDERER | CVAR_BOOL, "print every frame what the multi light shading drew" );
+
+struct lightBatchLight_t
+{
+	const viewLight_t*	vLight;
+	int					firstEntry;
+	int					numEntries;
+	bool				deferred;		// lit from the G-buffer
+};
+
+// plain arrays: nothing here may run a destructor at exit(); as many as there are slots
+static const int			MAX_LIGHT_BATCH_LIGHTS = 256;
+static lightBatchLight_t	s_lightBatchLights[MAX_LIGHT_BATCH_LIGHTS];
+static int					s_numLightBatchLights;
+static idRenderMatrix		s_lightBatchWorldToView;
+static idRenderMatrix		s_lightBatchViewToWorld;
+static const int			MAX_FORWARD_INTERACTIONS = 8;	// bump / diffuse / specular sets of a surface a multi light draw takes
+
+/*
+==================
+idRenderBackend::DeferredViewParms
+==================
+*/
+void idRenderBackend::DeferredViewParms( idRenderMatrix& worldToView, idRenderMatrix& viewToWorld )
+{
+	idRenderMatrix::Transpose( *( const idRenderMatrix* )viewDef->worldSpace.modelViewMatrix, worldToView );
+	if( !idRenderMatrix::Inverse( worldToView, viewToWorld ) )
+	{
+		viewToWorld.Identity();
+	}
+}
+
+/*
+==================
+idRenderBackend::ShadowSideMatrices
+
+World space -> shadow map space of the sides of an atlas light
+==================
+*/
+int idRenderBackend::ShadowSideMatrices( const viewLight_t* vLight, const shadowAtlasLight_t* atlasLight, idRenderMatrix worldToShadow[6] )
+{
+	if( atlasLight == NULL )
+	{
+		return 0;
+	}
+	const int numSides = Min( atlasLight->numSides, 6 );
+	for( int i = 0; i < numSides; i++ )
+	{
+		worldToShadow[i] = atlasLight->worldToShadow[i];
+	}
+	return numSides;
+}
+
+/*
+==================
+idRenderBackend::LightBatchable
+==================
+*/
+bool idRenderBackend::LightBatchable( const viewLight_t* vLight ) const
+{
+	const idMaterial* lightShader = vLight->lightShader;
+	if( lightShader->IsFogLight() || lightShader->IsBlendLight() || lightShader->Spectrum() != 0 )
+	{
+		return false;
+	}
+	if( vLight->localInteractions == NULL && vLight->globalInteractions == NULL )
+	{
+		return false;
+	}
+
+	// stencil shadows need the stencil test of the light
+	if( !r_useShadowMapping.GetBool() && ( vLight->globalShadows != NULL || vLight->localShadows != NULL ) )
+	{
+		return false;
+	}
+
+	// shadow maps: only from an atlas, the per light arrays are rendered right before the light
+	if( r_useShadowMapping.GetBool() && vLight->globalShadows != NULL && !lightShader->IsAmbientLight() )
+	{
+		const shadowAtlasLight_t* atlasLight = FindShadowAtlasLight( vLight );
+		if( atlasLight == NULL || atlasLight->numSides > 6 )
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+/*
+==================
+idRenderBackend::LightBatchAddEntries
+
+A slot for every stage of the light that lights anything, in the view space of the G-buffer.
+The number of slots, -1 when they don't fit and the light must be drawn alone.
+==================
+*/
+int idRenderBackend::LightBatchAddEntries( const viewLight_t* vLight, bool deferred )
+{
+	const idRenderMatrix& viewToWorld = s_lightBatchViewToWorld;
+	const idRenderMatrix& worldToView = s_lightBatchWorldToView;
+	auto planeToView = [&viewToWorld]( const float* plane, float* out )
+	{
+		for( int j = 0; j < 4; j++ )
+		{
+			out[j] = plane[0] * viewToWorld[0][j] + plane[1] * viewToWorld[1][j] + plane[2] * viewToWorld[2][j] + plane[3] * viewToWorld[3][j];
+		}
+	};
+
+	const idMaterial* lightShader = vLight->lightShader;
+	const float* lightRegs = vLight->shaderRegisters;
+	const bool ambientLight = lightShader->IsAmbientLight();
+	const bool useShadowMaps = r_useShadowMapping.GetBool() && vLight->globalShadows != NULL && !ambientLight;
+	const shadowAtlasLight_t* atlasLight = useShadowMaps ? FindShadowAtlasLight( vLight ) : NULL;
+	if( useShadowMaps && atlasLight == NULL )
+	{
+		return -1;
+	}
+
+	float type = 0.0f;
+	if( ambientLight )
+	{
+		type = 1.0f;
+	}
+	else if( useShadowMaps )
+	{
+		type = vLight->parallel ? 4.0f : ( vLight->pointLight ? 3.0f : 2.0f );
+	}
+
+	// the light origin in view space
+	const idVec3& lightOrigin = vLight->globalLightOrigin;
+	float viewLightOrigin[4];
+	for( int i = 0; i < 4; i++ )
+	{
+		viewLightOrigin[i] = worldToView[i][0] * lightOrigin.x + worldToView[i][1] * lightOrigin.y + worldToView[i][2] * lightOrigin.z + worldToView[i][3];
+	}
+
+	// view space -> shadow maps of the sides
+	idRenderMatrix worldToShadow[6];
+	const int numShadowSides = ShadowSideMatrices( vLight, atlasLight, worldToShadow );
+
+	const float lightScale = r_lightScale.GetFloat();
+	const int firstEntry = numLightBatchEntries;
+
+	for( int lightStageNum = 0; lightStageNum < lightShader->GetNumStages(); lightStageNum++ )
+	{
+		const shaderStage_t* lightStage = lightShader->GetStage( lightStageNum );
+		if( !lightRegs[ lightStage->conditionRegister ] )
+		{
+			continue;
+		}
+
+		const idVec4 lightColor(
+			lightScale * lightRegs[ lightStage->color.registers[0] ],
+			lightScale * lightRegs[ lightStage->color.registers[1] ],
+			lightScale * lightRegs[ lightStage->color.registers[2] ],
+			lightRegs[ lightStage->color.registers[3] ] );
+		if( lightColor[0] <= 0.0f && lightColor[1] <= 0.0f && lightColor[2] <= 0.0f )
+		{
+			// the interactions would draw nothing
+			continue;
+		}
+
+		if( numLightBatchEntries == MAX_LIGHT_BATCH_ENTRIES )
+		{
+			numLightBatchEntries = firstEntry;
+			return -1;
+		}
+
+		lightBatchEntry_t& entry = lightBatchEntries[numLightBatchEntries++];
+		entry.vLight = vLight;
+		entry.stage = lightStage;
+		entry.falloffImage = vLight->falloffImage;
+		entry.projectionImage = lightStage->texture.image;
+		entry.rect = vLight->scissorRect;
+		entry.deferred = deferred;
+
+		float* data = entry.data;
+		memset( data, 0, sizeof( entry.data ) );
+
+		// 0: origin, type
+		data[0] = viewLightOrigin[0];
+		data[1] = viewLightOrigin[1];
+		data[2] = viewLightOrigin[2];
+		data[3] = type;
+
+		// 1..4: the volume
+		for( int i = 0; i < 4; i++ )
+		{
+			planeToView( vLight->baseLightProject[i], &data[( 1 + i ) * 4] );
+		}
+
+		// 5..8: the projection with the texture matrix of the stage
+		idPlane lightProjection[4];
+		for( int i = 0; i < 4; i++ )
+		{
+			lightProjection[i] = vLight->lightProject[i];
+		}
+		if( lightStage->texture.hasMatrix )
+		{
+			float lightTextureMatrix[16];
+			RB_GetShaderTextureMatrix( lightRegs, &lightStage->texture, lightTextureMatrix );
+			RB_BakeTextureMatrixIntoTexgen( lightProjection, lightTextureMatrix );
+		}
+		for( int i = 0; i < 4; i++ )
+		{
+			planeToView( lightProjection[i].ToFloatPtr(), &data[( 5 + i ) * 4] );
+		}
+
+		// 9: the color
+		data[9 * 4 + 0] = lightColor[0];
+		data[9 * 4 + 1] = lightColor[1];
+		data[9 * 4 + 2] = lightColor[2];
+		data[9 * 4 + 3] = lightColor[3];
+
+		if( atlasLight != NULL )
+		{
+			// 10: texel size, depth bias, which atlas
+			data[10 * 4 + 0] = 1.0f / Max( 1, atlasLight->atlasSize );
+			data[10 * 4 + 1] = vLight->parallel ? r_shadowMapSunDepthBiasScale.GetFloat() : r_shadowMapRegularDepthBiasScale.GetFloat();
+			data[10 * 4 + 2] = ( atlasLight->image == globalImages->shadowCacheImage ) ? 1.0f : 0.0f;
+
+			// 11: cascades
+			for( int i = 0; i < 4; i++ )
+			{
+				data[11 * 4 + i] = viewDef->frustumSplitDistances[i];
+			}
+
+			// 12..35: view space -> shadow maps
+			for( int side = 0; side < numShadowSides; side++ )
+			{
+				idRenderMatrix viewToShadow;
+				idRenderMatrix::Multiply( worldToShadow[side], viewToWorld, viewToShadow );
+				for( int row = 0; row < 4; row++ )
+				{
+					for( int col = 0; col < 4; col++ )
+					{
+						data[( 12 + side * 4 + row ) * 4 + col] = viewToShadow[row][col];
+					}
+				}
+			}
+		}
+	}
+
+	return numLightBatchEntries - firstEntry;
+}
+
+/*
+==================
+idRenderBackend::LightBatchBeginView
+
+The batchable lights of the view and their slots
+==================
+*/
+void idRenderBackend::LightBatchBeginView( const viewDef_t* _viewDef )
+{
+	numLightBatchEntries = 0;
+	numLightBatchedDeferred = 0;
+	s_numLightBatchLights = 0;
+
+	if( !r_lightBatching.GetBool() || _viewDef->viewEntitys == NULL )
+	{
+		return;
+	}
+
+	DeferredViewParms( s_lightBatchWorldToView, s_lightBatchViewToWorld );
+
+	for( const viewLight_t* vLight = _viewDef->viewLights; vLight != NULL && s_numLightBatchLights < MAX_LIGHT_BATCH_LIGHTS; vLight = vLight->next )
+	{
+		if( !LightBatchable( vLight ) )
+		{
+			continue;
+		}
+		const bool deferred = DeferredLight( vLight );
+		const int firstEntry = numLightBatchEntries;
+		const int numEntries = LightBatchAddEntries( vLight, deferred );
+		if( numEntries < 0 )
+		{
+			continue;
+		}
+		lightBatchLight_t& light = s_lightBatchLights[s_numLightBatchLights++];
+		light.vLight = vLight;
+		light.firstEntry = firstEntry;
+		light.numEntries = numEntries;
+		light.deferred = deferred;
+	}
+}
+
+/*
+==================
+idRenderBackend::LightBatchSetGlobals
+
+What the slots of a draw share: the view and the soft shadow jitter
+==================
+*/
+void idRenderBackend::LightBatchSetGlobals()
+{
+	// window coordinates -> view space position on the view depth, see DrawDeferredLight
+	const idScreenRect& viewport = viewDef->viewport;
+	const float viewportWidth = ( float )( viewport.x2 + 1 - viewport.x1 );
+	const float viewportHeight = ( float )( viewport.y2 + 1 - viewport.y1 );
+	const float windowToNDC[4] = { 2.0f / viewportWidth, 2.0f / viewportHeight,
+								   -1.0f - 2.0f * ( float )viewport.x1 / viewportWidth, -1.0f - 2.0f * ( float )viewport.y1 / viewportHeight
+								 };
+	SetFragmentParm( RENDERPARM_USER0, windowToNDC );
+
+	const idRenderMatrix& projection = viewDef->projectionRenderMatrix;
+	const float projectionX[4] = { 1.0f / projection[0][0], projection[0][2], projection[0][3], projection[3][2] };
+	const float projectionY[4] = { 1.0f / projection[1][1], projection[1][2], projection[1][3], projection[3][3] };
+	SetFragmentParm( RENDERPARM_USER1, projectionX );
+	SetFragmentParm( RENDERPARM_USER2, projectionY );
+
+	// the side of a point light is the world axis closest to the direction to the light
+	SetFragmentParm( RENDERPARM_MODELMATRIX_X, s_lightBatchViewToWorld[0] );
+	SetFragmentParm( RENDERPARM_MODELMATRIX_Y, s_lightBatchViewToWorld[1] );
+	SetFragmentParm( RENDERPARM_MODELMATRIX_Z, s_lightBatchViewToWorld[2] );
+
+	const static int JITTER_SIZE = 128;
+	const float shadowMapSamples = Max( 1, r_shadowMapSamples.GetInteger() );
+	const float screenCorrectionParm[4] = { 1.0f / ( JITTER_SIZE * shadowMapSamples ), 1.0f / JITTER_SIZE, 0.0f, 0.0f };
+	SetFragmentParm( RENDERPARM_SCREENCORRECTIONFACTOR, screenCorrectionParm );
+
+	const float jitterTexScale[4] = { r_shadowMapJitterScale.GetFloat(), r_shadowMapJitterScale.GetFloat(), -r_shadowMapBiasScale.GetFloat(), 0.0f };
+	SetFragmentParm( RENDERPARM_JITTERTEXSCALE, jitterTexScale );
+
+	float jitterTexOffset[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	if( r_shadowMapRandomizeJitter.GetBool() )
+	{
+		jitterTexOffset[0] = ( rand() & 255 ) / 255.0f;
+		jitterTexOffset[1] = ( rand() & 255 ) / 255.0f;
+	}
+	SetFragmentParm( RENDERPARM_JITTERTEXOFFSET, jitterTexOffset );
+}
+
+/*
+==================
+idRenderBackend::LightBatchBindShadowImages
+
+The two atlases and the jitter, only images that have storage: the slots of a draw never read
+an atlas they don't use
+==================
+*/
+void idRenderBackend::LightBatchBindShadowImages( int frameAtlasUnit, int cacheAtlasUnit, int jitterUnit )
+{
+	if( globalImages->shadowAtlasImage->IsLoaded() )
+	{
+		GL_SelectTexture( frameAtlasUnit );
+		globalImages->shadowAtlasImage->Bind();
+	}
+	if( globalImages->shadowCacheImage->IsLoaded() )
+	{
+		GL_SelectTexture( cacheAtlasUnit );
+		globalImages->shadowCacheImage->Bind();
+	}
+	GL_SelectTexture( jitterUnit );
+	if( r_shadowMapSamples.GetInteger() == 16 )
+	{
+		globalImages->jitterImage16->Bind();
+	}
+	else if( r_shadowMapSamples.GetInteger() == 4 )
+	{
+		globalImages->jitterImage4->Bind();
+	}
+	else
+	{
+		globalImages->jitterImage1->Bind();
+	}
+}
+
+/*
+==================
+idRenderBackend::LightBatchBindSlot
+==================
+*/
+void idRenderBackend::LightBatchBindSlot( int slot, int firstUnit, const lightBatchEntry_t& entry )
+{
+	GL_SelectTexture( firstUnit + slot * 2 );
+	entry.falloffImage->Bind();
+	GL_SelectTexture( firstUnit + slot * 2 + 1 );
+	entry.projectionImage->Bind();
+}
+
+static int R_PopCount( uint32 v )
+{
+	int n = 0;
+	for( ; v != 0; v &= v - 1 )
+	{
+		n++;
+	}
+	return n;
+}
+
+static int R_LightBatchMortonKey( const idScreenRect& rect, int tileSize )
+{
+	const int cx = Max( 0, ( rect.x1 + rect.x2 ) / 2 / tileSize ) & 0xffff;
+	const int cy = Max( 0, ( rect.y1 + rect.y2 ) / 2 / tileSize ) & 0xffff;
+	int key = 0;
+	for( int bit = 0; bit < 15; bit++ )
+	{
+		key |= ( ( cx >> bit ) & 1 ) << ( bit * 2 );
+		key |= ( ( cy >> bit ) & 1 ) << ( bit * 2 + 1 );
+	}
+	return key;
+}
+
+/*
+==================
+idRenderBackend::DrawDeferredLightBatches
+
+The batchable lights of the G-buffer, see the top of this section. Must run while the view's
+G-buffer is in the render pass, before the lights are drawn one by one.
+==================
+*/
+void idRenderBackend::DrawDeferredLightBatches()
+{
+	if( !deferredView || !r_lightBatching.GetBool() || !renderProgManager.DeferredLightBatchShaderReady() )
+	{
+		return;
+	}
+
+	// the slots of the deferred lights, nearby lights next to each other
+	int entryOrder[MAX_LIGHT_BATCH_ENTRIES];
+	int entryKey[MAX_LIGHT_BATCH_ENTRIES];
+	int numEntries = 0;
+	const int tileSize = r_lightBatchTileSize.GetInteger();
+	for( int i = 0; i < numLightBatchEntries; i++ )
+	{
+		if( lightBatchEntries[i].deferred && !lightBatchEntries[i].rect.IsEmpty() )
+		{
+			entryKey[i] = R_LightBatchMortonKey( lightBatchEntries[i].rect, tileSize );
+			entryOrder[numEntries++] = i;
+		}
+	}
+	for( int i = 1; i < numEntries; i++ )
+	{
+		const int current = entryOrder[i];
+		int j = i - 1;
+		for( ; j >= 0 && entryKey[entryOrder[j]] > entryKey[current]; j-- )
+		{
+			entryOrder[j + 1] = entryOrder[j];
+		}
+		entryOrder[j + 1] = current;
+	}
+
+	// every light of the deferred shading the batches light, those without a slot light nothing
+	for( int i = 0; i < s_numLightBatchLights; i++ )
+	{
+		if( s_lightBatchLights[i].deferred && numLightBatchedDeferred < MAX_LIGHT_BATCH_ENTRIES )
+		{
+			lightBatchedDeferred[numLightBatchedDeferred++] = s_lightBatchLights[i].vLight;
+		}
+	}
+	if( numEntries == 0 )
+	{
+		return;
+	}
+
+	renderLog.OpenBlock( "RB_DeferredLightBatches" );
+
+	const int numBatches = ( numEntries + LIGHT_BATCH_DEFERRED_SLOTS - 1 ) / LIGHT_BATCH_DEFERRED_SLOTS;
+	const int slotsVec4s = LIGHT_BATCH_DEFERRED_SLOTS * LIGHT_BATCH_VEC4S;
+	const int alignment = Max( 16, glConfig.uniformBufferOffsetAlignment );
+	const int batchBytes = ( ( slotsVec4s * 16 + alignment - 1 ) / alignment ) * alignment;
+
+	// the slots of all batches in one upload
+	// heap objects: nothing here may run a destructor at exit()
+	static idList<float>* batchData = new idList<float>();
+	idList<float>& data = *batchData;
+	data.SetNum( numBatches * batchBytes / ( int )sizeof( float ) );
+	memset( data.Ptr(), 0, data.Num() * sizeof( float ) );
+	for( int e = 0; e < numEntries; e++ )
+	{
+		const int batch = e / LIGHT_BATCH_DEFERRED_SLOTS;
+		const int slot = e % LIGHT_BATCH_DEFERRED_SLOTS;
+		memcpy( &data[batch * batchBytes / sizeof( float ) + slot * LIGHT_BATCH_VEC4S * 4], lightBatchEntries[entryOrder[e]].data, sizeof( lightBatchEntries[0].data ) );
+	}
+	unsigned int buffer = 0;
+	int bufferOffset = 0;
+	if( !UploadLightBatchData( data.Ptr(), data.Num() / 4, buffer, bufferOffset ) )
+	{
+		numLightBatchedDeferred = 0;
+		renderLog.CloseBlock();
+		return;
+	}
+
+	// the tiles of the view
+	const idScreenRect& viewport = viewDef->viewport;
+	const int viewportWidth = viewport.x2 + 1 - viewport.x1;
+	const int viewportHeight = viewport.y2 + 1 - viewport.y1;
+	const int tilesX = ( viewportWidth + tileSize - 1 ) / tileSize;
+	const int tilesY = ( viewportHeight + tileSize - 1 ) / tileSize;
+	static idList<byte>* tileMaskList = new idList<byte>();
+	idList<byte>& tileMasks = *tileMaskList;
+	tileMasks.SetNum( tilesX * tilesY );
+	static idList<gpuInstanceData_t>* instanceList = new idList<gpuInstanceData_t>();
+	idList<gpuInstanceData_t>& instances = *instanceList;
+
+	// the whole view, the tiles bound what is drawn
+	GL_Scissor( viewport.x1, viewport.y1, viewportWidth, viewportHeight );
+	currentScissor.x1 = 0;
+	currentScissor.y1 = 0;
+	currentScissor.x2 = viewportWidth - 1;
+	currentScissor.y2 = viewportHeight - 1;
+
+	// replaces the scene color with what the program adds to the fetched one, no depth test: the tiles cover the lights
+	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS | GLS_CULL_TWOSIDED | GLS_STENCIL_FUNC_ALWAYS );
+	renderProgManager.BindShader_DeferredLightBatch();
+	LightBatchSetGlobals();
+	LightBatchBindShadowImages( 0, 1, 2 );
+
+	for( int batch = 0; batch < numBatches; batch++ )
+	{
+		const int first = batch * LIGHT_BATCH_DEFERRED_SLOTS;
+		const int numSlots = Min( LIGHT_BATCH_DEFERRED_SLOTS, numEntries - first );
+
+		// the mask of every tile
+		memset( tileMasks.Ptr(), 0, tileMasks.Num() );
+		for( int slot = 0; slot < numSlots; slot++ )
+		{
+			const idScreenRect& rect = lightBatchEntries[entryOrder[first + slot]].rect;
+			const int tx0 = idMath::ClampInt( 0, tilesX - 1, rect.x1 / tileSize );
+			const int tx1 = idMath::ClampInt( 0, tilesX - 1, rect.x2 / tileSize );
+			const int ty0 = idMath::ClampInt( 0, tilesY - 1, rect.y1 / tileSize );
+			const int ty1 = idMath::ClampInt( 0, tilesY - 1, rect.y2 / tileSize );
+			for( int ty = ty0; ty <= ty1; ty++ )
+			{
+				for( int tx = tx0; tx <= tx1; tx++ )
+				{
+					tileMasks[ty * tilesX + tx] |= ( byte )( 1 << slot );
+				}
+			}
+		}
+
+		// runs of tiles of a row with the same mask are one quad
+		instances.SetNum( 0 );
+		for( int ty = 0; ty < tilesY; ty++ )
+		{
+			for( int tx = 0; tx < tilesX; )
+			{
+				const byte mask = tileMasks[ty * tilesX + tx];
+				if( mask == 0 )
+				{
+					tx++;
+					continue;
+				}
+				int end = tx + 1;
+				while( end < tilesX && tileMasks[ty * tilesX + end] == mask )
+				{
+					end++;
+				}
+
+				const int lightsInTile = R_PopCount( mask );
+				pc.c_lightTiles += end - tx;
+				pc.c_lightTileSlots += lightsInTile * ( end - tx );
+				pc.c_lightTileMax = Max( pc.c_lightTileMax, lightsInTile );
+
+				gpuInstanceData_t instance;
+				memset( &instance, 0, sizeof( instance ) );
+				instance.mvp[0] = ( float )( tx * tileSize ) / viewportWidth * 2.0f - 1.0f;
+				instance.mvp[1] = ( float )( ty * tileSize ) / viewportHeight * 2.0f - 1.0f;
+				instance.mvp[2] = ( float )Min( end * tileSize, viewportWidth ) / viewportWidth * 2.0f - 1.0f;
+				instance.mvp[3] = ( float )Min( ( ty + 1 ) * tileSize, viewportHeight ) / viewportHeight * 2.0f - 1.0f;
+				instance.mvp[4] = ( float )mask;
+				instances.Append( instance );
+				tx = end;
+			}
+		}
+		if( instances.Num() == 0 )
+		{
+			continue;
+		}
+		if( instances.Num() == 1 )
+		{
+			// the instanced path needs two, the second covers nothing and lights nothing
+			gpuInstanceData_t empty;
+			memset( &empty, 0, sizeof( empty ) );
+			instances.Append( empty );
+		}
+
+		glBindBufferRange( GL_UNIFORM_BUFFER, 1, buffer, bufferOffset + batch * batchBytes, slotsVec4s * 16 );
+		for( int slot = 0; slot < numSlots; slot++ )
+		{
+			LightBatchBindSlot( slot, 3, lightBatchEntries[entryOrder[first + slot]] );
+		}
+
+		DrawElementsWithCounters( &unitSquareSurface, instances.Ptr(), instances.Num() );
+		pc.c_lightBatchDraws++;
+		pc.c_lightBatchEntries += numSlots;
+	}
+
+	GL_SelectTexture( 0 );
+	renderProgManager.Unbind();
+	renderLog.CloseBlock();
+}
+
+/*
+==================
+idRenderBackend::CollectSurfaceInteractions
+
+What RenderInteractions draws for the surface, for a light of color 1: the bump, diffuse and
+specular sets of its stages, the ones that would draw nothing left out
+==================
+*/
+int idRenderBackend::CollectSurfaceInteractions( const drawSurf_t* surf, bool ambientLight, drawInteraction_t* out, int maxInteractions )
+{
+	const idMaterial* material = surf->material;
+	if( material == NULL || surf->shaderRegisters == NULL || !material->ReceivesLighting() )
+	{
+		return 0;
+	}
+
+	const idVec4 sMatrix( 1, 0, 0, 0 );
+	const idVec4 tMatrix( 0, 1, 0, 0 );
+
+	drawInteraction_t din = {};
+	din.surf = surf;
+	din.vertexColor = SVC_IGNORE;
+	din.ambientLight = ambientLight;
+	din.bumpMatrix[0] = sMatrix;
+	din.bumpMatrix[1] = tMatrix;
+	din.diffuseMatrix[0] = sMatrix;
+	din.diffuseMatrix[1] = tMatrix;
+	din.specularMatrix[0] = sMatrix;
+	din.specularMatrix[1] = tMatrix;
+
+	// see RB_SetupForFastPathInteractions
+	if( material->GetFastPathBumpImage() && !r_skipInteractionFastPath.GetBool() )
+	{
+		din.bumpImage = material->GetFastPathBumpImage();
+		din.specularImage = material->GetFastPathSpecularImage();
+		din.diffuseImage = material->GetFastPathDiffuseImage();
+		din.diffuseColor = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
+		din.specularColor = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
+		if( maxInteractions > 0 )
+		{
+			out[0] = din;
+		}
+		return 1;
+	}
+
+	static const float lightColorOne[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+	const float* surfaceRegs = surf->shaderRegisters;
+	int numInteractions = 0;
+
+	// counts them all, out gets the first maxInteractions
+	auto finish = [&]()
+	{
+		drawInteraction_t finished = din;
+		if( R_DeferredFinishInteraction( &finished ) )
+		{
+			if( numInteractions < maxInteractions )
+			{
+				out[numInteractions] = finished;
+			}
+			numInteractions++;
+		}
+	};
+
+	for( int surfaceStageNum = 0; surfaceStageNum < material->GetNumStages(); surfaceStageNum++ )
+	{
+		const shaderStage_t* surfaceStage = material->GetStage( surfaceStageNum );
+		if( surfaceStage->lighting != SL_BUMP && surfaceStage->lighting != SL_DIFFUSE && surfaceStage->lighting != SL_SPECULAR )
+		{
+			// coverage and ambient stages are no interactions
+			continue;
+		}
+		if( !surfaceRegs[ surfaceStage->conditionRegister ] )
+		{
+			continue;
+		}
+
+		switch( surfaceStage->lighting )
+		{
+			case SL_BUMP:
+				// draw any previous interaction
+				if( din.bumpImage != NULL )
+				{
+					finish();
+				}
+				din.bumpImage = surfaceStage->texture.image;
+				din.diffuseImage = NULL;
+				din.specularImage = NULL;
+				SetupInteractionStage( surfaceStage, surfaceRegs, NULL, din.bumpMatrix, NULL );
+				break;
+			case SL_DIFFUSE:
+				if( din.diffuseImage != NULL )
+				{
+					finish();
+				}
+				din.diffuseImage = surfaceStage->texture.image;
+				din.vertexColor = surfaceStage->vertexColor;
+				SetupInteractionStage( surfaceStage, surfaceRegs, lightColorOne, din.diffuseMatrix, din.diffuseColor.ToFloatPtr() );
+				break;
+			case SL_SPECULAR:
+				if( din.specularImage != NULL )
+				{
+					finish();
+				}
+				din.specularImage = surfaceStage->texture.image;
+				din.vertexColor = surfaceStage->vertexColor;
+				SetupInteractionStage( surfaceStage, surfaceRegs, lightColorOne, din.specularMatrix, din.specularColor.ToFloatPtr() );
+				break;
+			default:
+				break;
+		}
+	}
+
+	// the final interaction
+	finish();
+	return numInteractions;
+}
+
+/*
+==================
+idRenderBackend::DrawForwardLightBatches
+
+The surfaces outside the G-buffer that several batchable lights reach, once per interaction for
+LIGHT_BATCH_FORWARD_SLOTS of their lights at a time, see the top of this section
+==================
+*/
+void idRenderBackend::DrawForwardLightBatches()
+{
+	if( !r_lightBatching.GetBool() || !renderProgManager.ForwardLightBatchShadersReady() || s_numLightBatchLights < 1 || numLightBatchEntries < 2 )
+	{
+		return;
+	}
+
+	struct forwardPair_t
+	{
+		int				light;		// s_lightBatchLights
+		drawSurf_t*		surf;		// the light's interaction surface
+		int				next;		// the next pair of the group, -1
+	};
+	struct forwardGroup_t
+	{
+		const viewEntity_t*		space;
+		const void*				geo;
+		const idMaterial*		material;
+		const drawSurf_t*		viewSurf;
+		int						firstPair;
+		int						numEntries;
+	};
+	// heap objects: nothing here may run a destructor at exit()
+	static idList<forwardPair_t>* pairList = new idList<forwardPair_t>();
+	static idList<forwardGroup_t>* groupList = new idList<forwardGroup_t>();
+	static idList<int>* groupHashList = new idList<int>();
+	idList<forwardPair_t>& pairs = *pairList;
+	idList<forwardGroup_t>& groups = *groupList;
+	idList<int>& groupHash = *groupHashList;
+	pairs.SetNum( 0 );
+	groups.SetNum( 0 );
+
+	auto hashOf = []( const viewEntity_t * space, const void* geo, const idMaterial * material ) -> uint32
+	{
+		const uint64 h = ( ( uint64 )( uintptr_t )space * 31u ) ^ ( ( uint64 )( uintptr_t )geo * 131u ) ^ ( ( uint64 )( uintptr_t )material * 7u );
+		return ( uint32 )( h ^ ( h >> 15 ) ^ ( h >> 32 ) );
+	};
+
+	// the surfaces of the view by model surface, to draw all of their triangles once
+	const int hashSize = idMath::CeilPowerOfTwo( Max( 64, viewDef->numDrawSurfs * 2 ) );
+	static idList<const drawSurf_t*>* viewSurfHashList = new idList<const drawSurf_t*>();
+	idList<const drawSurf_t*>& viewSurfHash = *viewSurfHashList;
+	viewSurfHash.SetNum( hashSize );
+	memset( viewSurfHash.Ptr(), 0, hashSize * sizeof( const drawSurf_t* ) );
+	for( int i = 0; i < viewDef->numDrawSurfs; i++ )
+	{
+		const drawSurf_t* surf = viewDef->drawSurfs[i];
+		if( surf->frontEndGeo == NULL || surf->material == NULL )
+		{
+			continue;
+		}
+		uint32 slot = hashOf( surf->space, surf->frontEndGeo, surf->material ) & ( hashSize - 1 );
+		while( viewSurfHash[slot] != NULL )
+		{
+			slot = ( slot + 1 ) & ( hashSize - 1 );
+		}
+		viewSurfHash[slot] = surf;
+	}
+	auto findViewSurf = [&]( const viewEntity_t * space, const void* geo, const idMaterial * material ) -> const drawSurf_t*
+	{
+		uint32 slot = hashOf( space, geo, material ) & ( hashSize - 1 );
+		while( viewSurfHash[slot] != NULL )
+		{
+			const drawSurf_t* surf = viewSurfHash[slot];
+			if( surf->space == space && surf->frontEndGeo == geo && surf->material == material )
+			{
+				return surf;
+			}
+			slot = ( slot + 1 ) & ( hashSize - 1 );
+		}
+		return NULL;
+	};
+
+	// the pairs of light and surface, grouped by model surface
+	groupHash.SetNum( hashSize );
+	memset( groupHash.Ptr(), -1, hashSize * sizeof( int ) );
+	for( int li = 0; li < s_numLightBatchLights; li++ )
+	{
+		const lightBatchLight_t& light = s_lightBatchLights[li];
+		if( light.numEntries == 0 )
+		{
+			continue;
+		}
+		drawSurf_t* chains[2] = { light.vLight->localInteractions, light.vLight->globalInteractions };
+		for( int c = 0; c < 2; c++ )
+		{
+			for( drawSurf_t* surf = chains[c]; surf != NULL; surf = surf->nextOnLight )
+			{
+				// merged with the other areas of the material for this light, or lit from the G-buffer
+				if( surf->mergedGroup != 0 || surf->frontEndGeo == NULL || surf->material == NULL || surf->material->Coverage() == MC_TRANSLUCENT )
+				{
+					continue;
+				}
+				if( light.deferred && DeferredSurface( surf ) )
+				{
+					continue;
+				}
+
+				uint32 slot = hashOf( surf->space, surf->frontEndGeo, surf->material ) & ( hashSize - 1 );
+				int group = -1;
+				while( groupHash[slot] != -1 )
+				{
+					const forwardGroup_t& g = groups[groupHash[slot]];
+					if( g.space == surf->space && g.geo == surf->frontEndGeo && g.material == surf->material )
+					{
+						group = groupHash[slot];
+						break;
+					}
+					slot = ( slot + 1 ) & ( hashSize - 1 );
+				}
+				if( group == -1 )
+				{
+					if( groups.Num() >= hashSize / 2 )
+					{
+						continue;
+					}
+					forwardGroup_t g;
+					g.space = surf->space;
+					g.geo = surf->frontEndGeo;
+					g.material = surf->material;
+					g.viewSurf = NULL;
+					g.firstPair = -1;
+					g.numEntries = 0;
+					group = groups.Append( g );
+					groupHash[slot] = group;
+				}
+
+				forwardPair_t pair;
+				pair.light = li;
+				pair.surf = surf;
+				pair.next = groups[group].firstPair;
+				groups[group].firstPair = pairs.Append( pair );
+				groups[group].numEntries += light.numEntries;
+			}
+		}
+	}
+
+	// the draws: a chunk is up to LIGHT_BATCH_FORWARD_SLOTS slots of one group
+	struct forwardChunk_t
+	{
+		int				group;
+		int				numSlots;
+		int				entries[LIGHT_BATCH_FORWARD_SLOTS];
+		idScreenRect	scissor;
+	};
+	static idList<forwardChunk_t>* chunkList = new idList<forwardChunk_t>();
+	idList<forwardChunk_t>& chunks = *chunkList;
+	chunks.SetNum( 0 );
+
+	const int slotsVec4s = LIGHT_BATCH_FORWARD_SLOTS * LIGHT_BATCH_VEC4S;
+	const int alignment = Max( 16, glConfig.uniformBufferOffsetAlignment );
+	const int chunkBytes = ( ( slotsVec4s * 16 + alignment - 1 ) / alignment ) * alignment;
+	static idList<float>* chunkData = new idList<float>();
+	idList<float>& data = *chunkData;
+	data.SetNum( 0 );
+
+	for( int gi = 0; gi < groups.Num(); gi++ )
+	{
+		forwardGroup_t& group = groups[gi];
+		if( group.numEntries < 2 )
+		{
+			// one light stage: its interaction draw is as good
+			continue;
+		}
+		group.viewSurf = findViewSurf( group.space, group.geo, group.material );
+		if( group.viewSurf == NULL || group.viewSurf->numIndexes <= 0 )
+		{
+			continue;
+		}
+
+		// more interactions than a draw loop takes: the light by light draws
+		const int numInteractions = CollectSurfaceInteractions( group.viewSurf, false, NULL, 0 );
+		if( numInteractions > MAX_FORWARD_INTERACTIONS )
+		{
+			continue;
+		}
+		if( numInteractions == 0 )
+		{
+			// nothing to light, the interactions would find the same
+			for( int p = group.firstPair; p != -1; p = pairs[p].next )
+			{
+				pairs[p].surf->forwardBatched = true;
+			}
+			continue;
+		}
+
+		forwardChunk_t chunk;
+		chunk.group = gi;
+		chunk.numSlots = 0;
+		chunk.scissor.Clear();
+		for( int p = group.firstPair; p != -1; p = pairs[p].next )
+		{
+			const lightBatchLight_t& light = s_lightBatchLights[pairs[p].light];
+			const bool keepBackFacesDark = !pairs[p].surf->lightBackFaces;
+			for( int e = 0; e < light.numEntries; e++ )
+			{
+				if( chunk.numSlots == LIGHT_BATCH_FORWARD_SLOTS )
+				{
+					chunks.Append( chunk );
+					chunk.numSlots = 0;
+					chunk.scissor.Clear();
+				}
+				const int entryIndex = light.firstEntry + e;
+				if( chunk.numSlots == 0 )
+				{
+					// a new chunk starts a new block of the upload
+					const int start = data.Num();
+					data.SetNum( start + chunkBytes / ( int )sizeof( float ) );
+					memset( &data[start], 0, chunkBytes );
+				}
+				const int base = ( chunks.Num() * chunkBytes ) / ( int )sizeof( float ) + chunk.numSlots * LIGHT_BATCH_VEC4S * 4;
+				memcpy( &data[base], lightBatchEntries[entryIndex].data, sizeof( lightBatchEntries[0].data ) );
+				data[base + 10 * 4 + 3] = keepBackFacesDark ? 1.0f : 0.0f;
+				chunk.entries[chunk.numSlots++] = entryIndex;
+				chunk.scissor.Union( lightBatchEntries[entryIndex].rect );
+			}
+			// the multi light draws light the pair, its interactions are skipped
+			pairs[p].surf->forwardBatched = true;
+		}
+		if( chunk.numSlots > 0 )
+		{
+			chunks.Append( chunk );
+		}
+	}
+	if( chunks.Num() == 0 )
+	{
+		return;
+	}
+
+	unsigned int buffer = 0;
+	int bufferOffset = 0;
+	if( !UploadLightBatchData( data.Ptr(), data.Num() / 4, buffer, bufferOffset ) )
+	{
+		// nothing drawn, the interactions light them all
+		for( int i = 0; i < pairs.Num(); i++ )
+		{
+			pairs[i].surf->forwardBatched = false;
+		}
+		return;
+	}
+
+	renderLog.OpenBlock( "RB_ForwardLightBatches" );
+
+	// blended one one with depth equal, like RenderInteractions without the stencil test
+	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE | GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL | GLS_STENCIL_FUNC_ALWAYS );
+	currentSpace = NULL;
+	worldMergeSurf = NULL;
+	bool globalsSet = false;
+	int boundProgramSkinned = -1;
+
+	for( int ci = 0; ci < chunks.Num(); )
+	{
+		// the chunks of one group follow each other: one surface setup for them
+		const forwardGroup_t& group = groups[chunks[ci].group];
+		int chunkEnd = ci + 1;
+		while( chunkEnd < chunks.Num() && chunks[chunkEnd].group == chunks[ci].group )
+		{
+			chunkEnd++;
+		}
+
+		// the whole surface of the view, its own triangles, not a merged world group
+		drawSurf_t surf = *group.viewSurf;
+		surf.mergedGroup = 0;
+		surf.staticIndexes = NULL;
+
+		drawInteraction_t interactions[MAX_FORWARD_INTERACTIONS];
+		const int numInteractions = Min( CollectSurfaceInteractions( &surf, false, interactions, MAX_FORWARD_INTERACTIONS ), MAX_FORWARD_INTERACTIONS );
+
+		const bool skinned = ( surf.jointCache != 0 );
+		if( boundProgramSkinned != ( skinned ? 1 : 0 ) )
+		{
+			renderProgManager.BindShader_ForwardLightBatch( skinned );
+			boundProgramSkinned = skinned ? 1 : 0;
+		}
+		if( !globalsSet )
+		{
+			LightBatchSetGlobals();
+			LightBatchBindShadowImages( 3, 4, 5 );
+			globalsSet = true;
+		}
+
+		if( surf.space != currentSpace )
+		{
+			currentSpace = surf.space;
+			RB_SetMVP( surf.space->mvp );
+
+			idVec4 localViewOrigin( 1.0f );
+			R_GlobalPointToLocal( surf.space->modelMatrix, viewDef->renderView.vieworg, localViewOrigin.ToVec3() );
+			SetVertexParm( RENDERPARM_LOCALVIEWORIGIN, localViewOrigin.ToFloatPtr() );
+
+			// view space, like the G-buffer
+			float modelViewMatrixTranspose[16];
+			R_MatrixTranspose( surf.space->modelViewMatrix, modelViewMatrixTranspose );
+			SetVertexParms( RENDERPARM_MODELVIEWMATRIX_X, modelViewMatrixTranspose, 4 );
+		}
+
+		for( int ii = 0; ii < numInteractions; ii++ )
+		{
+			const drawInteraction_t& inter = interactions[ii];
+
+			SetVertexParm( RENDERPARM_BUMPMATRIX_S, inter.bumpMatrix[0].ToFloatPtr() );
+			SetVertexParm( RENDERPARM_BUMPMATRIX_T, inter.bumpMatrix[1].ToFloatPtr() );
+			SetVertexParm( RENDERPARM_DIFFUSEMATRIX_S, inter.diffuseMatrix[0].ToFloatPtr() );
+			SetVertexParm( RENDERPARM_DIFFUSEMATRIX_T, inter.diffuseMatrix[1].ToFloatPtr() );
+			SetVertexParm( RENDERPARM_SPECULARMATRIX_S, inter.specularMatrix[0].ToFloatPtr() );
+			SetVertexParm( RENDERPARM_SPECULARMATRIX_T, inter.specularMatrix[1].ToFloatPtr() );
+			RB_SetVertexColorParms( inter.vertexColor );
+			SetFragmentParm( RENDERPARM_DIFFUSEMODIFIER, inter.diffuseColor.ToFloatPtr() );
+			SetFragmentParm( RENDERPARM_SPECULARMODIFIER, inter.specularColor.ToFloatPtr() );
+
+			GL_SelectTexture( INTERACTION_TEXUNIT_BUMP );
+			inter.bumpImage->Bind();
+			GL_SelectTexture( INTERACTION_TEXUNIT_SPECULARMIX );
+			inter.specularImage->Bind();
+			GL_SelectTexture( INTERACTION_TEXUNIT_BASECOLOR );
+			inter.diffuseImage->Bind();
+
+			for( int c = ci; c < chunkEnd; c++ )
+			{
+				const forwardChunk_t& chunk = chunks[c];
+				if( chunk.scissor.IsEmpty() )
+				{
+					continue;
+				}
+				GL_Scissor( viewDef->viewport.x1 + chunk.scissor.x1, viewDef->viewport.y1 + chunk.scissor.y1,
+							chunk.scissor.x2 + 1 - chunk.scissor.x1, chunk.scissor.y2 + 1 - chunk.scissor.y1 );
+				currentScissor = chunk.scissor;
+
+				glBindBufferRange( GL_UNIFORM_BUFFER, 1, buffer, bufferOffset + c * chunkBytes, slotsVec4s * 16 );
+				for( int slot = 0; slot < chunk.numSlots; slot++ )
+				{
+					LightBatchBindSlot( slot, 6, lightBatchEntries[chunk.entries[slot]] );
+				}
+
+				DrawElementsWithCounters( &surf );
+				pc.c_forwardBatchDraws++;
+				pc.c_forwardBatchPairs += chunk.numSlots;
+			}
+		}
+
+		ci = chunkEnd;
+	}
+
+	GL_SelectTexture( 0 );
+	renderProgManager.Unbind();
+	currentSpace = NULL;
+	renderLog.CloseBlock();
+}
+
 #endif // defined(ANDROID) && !defined(USE_VULKAN)
 
 /*
@@ -6352,6 +8325,22 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 	
 	
 	const bool useLightDepthBounds = r_useLightDepthBounds.GetBool() && !r_useShadowMapping.GetBool();
+
+#if !defined(USE_VULKAN)
+	drawCategory = DRAW_CATEGORY_LIGHTING;
+#endif
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	// multi light shading: the lights that don't need the stencil buffer several at a time, from
+	// the G-buffer and for the surfaces outside of it; what they lit is skipped below
+	LightBatchBeginView( _viewDef );
+	DrawDeferredLightBatches();
+	DrawForwardLightBatches();
+	if( r_showLightBatches.GetBool() )
+	{
+		idLib::Printf( "light batches: %d lights, %d light stages, %d deferred lights batched; %d tile draws, %d forward draws so far this frame\n",
+					   s_numLightBatchLights, numLightBatchEntries, numLightBatchedDeferred, pc.c_lightBatchDraws, pc.c_forwardBatchDraws );
+	}
+#endif
 	
 	//
 	// for each light, perform shadowing and adding
@@ -6385,11 +8374,21 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 			if( deferredLight )
 			{
 				deferredLightsDeferred++;
+				pc.c_deferredLights++;
 			}
 			else
 			{
 				deferredLightsForward++;
+				pc.c_forwardLights++;
 			}
+		}
+		pc.c_visibleLights++;
+
+		// DrawDeferredLightBatches lit its G-buffer surfaces already
+		bool deferredLightBatched = false;
+		for( int i = 0; i < numLightBatchedDeferred && !deferredLightBatched; i++ )
+		{
+			deferredLightBatched = ( lightBatchedDeferred[i] == vLight );
 		}
 #endif
 
@@ -6463,7 +8462,7 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
 			// local and global interactions get the same shadow maps
-			const bool skipDeferredSurfaces = deferredLight && DrawDeferredLight( vLight, false );
+			const bool skipDeferredSurfaces = deferredLight && ( deferredLightBatched || DrawDeferredLight( vLight, false ) );
 #else
 			const bool skipDeferredSurfaces = false;
 #endif
@@ -6530,8 +8529,8 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
 			// DeferredLight keeps the lights with local shadows on the interactions:
-			// the global shadows are all the stencil has
-			const bool skipDeferredSurfaces = deferredLight && DrawDeferredLight( vLight, performStencilTest );
+			// the global shadows are all the stencil has; a batched light has no stencil test
+			const bool skipDeferredSurfaces = deferredLight && ( deferredLightBatched || DrawDeferredLight( vLight, performStencilTest ) );
 #else
 			const bool skipDeferredSurfaces = false;
 #endif
@@ -6597,7 +8596,11 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 	{
 		GL_DepthBoundsTest( 0.0f, 0.0f );
 	}
-	
+
+#if !defined(USE_VULKAN)
+	drawCategory = DRAW_CATEGORY_SCENE;
+#endif
+
 	renderLog.CloseBlock();
 	renderLog.CloseMainBlock();
 }
@@ -7853,6 +9856,14 @@ void idRenderBackend::Bloom( const viewDef_t* _viewDef )
 	
 	const GLenum tileColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
 	RENDERLOG_PRINTF( "---------- RB_Bloom( avg = %f, max = %f, key = %f ) ----------\n", hdrAverageLuminance, hdrMaxLuminance, hdrKey );
+
+#if !defined(USE_VULKAN)
+	// the ping pong targets get their storage when HDR bloom runs
+	if( !Framebuffer::EnsureBloomTargets() )
+	{
+		return;
+	}
+#endif
 	
 	// BRIGHTPASS
 	
@@ -8034,18 +10045,27 @@ void idRenderBackend::DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef
 	}
 	
 	RENDERLOG_PRINTF( "---------- RB_SSAO() ----------\n" );
-	
+
+	// the targets of the pass get their storage now; the normals came from the ambient pass
+	if( ( r_ssaoFiltering.GetBool() && !Framebuffer::EnsureAmbientOcclusionTargets() )
+			|| ( r_useHierarchicalDepthBuffer.GetBool() && !Framebuffer::EnsureHierarchicalDepthTargets() )
+			|| !globalImages->currentNormalsImage->IsLoaded() )
+	{
+		return;
+	}
+	drawCategory = DRAW_CATEGORY_POST;
+
 #if 0
 	//GL_CheckErrors();
-	
+
 	// clear the alpha buffer and draw only the hands + weapon into it so
 	// we can avoid blurring them
 	glClearColor( 0, 0, 0, 1 );
 	GL_State( GLS_COLORMASK | GLS_DEPTHMASK );
 	glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
 	GL_Color( 0, 0, 0, 0 );
-	
-	
+
+
 	GL_SelectTexture( 0 );
 	globalImages->blackImage->Bind();
 	backEnd.currentSpace = NULL;
@@ -8324,11 +10344,12 @@ void idRenderBackend::DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef
 		
 		DrawElementsWithCounters( &unitSquareSurface );
 	}
-	
+
 	renderProgManager.Unbind();
-	
+
 	GL_State( GLS_DEFAULT );
-	
+	drawCategory = DRAW_CATEGORY_SCENE;
+
 	//GL_CheckErrors();
 #endif
 }
@@ -8646,6 +10667,15 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	g_frameFences.BeginFrame();
 	Framebuffer::BeginFrame();
 
+#if defined(ANDROID) && !defined( USE_VULKAN )
+	// the scene color and depth of HDR and of the deferred shading get their storage when one of them
+	// is on, before anything binds hdrFBO (the stereo path too)
+	if( r_useHDR.GetBool() || r_useDeferredShading.GetBool() )
+	{
+		Framebuffer::EnsureSceneTargets();
+	}
+#endif
+
 #if !defined( USE_VULKAN )
 	// viewLight_t memory is reused from frame to frame, never match last frame's atlas
 	numShadowAtlasLights = 0;
@@ -8685,6 +10715,10 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	
 	// needed for editor rendering
 	GL_SetDefaultState();
+
+#if !defined( USE_VULKAN )
+	drawCategory = DRAW_CATEGORY_SCENE;
+#endif
 
 #if defined(ANDROID) && !defined( USE_VULKAN )
 	// whether the 3D views of the frame get the G-buffer of the on-tile deferred shading
@@ -9089,7 +11123,7 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 #endif
 
 	// RB: convert back from HDR to LDR range
-	if( useHDR )
+	if( useHDR && Framebuffer::EnsureExposureTargets() )
 	{
 		// Nothing reads the depth and stencil of the view once it is drawn,
 		// don't let the end of the render pass write them out to memory.
@@ -9166,6 +11200,7 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 		}
 		
 		CalculateAutomaticExposure();
+		drawCategory = DRAW_CATEGORY_POST;
 
 		// The glare is blurred in its own small targets before the tonemap, so the
 		// tonemap and adding the glare share one render pass on the back buffer.
@@ -9175,6 +11210,7 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 		Tonemap( _viewDef );
 
 		BloomComposite( _viewDef );
+		drawCategory = DRAW_CATEGORY_SCENE;
 	}
 #endif
 
@@ -9511,9 +11547,9 @@ void idRenderBackend::PostProcess( const void* data )
 	GL_Viewport( 0, 0, screenWidth, screenHeight );
 	GL_Scissor( 0, 0, screenWidth, screenHeight );
 	
-	// SMAA
+	// SMAA, its targets get their storage now
 	int aaMode = r_antiAliasing.GetInteger();
-	if( aaMode == ANTI_ALIASING_SMAA_1X )
+	if( aaMode == ANTI_ALIASING_SMAA_1X && Framebuffer::EnsureSMAATargets() )
 	{
 		/*
 		 * The shader has three passes, chained together as follows:

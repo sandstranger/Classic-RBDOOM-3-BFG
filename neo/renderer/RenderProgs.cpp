@@ -251,6 +251,11 @@ void idRenderProgManager::Init()
 		{ BUILTIN_DEFERRED_RESOLVE, "_deferred_screen", "_resolve", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_DEFERRED_TEST_WRITE, "_deferred_screen", "_testwrite", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_DEFERRED_TEST_FETCH, "_deferred_screen", "_testfetch", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		// multi light shading and the shadow cache, engine GLSL ES as well
+		{ BUILTIN_DEFERRED_LIGHT_BATCH, "_deferred_lightbatch", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_FORWARD_LIGHT_BATCH, "_deferred_forward", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_FORWARD_LIGHT_BATCH_SKINNED, "_deferred_forward", "_skinned", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_SHADOW_CACHE_COPY, "_deferred_shadowcopy", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 #endif
 	};
 	int numBuiltins = sizeof( builtins ) / sizeof( builtins[0] );
@@ -325,6 +330,7 @@ void idRenderProgManager::Init()
 		// RB end
 #if defined(ANDROID) && !defined(USE_VULKAN)
 		renderProgs[builtinShaders[BUILTIN_DEFERRED_GBUFFER_SKINNED]].usesJoints = true;
+		renderProgs[builtinShaders[BUILTIN_FORWARD_LIGHT_BATCH_SKINNED]].usesJoints = true;
 #endif
 	}
 	

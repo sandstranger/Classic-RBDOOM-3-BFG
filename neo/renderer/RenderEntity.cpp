@@ -109,6 +109,8 @@ idRenderLightLocal::idRenderLightLocal()
 	lastInteraction			= NULL;
 	referencesCoverVolume	= false;
 	portalFlowReferences	= false;
+	shadowCacheGeneration	= R_NextShadowCacheGeneration();
+	shadowSelectedFrame		= -1000;
 
 	baseLightProject.Zero();
 	inverseBaseLightProject.Zero();

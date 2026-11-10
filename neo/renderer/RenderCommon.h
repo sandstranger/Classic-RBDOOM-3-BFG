@@ -295,8 +295,14 @@ public:
 	areaReference_t* 		references;				// each area the light is present in will have a lightRef
 	idInteraction* 			firstInteraction;		// doubly linked list
 	idInteraction* 			lastInteraction;
-	
+
 	struct doublePortal_s* 	foggedPortals;
+
+	// R_CreateLightRefs: every area the light volume reaches has a lightRef, so no surface inside
+	// the volume goes without its interaction because of the area it is in. The references of a
+	// light that flows through the portals only reach the areas visible from the light center.
+	bool					referencesCoverVolume;
+	bool					portalFlowReferences;
 };
 
 
@@ -420,9 +426,13 @@ struct viewLight_t
 	drawSurf_t* 			localShadows;				// don't shadow local surfaces
 	drawSurf_t* 			globalInteractions;			// get shadows from everything
 	drawSurf_t* 			translucentInteractions;	// translucent interactions don't get shadows
-	
+
 	// R_AddSingleLight will build a chain of parameters here to setup shadow volumes
 	preLightShadowVolumeParms_t* 	preLightShadowVolumes;
+
+	// R_AddSingleLight: every visible surface inside the light volume has its interaction with the light,
+	// lighting the volume lights the same surfaces (on-tile deferred shading, see DrawDeferredLight)
+	bool					deferredVolumeOk;
 };
 
 // a viewEntity is created whenever a idRenderEntityLocal is considered for inclusion

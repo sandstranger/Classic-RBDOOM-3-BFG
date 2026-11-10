@@ -855,9 +855,316 @@ void idRenderBackend::Shutdown()
 	// the same for the streaming rings, they must not outlive the context in static destructors
 	RB_ShutdownWorldMerge();
 	R_ShutdownInstanceStream();
+	// Framebuffer::Shutdown deleted hdrFBO already, only the renderbuffers are left
+	deferredGBufferAttached = false;
+	DeferredReleaseTargets();
 #endif
 	GLimp_Shutdown();
 }
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+/*
+==============================================================================================
+
+TBDR: ON-TILE DEFERRED SHADING, the render targets
+
+The G-buffer is colors 1..3 of hdrFBO next to the scene color, all of the view in one render
+pass: it is cleared when the view starts and invalidated when the lights are done, so a tile
+based GPU never writes it to memory or reads it back. Renderbuffers, nothing samples it.
+
+==============================================================================================
+*/
+
+static const GLenum deferredGBufferAttachments[3] = { GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
+
+/*
+=============================
+idRenderBackend::DeferredReleaseTargets
+
+hdrFBO back to the scene color alone
+=============================
+*/
+void idRenderBackend::DeferredReleaseTargets()
+{
+	// a vid_restart makes a new hdrFBO, it has nothing attached
+	if( deferredGBufferAttached && globalFramebuffers.hdrFBO != NULL && globalFramebuffers.hdrFBO->GetFramebuffer() == deferredAttachedFBO )
+	{
+		globalFramebuffers.hdrFBO->Bind();
+		for( int i = 0; i < 3; i++ )
+		{
+			glFramebufferRenderbuffer( GL_FRAMEBUFFER, deferredGBufferAttachments[i], GL_RENDERBUFFER, 0 );
+		}
+		const GLenum drawBuffers[1] = { GL_COLOR_ATTACHMENT0 };
+		glDrawBuffers( 1, drawBuffers );
+		Framebuffer::Unbind();
+
+		// GL_State sets the mask of all colors again
+		glColorMask( ( glStateBits & GLS_REDMASK ) ? GL_FALSE : GL_TRUE, ( glStateBits & GLS_GREENMASK ) ? GL_FALSE : GL_TRUE,
+					 ( glStateBits & GLS_BLUEMASK ) ? GL_FALSE : GL_TRUE, ( glStateBits & GLS_ALPHAMASK ) ? GL_FALSE : GL_TRUE );
+	}
+	deferredGBufferAttached = false;
+	deferredAttachedColor = 0;
+	deferredAttachedFBO = 0;
+
+	if( deferredRenderbuffers[0] != 0 )
+	{
+		const GLuint renderbuffers[3] = { deferredRenderbuffers[0], deferredRenderbuffers[1], deferredRenderbuffers[2] };
+		glDeleteRenderbuffers( 3, renderbuffers );
+		deferredRenderbuffers[0] = deferredRenderbuffers[1] = deferredRenderbuffers[2] = 0;
+	}
+	deferredTargetWidth = 0;
+	deferredTargetHeight = 0;
+}
+
+/*
+=============================
+idRenderBackend::DeferredUpdateTargets
+
+The G-buffer as big as the scene color, attached to hdrFBO. False when hdrFBO can't take it.
+=============================
+*/
+bool idRenderBackend::DeferredUpdateTargets()
+{
+	idImage* colorImage = globalImages->currentRenderHDRImage;
+	if( globalFramebuffers.hdrFBO == NULL || colorImage == NULL || !colorImage->IsLoaded() || colorImage->texnum == 0xFFFFFFFF )
+	{
+		return false;
+	}
+
+	const int width = colorImage->GetUploadWidth();
+	const int height = colorImage->GetUploadHeight();
+	if( width <= 0 || height <= 0 )
+	{
+		return false;
+	}
+
+	// the scene color is resized or reallocated with the screen, a vid_restart makes a new hdrFBO
+	if( deferredGBufferAttached && width == deferredTargetWidth && height == deferredTargetHeight && colorImage->texnum == deferredAttachedColor
+			&& globalFramebuffers.hdrFBO->GetFramebuffer() == deferredAttachedFBO )
+	{
+		return true;
+	}
+	if( deferredGBufferAttached && globalFramebuffers.hdrFBO->GetFramebuffer() != deferredAttachedFBO )
+	{
+		// the old hdrFBO is gone with its attachments
+		deferredGBufferAttached = false;
+	}
+
+	if( width != deferredTargetWidth || height != deferredTargetHeight || deferredRenderbuffers[0] == 0 )
+	{
+		DeferredReleaseTargets();
+
+		GLuint renderbuffers[3] = { 0, 0, 0 };
+		glGenRenderbuffers( 3, renderbuffers );
+		for( int i = 0; i < 3; i++ )
+		{
+			glBindRenderbuffer( GL_RENDERBUFFER, renderbuffers[i] );
+			glRenderbufferStorage( GL_RENDERBUFFER, GL_RGBA8, width, height );
+			deferredRenderbuffers[i] = renderbuffers[i];
+		}
+		glBindRenderbuffer( GL_RENDERBUFFER, 0 );
+		deferredTargetWidth = width;
+		deferredTargetHeight = height;
+	}
+
+	globalFramebuffers.hdrFBO->Bind();
+	for( int i = 0; i < 3; i++ )
+	{
+		glFramebufferRenderbuffer( GL_FRAMEBUFFER, deferredGBufferAttachments[i], GL_RENDERBUFFER, deferredRenderbuffers[i] );
+	}
+	const GLenum drawBuffers[4] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
+	glDrawBuffers( 4, drawBuffers );
+
+	const GLenum status = glCheckFramebufferStatus( GL_FRAMEBUFFER );
+	deferredGBufferAttached = true;
+	deferredAttachedColor = colorImage->texnum;
+	deferredAttachedFBO = globalFramebuffers.hdrFBO->GetFramebuffer();
+	if( status != GL_FRAMEBUFFER_COMPLETE )
+	{
+		common->Printf( "on-tile deferred shading: the G-buffer makes the scene target incomplete (0x%X), off\n", status );
+		DeferredReleaseTargets();
+		return false;
+	}
+
+	// nothing but the deferred shading writes the G-buffer
+	DeferredSetGBufferWrites( false );
+	Framebuffer::Unbind();
+
+	common->Printf( "on-tile deferred shading: G-buffer %i x %i\n", width, height );
+	return true;
+}
+
+/*
+=============================
+idRenderBackend::DeferredSetGBufferWrites
+
+The masks of colors 1..3, GL_State keeps color 0 only while the G-buffer is attached
+=============================
+*/
+void idRenderBackend::DeferredSetGBufferWrites( bool enable )
+{
+	if( !deferredGBufferAttached )
+	{
+		return;
+	}
+	FlushMultiDrawBatch();
+	const GLboolean mask = enable ? GL_TRUE : GL_FALSE;
+	for( int i = 1; i <= 3; i++ )
+	{
+		glColorMaski( i, mask, mask, mask, mask );
+	}
+}
+
+/*
+=============================
+idRenderBackend::DeferredClearGBuffer
+
+At the start of a view's render pass on hdrFBO, with the whole target in the scissor: the G-buffer is
+zero where no surface writes it, which no light lights, and a tile based GPU loads nothing for it
+=============================
+*/
+void idRenderBackend::DeferredClearGBuffer()
+{
+	if( !deferredGBufferAttached )
+	{
+		return;
+	}
+	FlushMultiDrawBatch();
+
+	static const GLfloat zero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	DeferredSetGBufferWrites( true );
+	for( int i = 1; i <= 3; i++ )
+	{
+		glClearBufferfv( GL_COLOR, i, zero );
+	}
+	DeferredSetGBufferWrites( false );
+
+	// glClearBuffer keeps the mask of color 0, GL_EndFrame may have left all colors writable
+	glColorMaski( 0, ( glStateBits & GLS_REDMASK ) ? GL_FALSE : GL_TRUE, ( glStateBits & GLS_GREENMASK ) ? GL_FALSE : GL_TRUE,
+				  ( glStateBits & GLS_BLUEMASK ) ? GL_FALSE : GL_TRUE, ( glStateBits & GLS_ALPHAMASK ) ? GL_FALSE : GL_TRUE );
+}
+
+/*
+=============================
+idRenderBackend::DeferredInvalidateGBuffer
+
+Once the lights are done: whatever ends the render pass later doesn't write the G-buffer out
+=============================
+*/
+void idRenderBackend::DeferredInvalidateGBuffer()
+{
+	if( !deferredGBufferAttached || !globalFramebuffers.hdrFBO->IsBound() )
+	{
+		return;
+	}
+	FlushMultiDrawBatch();
+	DeferredSetGBufferWrites( false );
+	globalFramebuffers.hdrFBO->InvalidateAttachments( deferredGBufferAttachments, 3 );
+}
+
+/*
+=============================
+idRenderBackend::DeferredSelfTest
+
+Some drivers list GL_EXT_shader_framebuffer_fetch but don't fetch every color attachment right.
+Writes four colors, fetches them all and reads the result back, once.
+=============================
+*/
+bool idRenderBackend::DeferredSelfTest()
+{
+	if( deferredSelfTestResult != 0 )
+	{
+		return deferredSelfTestResult > 0;
+	}
+	deferredSelfTestResult = -1;
+
+	if( !renderProgManager.DeferredShadersReady() )
+	{
+		common->Printf( "on-tile deferred shading: needs GLES 3.2 with GL_EXT_shader_framebuffer_fetch, off\n" );
+		return false;
+	}
+
+	static const int TEST_SIZE = 8;
+
+	FlushMultiDrawBatch();
+
+	// a framebuffer of its own, bound around Framebuffer's back: the default framebuffer is bound before and after
+	Framebuffer::Unbind();
+	GLuint testFramebuffer = 0;
+	glGenFramebuffers( 1, &testFramebuffer );
+	glBindFramebuffer( GL_FRAMEBUFFER, testFramebuffer );
+
+	GLuint renderbuffers[4] = { 0, 0, 0, 0 };
+	glGenRenderbuffers( 4, renderbuffers );
+	for( int i = 0; i < 4; i++ )
+	{
+		glBindRenderbuffer( GL_RENDERBUFFER, renderbuffers[i] );
+		glRenderbufferStorage( GL_RENDERBUFFER, GL_RGBA8, TEST_SIZE, TEST_SIZE );
+		glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_RENDERBUFFER, renderbuffers[i] );
+	}
+	glBindRenderbuffer( GL_RENDERBUFFER, 0 );
+	const GLenum drawBuffers[4] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
+	glDrawBuffers( 4, drawBuffers );
+
+	// what _deferred_screen_testfetch makes of what _deferred_screen_testwrite wrote:
+	// 0.2 + 0.3, 0.5 + 0.25, 0.7 - 0.2, 1
+	static const int expected[4] = { 128, 191, 128, 255 };
+
+	byte pixels[TEST_SIZE * TEST_SIZE * 4];
+	memset( pixels, 0, sizeof( pixels ) );
+
+	// earlier errors must not fail the test
+	for( int i = 0; i < 16 && glGetError() != GL_NO_ERROR; i++ )
+	{
+	}
+
+	bool passed = false;
+	if( glCheckFramebufferStatus( GL_FRAMEBUFFER ) == GL_FRAMEBUFFER_COMPLETE )
+	{
+		glBindVertexArray( glConfig.global_vao );
+		GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS | GLS_CULL_TWOSIDED, true );
+		GL_ViewportAndScissor( 0, 0, TEST_SIZE, TEST_SIZE );
+		glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
+
+		renderProgManager.BindShader_DeferredTestWrite();
+		DrawElementsWithCounters( &unitSquareSurface );
+
+		// only color 0 is written, the fetch of the others must still work
+		for( int i = 1; i < 4; i++ )
+		{
+			glColorMaski( i, GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE );
+		}
+		renderProgManager.BindShader_DeferredTestFetch();
+		DrawElementsWithCounters( &unitSquareSurface );
+		FlushMultiDrawBatch();
+
+		glReadBuffer( GL_COLOR_ATTACHMENT0 );
+		glReadPixels( 0, 0, TEST_SIZE, TEST_SIZE, GL_RGBA, GL_UNSIGNED_BYTE, pixels );
+
+		passed = ( glGetError() == GL_NO_ERROR );
+		for( int i = 0; i < TEST_SIZE * TEST_SIZE * 4 && passed; i++ )
+		{
+			const int difference = ( int )pixels[i] - expected[i & 3];
+			passed = ( difference >= -3 && difference <= 3 );
+		}
+
+		glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
+		renderProgManager.Unbind();
+	}
+
+	glBindFramebuffer( GL_FRAMEBUFFER, 0 );
+	glDeleteFramebuffers( 1, &testFramebuffer );
+	glDeleteRenderbuffers( 4, renderbuffers );
+
+	// GL_State and the masks back to what the frame expects
+	GL_State( GLS_DEFAULT, true );
+
+	common->Printf( "on-tile deferred shading self test %s (%d %d %d %d)\n", passed ? "passed" : "failed, off",
+					pixels[0], pixels[1], pixels[2], pixels[3] );
+	deferredSelfTestResult = passed ? 1 : -1;
+	return passed;
+}
+#endif
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
 /*
@@ -1731,7 +2038,17 @@ void idRenderBackend::GL_State( uint64 stateBits, bool forceGlState )
 		GLboolean g = ( stateBits & GLS_GREENMASK ) ? GL_FALSE : GL_TRUE;
 		GLboolean b = ( stateBits & GLS_BLUEMASK ) ? GL_FALSE : GL_TRUE;
 		GLboolean a = ( stateBits & GLS_ALPHAMASK ) ? GL_FALSE : GL_TRUE;
-		glColorMask( r, g, b, a );
+#if defined(ANDROID)
+		// the masks of the G-buffer colors belong to the deferred shading, see DeferredSetGBufferWrites
+		if( deferredGBufferAttached )
+		{
+			glColorMaski( 0, r, g, b, a );
+		}
+		else
+#endif
+		{
+			glColorMask( r, g, b, a );
+		}
 	}
 	
 	//
@@ -2095,7 +2412,7 @@ void idRenderBackend::GL_Clear( bool color, bool depth, bool stencil, byte stenc
 	glClear( clearFlags );
 	
 	// RB begin
-	if( r_useHDR.GetBool() && clearHDR && globalFramebuffers.hdrFBO != NULL )
+	if( UseSceneFramebuffer() && clearHDR && globalFramebuffers.hdrFBO != NULL )
 	{
 		bool isDefaultFramebufferActive = Framebuffer::IsDefaultFramebufferActive();
 		
@@ -2841,6 +3158,19 @@ idRenderBackend::idRenderBackend()
 	worldMergeFirstIndex = 0;
 	worldMergeNumIndexes = 0;
 	worldMergeIndexBuffer = 0;
+
+	deferredFrame = false;
+	deferredView = false;
+	deferredGBufferAttached = false;
+	backBufferDrawnThisFrame = false;
+	deferredSelfTestResult = 0;
+	deferredRenderbuffers[0] = deferredRenderbuffers[1] = deferredRenderbuffers[2] = 0;
+	deferredTargetWidth = 0;
+	deferredTargetHeight = 0;
+	deferredAttachedColor = 0;
+	deferredAttachedFBO = 0;
+	deferredLightsDeferred = 0;
+	deferredLightsForward = 0;
 #endif
 }
 

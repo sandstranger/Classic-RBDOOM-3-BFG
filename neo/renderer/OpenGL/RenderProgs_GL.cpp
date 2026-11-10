@@ -33,6 +33,20 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../RenderCommon.h"
 
+#if defined(ANDROID)
+#include "DeferredShaders_GL.h"
+
+extern bool isGLES32Version();
+
+// the on-tile deferred shading needs the framebuffer fetch of four color attachments
+static bool R_DeferredShadingDriverSupport()
+{
+	GLint maxDrawBuffers = 0;
+	glGetIntegerv( GL_MAX_DRAW_BUFFERS, &maxDrawBuffers );
+	return isGLES32Version() && GLAD_GL_EXT_shader_framebuffer_fetch && maxDrawBuffers >= 4 && glConfig.maxColorAttachments >= 4;
+}
+#endif
+
 idCVar r_displayGLSLCompilerMessages( "r_displayGLSLCompilerMessages", "1", CVAR_BOOL | CVAR_ARCHIVE, "Show info messages the GPU driver outputs when compiling the shaders" );
 idCVar r_alwaysExportGLSL( "r_alwaysExportGLSL", "0", CVAR_BOOL, "" );
 idCVar r_oldGLSLVersion("r_oldGLSLVersion", "0.0", CVAR_FLOAT | CVAR_ARCHIVE | CVAR_RENDERER | CVAR_ROM, "Internal use ONLY: Stores and checks if the version of GLSL is changed");
@@ -108,7 +122,29 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	idStr outFileHLSL;
 	idStr outFileGLSL;
 	idStr outFileUniforms;
+	idStr programGLSL;
+	idStr programUniforms;
+	const GLenum glTarget = ( shader.stage == SHADER_STAGE_FRAGMENT ) ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER;
 
+#if defined(ANDROID)
+	if( R_IsDeferredShader( shader.name.c_str() ) )
+	{
+		// the programs of the on-tile deferred shading are GLSL ES of the engine,
+		// without the framebuffer fetch they are never used
+		if( !R_DeferredShadingDriverSupport() )
+		{
+			return;
+		}
+		inFile = shader.name + shader.nameOutSuffix;
+		outFileGLSL = inFile;
+		if( !R_DeferredShaderSource( shader.name.c_str(), shader.nameOutSuffix.c_str(), shader.stage, programGLSL, programUniforms ) )
+		{
+			return;
+		}
+	}
+	else
+#endif
+	{
 	// RB: replaced backslashes
 	inFile.Format( "renderprogs/%s", shader.name.c_str() );
 	inFile.StripFileExtension();
@@ -141,10 +177,8 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	outFileGLSL.StripFileExtension();
 	outFileUniforms.StripFileExtension();
 
-	GLenum glTarget;
 	if( shader.stage == SHADER_STAGE_FRAGMENT )
 	{
-		glTarget = GL_FRAGMENT_SHADER;
 		inFile += ".ps.hlsl";
 		outFileHLSL += ".ps.hlsl";
 		outFileGLSL += ".frag";
@@ -152,7 +186,6 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	}
 	else
 	{
-		glTarget = GL_VERTEX_SHADER;
 		inFile += ".vs.hlsl";
 		outFileHLSL += ".vs.hlsl";
 		outFileGLSL += ".vert";
@@ -197,8 +230,6 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	}
 
 	// if the glsl file doesn't exist or we have a newer HLSL file we need to recreate the glsl file.
-	idStr programGLSL;
-	idStr programUniforms;
 	if( ( glslFileLength <= 0 ) || ( hlslTimeStamp != FILE_NOT_FOUND_TIMESTAMP && hlslTimeStamp > glslTimeStamp ) || r_alwaysExportGLSL.GetBool() || glConfig.forceGLSLGeneration || missingTextureLodBias || missingTbrMobileShaderPath )
 	{
 		const char* hlslFileBuffer = NULL;
@@ -296,6 +327,7 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 			Mem_Free( fileBufferUniforms );
 		}
 	}
+	}
 
 	// RB: find the uniforms locations in either the vertex or fragment uniform array
 	// this uses the new layout structure
@@ -385,6 +417,8 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 		if( compiled == GL_FALSE )
 		{
 			glDeleteShader( shader.progId );
+			// not a shader any more, a program must not attach it
+			shader.progId = INVALID_PROGID;
 			return;
 		}
 	}
@@ -414,6 +448,17 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
 
     shader_t& vShader = shaders[vertexShaderIndex];
     shader_t& fShader = shaders[fragmentShaderIndex];
+
+#if defined(ANDROID)
+    // the programs of the deferred shading may fail on a driver, the views are lit the old way then
+    const bool optionalProgram = R_IsDeferredShader( prog.name.c_str() );
+    if( optionalProgram && ( vShader.progId == INVALID_PROGID || fShader.progId == INVALID_PROGID ) )
+    {
+        return;
+    }
+#else
+    const bool optionalProgram = false;
+#endif
 
     idStr combinedSource;
     if ( vertexShaderIndex != -1 )
@@ -544,6 +589,11 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
     if( linked == GL_FALSE )
     {
         glDeleteProgram( program );
+        if( optionalProgram )
+        {
+            idLib::Printf( "GLSL program %s didn't link, on-tile deferred shading off\n", prog.name.c_str() );
+            return;
+        }
         idLib::Error( "While linking GLSL program %d with vertexShader %s and fragmentShader %s\n",
                       programIndex,
                       ( vertexShaderIndex >= 0 ) ? vShader.name.c_str() : "<Invalid>",
@@ -699,6 +749,24 @@ void idRenderProgManager::CommitUniforms( uint64 stateBits )
 }
 
 #if defined(ANDROID)
+/*
+================================================================================================
+idRenderProgManager::DeferredShadersReady
+================================================================================================
+*/
+bool idRenderProgManager::DeferredShadersReady() const
+{
+	for( int i = BUILTIN_DEFERRED_GBUFFER; i <= BUILTIN_DEFERRED_TEST_FETCH; i++ )
+	{
+		// BindShader_Builtin binds the program at the index of the builtin
+		if( builtinShaders[i] != i || i >= renderProgs.Num() || renderProgs[i].progId == INVALID_PROGID )
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 /*
 ================================================================================================
 idRenderProgManager::CheckGPUInstancingShaders

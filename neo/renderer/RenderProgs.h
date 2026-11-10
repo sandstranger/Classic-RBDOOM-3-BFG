@@ -690,6 +690,56 @@ public:
 		BindShader_Builtin( BUILTIN_CLASSIC );
 	}
 	//GK: End
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	// TBDR: on-tile deferred shading, GLSL ES programs of the engine, see DeferredShaders_GL.h
+	enum deferredLightProgram_t
+	{
+		DEFERRED_LIGHT_PLAIN,
+		DEFERRED_LIGHT_AMBIENT,
+		DEFERRED_LIGHT_SPOT,		// shadow mapped
+		DEFERRED_LIGHT_POINT,
+		DEFERRED_LIGHT_PARALLEL,
+	};
+
+	void	BindShader_DeferredGBuffer()
+	{
+		BindShader_Builtin( BUILTIN_DEFERRED_GBUFFER );
+	}
+
+	void	BindShader_DeferredGBufferSkinned()
+	{
+		BindShader_Builtin( BUILTIN_DEFERRED_GBUFFER_SKINNED );
+	}
+
+	void	BindShader_DeferredGBufferInstanced()
+	{
+		BindShader_Builtin( BUILTIN_DEFERRED_GBUFFER_INSTANCED );
+	}
+
+	void	BindShader_DeferredLight( deferredLightProgram_t program )
+	{
+		BindShader_Builtin( BUILTIN_DEFERRED_LIGHT + program );
+	}
+
+	void	BindShader_DeferredResolve()
+	{
+		BindShader_Builtin( BUILTIN_DEFERRED_RESOLVE );
+	}
+
+	void	BindShader_DeferredTestWrite()
+	{
+		BindShader_Builtin( BUILTIN_DEFERRED_TEST_WRITE );
+	}
+
+	void	BindShader_DeferredTestFetch()
+	{
+		BindShader_Builtin( BUILTIN_DEFERRED_TEST_FETCH );
+	}
+
+	// every program of the deferred shading compiled and linked, the driver has the framebuffer fetch
+	bool	DeferredShadersReady() const;
+#endif
 	// the joints buffer should only be bound for vertex programs that use joints
 	bool		ShaderUsesJoints() const
 	{
@@ -861,7 +911,22 @@ private:
 		BUILTIN_DEBUG_SHADOWMAP,
 
 		BUILTIN_CLASSIC,
-		
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		// the order of deferredLightProgram_t
+		BUILTIN_DEFERRED_GBUFFER,
+		BUILTIN_DEFERRED_GBUFFER_SKINNED,
+		BUILTIN_DEFERRED_GBUFFER_INSTANCED,
+		BUILTIN_DEFERRED_LIGHT,
+		BUILTIN_DEFERRED_LIGHT_AMBIENT,
+		BUILTIN_DEFERRED_LIGHT_SPOT,
+		BUILTIN_DEFERRED_LIGHT_POINT,
+		BUILTIN_DEFERRED_LIGHT_PARALLEL,
+		BUILTIN_DEFERRED_RESOLVE,
+		BUILTIN_DEFERRED_TEST_WRITE,
+		BUILTIN_DEFERRED_TEST_FETCH,
+#endif
+
 		MAX_BUILTINS
 	};
 	int builtinShaders[MAX_BUILTINS];

@@ -324,10 +324,11 @@ private:
 	int					DrawShaderPasses( const drawSurf_t* const* const drawSurfs, const int numDrawSurfs,
 										  const float guiStereoScreenOffset, const int stereoEye );
 										  
-	void				RenderInteractions( const drawSurf_t* surfList, const viewLight_t* vLight, int depthFunc, bool performStencilTest, bool useLightDepthBounds );
-	
+	// skipDeferredSurfaces: the G-buffer has the surfaces, DrawDeferredLight lights them
+	void				RenderInteractions( const drawSurf_t* surfList, const viewLight_t* vLight, int depthFunc, bool performStencilTest, bool useLightDepthBounds, bool skipDeferredSurfaces = false );
+
 	// RB
-	void				AmbientPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs, bool fillGbuffer );
+	void				AmbientPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs, bool fillGbuffer, bool skipDeferredSurfaces = false );
 	void				ShadowMapPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight, int side, bool restoreFramebuffer = true );
 
 	// shadow map helpers shared by ShadowMapPass and the shadow atlas
@@ -372,7 +373,38 @@ private:
 	int					worldMergeFirstIndex;
 	int					worldMergeNumIndexes;
 	unsigned int		worldMergeIndexBuffer;		// this frame's 32 bit indexes into the static vertex buffer
+
+	// TBDR: on-tile deferred shading with framebuffer fetch, see DrawDeferredLight
+	void				DeferredBeginFrame( const emptyCommand_t* cmds );
+	bool				DeferredUpdateTargets();
+	bool				DeferredSelfTest();
+	void				DeferredReleaseTargets();
+	void				DeferredClearGBuffer();
+	void				DeferredInvalidateGBuffer();
+	void				DeferredSetGBufferWrites( bool enable );
+	int					DeferredSurfaceInteraction( const drawSurf_t* surf, drawInteraction_t* inter );
+	bool				DeferredSurface( const drawSurf_t* surf );
+	bool				DeferredLight( const viewLight_t* vLight ) const;
+	void				DeferredGBufferPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs );
+	bool				DrawDeferredLight( const viewLight_t* vLight, bool performStencilTest );
+	void				DeferredResolve( const viewDef_t* _viewDef );
+
+	bool				deferredFrame;				// the 3D views of this frame use the G-buffer of the scene target
+	bool				deferredView;				// the view being drawn has its G-buffer
+	bool				deferredGBufferAttached;	// colors 1..3 of hdrFBO are the G-buffer
+	bool				backBufferDrawnThisFrame;	// something before the resolve of a view drew into the back buffer
+	int					deferredSelfTestResult;		// 0 not run, 1 passed, -1 failed
+	unsigned int		deferredRenderbuffers[3];
+	int					deferredTargetWidth;
+	int					deferredTargetHeight;
+	unsigned int		deferredAttachedColor;		// the scene color texture the G-buffer was attached with
+	unsigned int		deferredAttachedFBO;		// the hdrFBO it was attached to
+	int					deferredLightsDeferred;		// lights of the frame drawn from the G-buffer, r_showDeferredShading
+	int					deferredLightsForward;
 #endif
+
+	// the 3D views draw into hdrFBO: HDR, or the deferred shading's G-buffer
+	bool				UseSceneFramebuffer() const;
 
 	void				StencilShadowPass( const drawSurf_t* drawSurfs, const viewLight_t* vLight );
 	void				StencilSelectLight( const viewLight_t* vLight );

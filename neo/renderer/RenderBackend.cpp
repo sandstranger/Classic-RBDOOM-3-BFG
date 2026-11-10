@@ -1076,6 +1076,24 @@ void idRenderBackend::ResetViewportAndScissorToDefaultCamera( const viewDef_t* _
 // RB end
 
 /*
+==================
+idRenderBackend::UseSceneFramebuffer
+
+The 3D views draw into hdrFBO for HDR and for the on-tile deferred shading, whose G-buffer
+is attached to it. Its color goes to the back buffer when the view is done: the tonemap or
+DeferredResolve.
+==================
+*/
+bool idRenderBackend::UseSceneFramebuffer() const
+{
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	return r_useHDR.GetBool() || deferredFrame;
+#else
+	return r_useHDR.GetBool();
+#endif
+}
+
+/*
 =========================================================================================
 
 DEPTH BUFFER RENDERING
@@ -2637,12 +2655,13 @@ idRenderBackend::RenderInteractions
 With added sorting and trivial path work.
 =============
 */
-void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const viewLight_t* vLight, int depthFunc, bool performStencilTest, bool useLightDepthBounds )
+void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const viewLight_t* vLight, int depthFunc, bool performStencilTest, bool useLightDepthBounds, bool skipDeferredSurfaces )
 {
 	if( surfList == NULL )
 	{
 		return;
 	}
+
 	
 	// change the scissor if needed, it will be constant across all the surfaces lit by the light
 	if( !currentScissor.Equals( vLight->scissorRect ) && r_useScissor.GetBool() )
@@ -2686,22 +2705,30 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 	idStaticList< const drawSurf_t*, MAX_COMPLEX_INTERACTIONS_PER_LIGHT > complexSurfaces;
 	for( const drawSurf_t* walk = surfList; walk != NULL; walk = walk->nextOnLight )
 	{
-	
+
 		// make sure the triangle culling is done
 		if( walk->shadowVolumeState != SHADOWVOLUME_DONE )
 		{
 			assert( walk->shadowVolumeState == SHADOWVOLUME_UNFINISHED || walk->shadowVolumeState == SHADOWVOLUME_DONE );
-			
+
 			uint64 start = Sys_Microseconds();
 			while( walk->shadowVolumeState == SHADOWVOLUME_UNFINISHED )
 			{
 				Sys_Yield();
 			}
 			uint64 end = Sys_Microseconds();
-			
+
 			pc.shadowMicroSec += end - start;
 		}
-		
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		// DrawDeferredLight lit the surfaces of the G-buffer, the others are drawn as interactions
+		if( skipDeferredSurfaces && DeferredSurface( walk ) )
+		{
+			continue;
+		}
+#endif
+
 		const idMaterial* surfaceShader = walk->material;
 		if( surfaceShader->GetFastPathBumpImage() )
 		{
@@ -2718,6 +2745,12 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 	}
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
+	if( allSurfaces.Num() == 0 )
+	{
+		// all of them were in the G-buffer
+		return;
+	}
+
 	const int gpuInteractionSurfaceCount = allSurfaces.Num();
 	const drawSurf_t** gpuInteractionSurfs = (const drawSurf_t**)_alloca(
 			MAX_INTERACTIONS_PER_LIGHT * sizeof( const drawSurf_t* ) );
@@ -3397,7 +3430,7 @@ AMBIENT PASS RENDERING
 idRenderBackend::AmbientPass
 ==================
 */
-void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs, bool fillGbuffer )
+void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs, bool fillGbuffer, bool skipDeferredSurfaces )
 {
 	if( fillGbuffer )
 	{
@@ -3435,8 +3468,8 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 	++s_worldMergeStamp;
 #endif
 
-	const bool hdrIsActive = ( r_useHDR.GetBool() && globalFramebuffers.hdrFBO != NULL && globalFramebuffers.hdrFBO->IsBound() );
-	
+	const bool hdrIsActive = ( globalFramebuffers.hdrFBO != NULL && globalFramebuffers.hdrFBO->IsBound() );
+
 	renderLog.OpenMainBlock(MRB_AMBIENT_PASS);
 	renderLog.OpenBlock("RB_AmbientPass");
 
@@ -3528,6 +3561,12 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 		}
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
+		// DeferredGBufferPass wrote the ambient of the surfaces in the G-buffer
+		if( skipDeferredSurfaces && DeferredSurface( drawSurf ) )
+		{
+			continue;
+		}
+
 		// a merged world surface draws its whole material group, the rest of the group is done then
 		worldMergeSurf = NULL;
 		if( R_WorldMergeSkip( drawSurf ) )
@@ -5083,7 +5122,7 @@ void idRenderBackend::ShadowMapPass( const drawSurf_t* drawSurfs, const viewLigh
 	// restores the main target once after the final pass.
 	if( restoreFramebuffer )
 	{
-		if( r_useHDR.GetBool() /*&& !viewDef->is2Dgui*/ )
+		if( UseSceneFramebuffer() /*&& !viewDef->is2Dgui*/ )
 		{
 			globalFramebuffers.hdrFBO->Bind();
 		}
@@ -5414,6 +5453,879 @@ void idRenderBackend::ShadowAtlasPass( const emptyCommand_t* cmds )
 
 #endif // !defined( USE_VULKAN )
 
+#if defined(ANDROID) && !defined(USE_VULKAN)
+/*
+==============================================================================================
+
+TBDR: ON-TILE DEFERRED SHADING
+
+Every light draws all the surfaces it lights again, with all their textures, in the forward
+interactions. A tile based GPU keeps the render pass of the view in its tile memory, so a
+G-buffer next to the scene color costs no memory traffic there: DeferredGBufferPass draws
+the surfaces once into it, and every light is then one draw of its volume that reads the
+G-buffer of its pixels with GL_EXT_shader_framebuffer_fetch (DrawDeferredLight). The
+G-buffer is cleared when the view starts and invalidated when the lights are done, it never
+leaves the tile memory. See DeferredShaders_GL.h for its layout.
+
+A light from the G-buffer lights the same surfaces as its interactions:
+- the front end only lets a light do it when every area its volume reaches holds its
+  interactions (viewLight_t::deferredVolumeOk), a light behind a closed door or one that
+  flows through the portals keeps its interactions
+- the surfaces of more than one interaction (several bump stages), of an invisible ink
+  spectrum or translucent stay out of the G-buffer and keep their interactions
+- lights with local stencil shadows, which mustn't darken the noSelfShadow surfaces, keep
+  their interactions
+The stencil shadows and the shadow maps work as before: the light volume is drawn with the
+stencil test of the interactions, or reads the shadow maps like interactionSM.
+
+Without HDR the views draw into the HDR target too, it holds the G-buffer, and
+DeferredResolve copies the view to the back buffer like the tonemap does.
+
+==============================================================================================
+*/
+
+idCVar r_useDeferredShading( "r_useDeferredShading", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL, "TBDR: light the views from a G-buffer in the tile memory, read with GL_EXT_shader_framebuffer_fetch (GLES 3.2), instead of drawing the lit surfaces again for every light. Off without the extension and with MSAA" );
+idCVar r_showDeferredShading( "r_showDeferredShading", "0", CVAR_RENDERER | CVAR_BOOL, "print every frame how many lights the on-tile deferred shading drew from the G-buffer and how many as interactions" );
+
+/*
+==================
+idRenderBackend::DeferredBeginFrame
+==================
+*/
+void idRenderBackend::DeferredBeginFrame( const emptyCommand_t* cmds )
+{
+	if( r_showDeferredShading.GetBool() && ( deferredLightsDeferred + deferredLightsForward ) > 0 )
+	{
+		idLib::Printf( "on-tile deferred shading: %d lights from the G-buffer, %d as interactions\n", deferredLightsDeferred, deferredLightsForward );
+	}
+	deferredLightsDeferred = 0;
+	deferredLightsForward = 0;
+
+	deferredFrame = false;
+	deferredView = false;
+
+	if( !r_useDeferredShading.GetBool() || glConfig.multisamples > 0 || deferredSelfTestResult < 0 )
+	{
+		// the scene color alone again
+		if( deferredGBufferAttached )
+		{
+			DeferredReleaseTargets();
+		}
+		return;
+	}
+
+	// a frame without 3D views keeps what is attached
+	bool any3DView = false;
+	for( const emptyCommand_t* cmd = cmds; cmd != NULL && !any3DView; cmd = ( const emptyCommand_t* )cmd->next )
+	{
+		if( cmd->commandId == RC_DRAW_VIEW_3D )
+		{
+			const viewDef_t* view = ( ( const drawSurfsCommand_t* )cmd )->viewDef;
+			any3DView = ( view != NULL && view->viewEntitys != NULL && view->numDrawSurfs > 0 && !view->is2Dgui );
+		}
+	}
+	if( !any3DView || r_skipRender.GetBool() )
+	{
+		return;
+	}
+
+	// the first time: the programs, the extension and the test of the driver,
+	// later reloadShaders may have lost a program
+	if( !DeferredSelfTest() || !renderProgManager.DeferredShadersReady() )
+	{
+		if( deferredGBufferAttached )
+		{
+			DeferredReleaseTargets();
+		}
+		return;
+	}
+
+	deferredFrame = DeferredUpdateTargets();
+}
+
+/*
+==================
+R_DeferredFinishInteraction
+
+What DrawSingleInteraction does to the interaction before it draws it, false when it wouldn't draw it
+==================
+*/
+static bool R_DeferredFinishInteraction( drawInteraction_t* din )
+{
+	if( din->bumpImage == NULL )
+	{
+		// stage wasn't actually an interaction
+		return false;
+	}
+
+	if( din->diffuseImage == NULL || r_skipDiffuse.GetBool() )
+	{
+		din->diffuseImage = globalImages->blackImage;
+	}
+	if( din->specularImage == NULL || r_skipSpecular.GetBool() )
+	{
+		din->specularImage = globalImages->blackImage;
+	}
+	if( r_skipBump.GetBool() )
+	{
+		din->bumpImage = globalImages->flatNormalMap;
+	}
+
+	const bool diffuseIsBlack = ( din->diffuseImage == globalImages->blackImage )
+								|| ( ( din->diffuseColor[0] <= 0 ) && ( din->diffuseColor[1] <= 0 ) && ( din->diffuseColor[2] <= 0 ) );
+	const bool specularIsBlack = ( din->specularImage == globalImages->blackImage )
+								 || ( ( din->specularColor[0] <= 0 ) && ( din->specularColor[1] <= 0 ) && ( din->specularColor[2] <= 0 ) );
+	return !( diffuseIsBlack && specularIsBlack );
+}
+
+/*
+==================
+idRenderBackend::DeferredSurfaceInteraction
+
+Goes through the stages like RenderInteractions does, for a light of color 1: -1 when the G-buffer
+can't hold the surface, else the number of interactions it draws, 0 or 1, the one in inter.
+The view surface and the light surfaces of a model surface share the material and the registers.
+==================
+*/
+int idRenderBackend::DeferredSurfaceInteraction( const drawSurf_t* surf, drawInteraction_t* inter )
+{
+	const idMaterial* material = surf->material;
+	if( material == NULL || surf->shaderRegisters == NULL || material->Coverage() == MC_TRANSLUCENT
+			|| !material->ReceivesLighting() || material->Spectrum() != 0 )
+	{
+		return -1;
+	}
+
+	// identity texture matrices, a stage the material doesn't have samples a black image
+	const idVec4 sMatrix( 1, 0, 0, 0 );
+	const idVec4 tMatrix( 0, 1, 0, 0 );
+
+	drawInteraction_t din = {};
+	din.surf = surf;
+	din.bumpImage = NULL;
+	din.diffuseImage = NULL;
+	din.specularImage = NULL;
+	din.vertexColor = SVC_IGNORE;
+	din.ambientLight = 0;
+	din.bumpMatrix[0] = sMatrix;
+	din.bumpMatrix[1] = tMatrix;
+	din.diffuseMatrix[0] = sMatrix;
+	din.diffuseMatrix[1] = tMatrix;
+	din.specularMatrix[0] = sMatrix;
+	din.specularMatrix[1] = tMatrix;
+
+	// see RB_SetupForFastPathInteractions
+	if( material->GetFastPathBumpImage() && !r_skipInteractionFastPath.GetBool() )
+	{
+		din.bumpImage = material->GetFastPathBumpImage();
+		din.specularImage = material->GetFastPathSpecularImage();
+		din.diffuseImage = material->GetFastPathDiffuseImage();
+		din.diffuseColor = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
+		din.specularColor = idVec4( 1.0f, 1.0f, 1.0f, 1.0f );
+		if( inter != NULL )
+		{
+			*inter = din;
+		}
+		return 1;
+	}
+
+	static const float lightColorOne[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+	const float* surfaceRegs = surf->shaderRegisters;
+
+	din.diffuseColor = idVec4( 0.0f, 0.0f, 0.0f, 0.0f );
+	din.specularColor = idVec4( 0.0f, 0.0f, 0.0f, 0.0f );
+
+	int numInteractions = 0;
+	for( int surfaceStageNum = 0; surfaceStageNum < material->GetNumStages(); surfaceStageNum++ )
+	{
+		const shaderStage_t* surfaceStage = material->GetStage( surfaceStageNum );
+
+		bool previousDone = false;
+		switch( surfaceStage->lighting )
+		{
+			case SL_BUMP:
+				if( !surfaceRegs[ surfaceStage->conditionRegister ] )
+				{
+					break;
+				}
+				previousDone = ( din.bumpImage != NULL );
+				break;
+			case SL_DIFFUSE:
+				if( !surfaceRegs[ surfaceStage->conditionRegister ] )
+				{
+					break;
+				}
+				previousDone = ( din.diffuseImage != NULL );
+				break;
+			case SL_SPECULAR:
+				if( !surfaceRegs[ surfaceStage->conditionRegister ] )
+				{
+					break;
+				}
+				previousDone = ( din.specularImage != NULL );
+				break;
+			default:
+				// coverage and ambient stages are no interactions
+				continue;
+		}
+		if( !surfaceRegs[ surfaceStage->conditionRegister ] )
+		{
+			continue;
+		}
+
+		// RenderInteractions draws the previous interaction
+		if( previousDone && R_DeferredFinishInteraction( &din ) )
+		{
+			if( ++numInteractions > 1 )
+			{
+				return -1;
+			}
+			if( inter != NULL )
+			{
+				*inter = din;
+			}
+		}
+
+		switch( surfaceStage->lighting )
+		{
+			case SL_BUMP:
+				din.bumpImage = surfaceStage->texture.image;
+				din.diffuseImage = NULL;
+				din.specularImage = NULL;
+				SetupInteractionStage( surfaceStage, surfaceRegs, NULL, din.bumpMatrix, NULL );
+				break;
+			case SL_DIFFUSE:
+				din.diffuseImage = surfaceStage->texture.image;
+				din.vertexColor = surfaceStage->vertexColor;
+				SetupInteractionStage( surfaceStage, surfaceRegs, lightColorOne, din.diffuseMatrix, din.diffuseColor.ToFloatPtr() );
+				break;
+			case SL_SPECULAR:
+				din.specularImage = surfaceStage->texture.image;
+				din.vertexColor = surfaceStage->vertexColor;
+				SetupInteractionStage( surfaceStage, surfaceRegs, lightColorOne, din.specularMatrix, din.specularColor.ToFloatPtr() );
+				break;
+			default:
+				break;
+		}
+	}
+
+	// the final interaction
+	if( R_DeferredFinishInteraction( &din ) )
+	{
+		if( ++numInteractions > 1 )
+		{
+			return -1;
+		}
+		if( inter != NULL )
+		{
+			*inter = din;
+		}
+	}
+
+	return numInteractions;
+}
+
+/*
+==================
+idRenderBackend::DeferredSurface
+
+The surface is in the G-buffer, or it has no interaction at all
+==================
+*/
+bool idRenderBackend::DeferredSurface( const drawSurf_t* surf )
+{
+	return DeferredSurfaceInteraction( surf, NULL ) >= 0;
+}
+
+/*
+==================
+idRenderBackend::DeferredLight
+
+The light is drawn from the G-buffer, see the top of this section
+==================
+*/
+bool idRenderBackend::DeferredLight( const viewLight_t* vLight ) const
+{
+	if( !deferredView || !vLight->deferredVolumeOk )
+	{
+		return false;
+	}
+
+	const idMaterial* lightShader = vLight->lightShader;
+	if( lightShader->IsFogLight() || lightShader->IsBlendLight() || lightShader->Spectrum() != 0 )
+	{
+		return false;
+	}
+
+	// the stencil test of the volume can't keep the local shadows off the noSelfShadow surfaces
+	if( !r_useShadowMapping.GetBool() && vLight->localShadows != NULL )
+	{
+		return false;
+	}
+
+	// no opaque surface gets the light from its interactions either
+	return ( vLight->localInteractions != NULL || vLight->globalInteractions != NULL );
+}
+
+/*
+==================
+idRenderBackend::DeferredGBufferPass
+
+AmbientPass for the G-buffer: the surfaces of the depth pass with one interaction write it,
+and the ambient pass into the scene color, which AmbientPass skips for them then.
+==================
+*/
+void idRenderBackend::DeferredGBufferPass( const drawSurf_t* const* drawSurfs, int numDrawSurfs )
+{
+	if( numDrawSurfs == 0 || viewDef->viewEntitys == NULL )
+	{
+		return;
+	}
+
+	renderLog.OpenBlock( "RB_DeferredGBufferPass" );
+
+	bool* gpuInstanceConsumed = ( bool* )_alloca( numDrawSurfs * sizeof( bool ) );
+	memset( gpuInstanceConsumed, 0, numDrawSurfs * sizeof( bool ) );
+
+	// every merged world group is drawn once in this pass
+	++s_worldMergeStamp;
+
+	// force MVP change on first surface
+	currentSpace = NULL;
+
+	// the ambient of AmbientPass
+	const bool writeAmbient = ( r_forceAmbient.GetFloat() > 0 && !r_skipAmbient.GetBool() );
+	float ambientBoost = 1.0f;
+	ambientBoost += r_useSSAO.GetBool() ? 0.2f : 0.0f;
+	ambientBoost *= r_useHDR.GetBool() ? 1.1f : 1.0f;
+	const idVec4 ambientColor( r_forceAmbient.GetFloat() * ambientBoost, r_forceAmbient.GetFloat() * ambientBoost, r_forceAmbient.GetFloat() * ambientBoost, 1.0f );
+	renderProgManager.SetRenderParm( RENDERPARM_AMBIENT_COLOR, ambientColor.ToFloatPtr() );
+
+	const float gbufferParms[4] = { r_lightScale.GetFloat(), writeAmbient ? 1.0f : 0.0f, 0.0f, 0.0f };
+	SetFragmentParm( RENDERPARM_USER3, gbufferParms );
+
+	// without the ambient the scene color keeps the black of the depth pass
+	const uint64 sceneColorMask = writeAmbient ? 0 : ( GLS_COLORMASK | GLS_ALPHAMASK );
+	DeferredSetGBufferWrites( true );
+
+	int gpuInstanceBatchCount = 0;
+	int numDrawn = 0;
+
+	for( int i = 0; i < numDrawSurfs; i++ )
+	{
+		if( gpuInstanceConsumed[i] )
+		{
+			continue;
+		}
+
+		const drawSurf_t* drawSurf = drawSurfs[i];
+		const idMaterial* surfaceMaterial = drawSurf->material;
+
+		// translucent surfaces don't put anything in the depth buffer
+		if( surfaceMaterial->Coverage() == MC_TRANSLUCENT )
+		{
+			continue;
+		}
+
+		// if all stages of a material have been conditioned off, don't do anything
+		const float* surfaceRegs = drawSurf->shaderRegisters;
+		int stage = 0;
+		for( ; stage < surfaceMaterial->GetNumStages(); stage++ )
+		{
+			if( surfaceRegs[ surfaceMaterial->GetStage( stage )->conditionRegister ] != 0 )
+			{
+				break;
+			}
+		}
+		if( stage == surfaceMaterial->GetNumStages() )
+		{
+			continue;
+		}
+
+		// the surfaces of more than one interaction are lit by their interactions
+		drawInteraction_t inter;
+		if( DeferredSurfaceInteraction( drawSurf, &inter ) != 1 )
+		{
+			continue;
+		}
+
+		// a merged world surface draws its whole material group, the rest of the group is done then
+		worldMergeSurf = NULL;
+		if( R_WorldMergeSkip( drawSurf ) )
+		{
+			continue;
+		}
+		if( R_IsWorldMergeGroupMember( drawSurf ) )
+		{
+			BeginWorldMergeGroup( drawSurf );
+		}
+
+		const gpuInstanceData_t* gpuInstanceData = NULL;
+		int gpuInstanceCount = 1;
+		gpuInstanceData_t gpuInstances[MAX_GPU_INSTANCES_PER_DRAW];
+		if( glConfig.glVersion >= 3.2f )
+		{
+			gpuInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i, viewDef->renderView.vieworg, gpuInstanceConsumed, gpuInstances, surfaceMaterial->Coverage() == MC_PERFORATED );
+			if( gpuInstanceCount > 1 )
+			{
+				gpuInstanceData = gpuInstances;
+				gpuInstanceBatchCount++;
+			}
+		}
+
+		if( drawSurf->jointCache )
+		{
+			renderProgManager.BindShader_DeferredGBufferSkinned();
+		}
+		else if( gpuInstanceCount > 1 )
+		{
+			renderProgManager.BindShader_DeferredGBufferInstanced();
+		}
+		else
+		{
+			renderProgManager.BindShader_DeferredGBuffer();
+		}
+
+		// change the matrix if needed
+		if( drawSurf->space != currentSpace )
+		{
+			currentSpace = drawSurf->space;
+
+			RB_SetMVP( drawSurf->space->mvp );
+
+			// tranform the view origin into model local space
+			idVec4 localViewOrigin( 1.0f );
+			R_GlobalPointToLocal( drawSurf->space->modelMatrix, viewDef->renderView.vieworg, localViewOrigin.ToVec3() );
+			SetVertexParm( RENDERPARM_LOCALVIEWORIGIN, localViewOrigin.ToFloatPtr() );
+
+			// the G-buffer is in view space
+			float modelViewMatrixTranspose[16];
+			R_MatrixTranspose( drawSurf->space->modelViewMatrix, modelViewMatrixTranspose );
+			SetVertexParms( RENDERPARM_MODELVIEWMATRIX_X, modelViewMatrixTranspose, 4 );
+		}
+
+		SetVertexParm( RENDERPARM_BUMPMATRIX_S, inter.bumpMatrix[0].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_BUMPMATRIX_T, inter.bumpMatrix[1].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_DIFFUSEMATRIX_S, inter.diffuseMatrix[0].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_DIFFUSEMATRIX_T, inter.diffuseMatrix[1].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_SPECULARMATRIX_S, inter.specularMatrix[0].ToFloatPtr() );
+		SetVertexParm( RENDERPARM_SPECULARMATRIX_T, inter.specularMatrix[1].ToFloatPtr() );
+		RB_SetVertexColorParms( inter.vertexColor );
+
+		// the colors of the material stages, the light pass multiplies the light color with them
+		SetFragmentParm( RENDERPARM_DIFFUSEMODIFIER, inter.diffuseColor.ToFloatPtr() );
+		SetFragmentParm( RENDERPARM_SPECULARMODIFIER, inter.specularColor.ToFloatPtr() );
+
+		// AmbientPass adds the ambient of vertex colored stages to the black of the depth pass
+		uint64 surfGLState = GLS_DEPTHMASK | GLS_DEPTHFUNC_EQUAL | sceneColorMask;
+		if( writeAmbient && inter.vertexColor != SVC_IGNORE )
+		{
+			surfGLState |= GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE;
+		}
+		else
+		{
+			surfGLState |= GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO;
+		}
+		GL_State( surfGLState );
+
+		GL_SelectTexture( INTERACTION_TEXUNIT_BUMP );
+		inter.bumpImage->Bind();
+
+		GL_SelectTexture( INTERACTION_TEXUNIT_SPECULARMIX );
+		inter.specularImage->Bind();
+
+		GL_SelectTexture( INTERACTION_TEXUNIT_BASECOLOR );
+		inter.diffuseImage->Bind();
+
+		renderLog.OpenBlock( surfaceMaterial->GetName() );
+		DrawElementsWithCounters( drawSurf, gpuInstanceData, gpuInstanceCount );
+		renderLog.CloseBlock();
+		numDrawn++;
+	}
+
+	DeferredSetGBufferWrites( false );
+	worldMergeSurf = NULL;
+
+	if( r_gpuInstancingDebug.GetBool() )
+	{
+		idLib::Printf( "on-tile deferred shading G-buffer: %d draws, %d instanced batches\n", numDrawn, gpuInstanceBatchCount );
+	}
+
+	GL_SelectTexture( 0 );
+	renderProgManager.Unbind();
+
+	renderLog.CloseBlock();
+}
+
+/*
+==================
+idRenderBackend::DrawDeferredLight
+
+Adds the light to the G-buffer pixels of its volume, what its interactions add to them: draws the
+volume with depth greater equal, so only the pixels of the surfaces in front of its back sides, and
+the program reads their G-buffer and the scene color with the framebuffer fetch.
+The interactions are culled to the light volume, the program skips the pixels outside of it.
+Everything is in view space, the G-buffer has the view depth.
+False when the light must be drawn as interactions.
+==================
+*/
+bool idRenderBackend::DrawDeferredLight( const viewLight_t* vLight, bool performStencilTest )
+{
+	// view space -> world space
+	idRenderMatrix worldToView;
+	idRenderMatrix::Transpose( *( const idRenderMatrix* )viewDef->worldSpace.modelViewMatrix, worldToView );
+	idRenderMatrix viewToWorld;
+	if( !idRenderMatrix::Inverse( worldToView, viewToWorld ) )
+	{
+		return false;
+	}
+
+	// the plane a dotted with a world space x y z 1, for a view space x y z 1
+	auto planeToView = [&viewToWorld]( const float* plane, float* out )
+	{
+		for( int j = 0; j < 4; j++ )
+		{
+			out[j] = plane[0] * viewToWorld[0][j] + plane[1] * viewToWorld[1][j] + plane[2] * viewToWorld[2][j] + plane[3] * viewToWorld[3][j];
+		}
+	};
+
+	const idMaterial* lightShader = vLight->lightShader;
+	const float* lightRegs = vLight->shaderRegisters;
+	const bool ambientLight = lightShader->IsAmbientLight();
+	const bool useShadowMaps = r_useShadowMapping.GetBool() && vLight->globalShadows != NULL && !ambientLight;
+
+	renderLog.OpenBlock( "Deferred Light" );
+
+	// the scissor of the interactions
+	if( !currentScissor.Equals( vLight->scissorRect ) && r_useScissor.GetBool() )
+	{
+		GL_Scissor( viewDef->viewport.x1 + vLight->scissorRect.x1,
+					viewDef->viewport.y1 + vLight->scissorRect.y1,
+					vLight->scissorRect.x2 + 1 - vLight->scissorRect.x1,
+					vLight->scissorRect.y2 + 1 - vLight->scissorRect.y1 );
+
+		currentScissor = vLight->scissorRect;
+	}
+
+	// The sides of the volume behind the surfaces: inside of it only its back side passes. Both
+	// facings are drawn, a mirror and a projection turn the winding around, and in front of the
+	// volume where both pass the program finds the pixels outside of it. The program adds the
+	// light to the fetched scene color itself.
+	uint64 glState = GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO | GLS_DEPTHMASK | GLS_DEPTHFUNC_GREATER | GLS_CULL_TWOSIDED;
+	if( performStencilTest )
+	{
+		glState |= GLS_STENCIL_FUNC_EQUAL | GLS_STENCIL_MAKE_REF( STENCIL_SHADOW_TEST_VALUE ) | GLS_STENCIL_MAKE_MASK( STENCIL_SHADOW_MASK_VALUE );
+	}
+	else
+	{
+		glState |= GLS_STENCIL_FUNC_ALWAYS;
+	}
+	GL_State( glState );
+
+	if( ambientLight )
+	{
+		renderProgManager.BindShader_DeferredLight( idRenderProgManager::DEFERRED_LIGHT_AMBIENT );
+	}
+	else if( useShadowMaps )
+	{
+		if( vLight->parallel )
+		{
+			renderProgManager.BindShader_DeferredLight( idRenderProgManager::DEFERRED_LIGHT_PARALLEL );
+		}
+		else if( vLight->pointLight )
+		{
+			renderProgManager.BindShader_DeferredLight( idRenderProgManager::DEFERRED_LIGHT_POINT );
+		}
+		else
+		{
+			renderProgManager.BindShader_DeferredLight( idRenderProgManager::DEFERRED_LIGHT_SPOT );
+		}
+	}
+	else
+	{
+		renderProgManager.BindShader_DeferredLight( idRenderProgManager::DEFERRED_LIGHT_PLAIN );
+	}
+
+	// window coordinates -> view space position on the view depth
+	const idScreenRect& viewport = viewDef->viewport;
+	const float viewportWidth = ( float )( viewport.x2 + 1 - viewport.x1 );
+	const float viewportHeight = ( float )( viewport.y2 + 1 - viewport.y1 );
+	const float windowToNDC[4] = { 2.0f / viewportWidth, 2.0f / viewportHeight,
+								   -1.0f - 2.0f * ( float )viewport.x1 / viewportWidth, -1.0f - 2.0f * ( float )viewport.y1 / viewportHeight
+								 };
+	SetFragmentParm( RENDERPARM_USER0, windowToNDC );
+
+	const idRenderMatrix& projection = viewDef->projectionRenderMatrix;
+	const float projectionX[4] = { 1.0f / projection[0][0], projection[0][2], projection[0][3], projection[3][2] };
+	const float projectionY[4] = { 1.0f / projection[1][1], projection[1][2], projection[1][3], projection[3][3] };
+	SetFragmentParm( RENDERPARM_USER1, projectionX );
+	SetFragmentParm( RENDERPARM_USER2, projectionY );
+
+	// the light in view space
+	const idVec3& lightOrigin = vLight->globalLightOrigin;
+	float viewLightOrigin[4];
+	for( int i = 0; i < 4; i++ )
+	{
+		viewLightOrigin[i] = worldToView[i][0] * lightOrigin.x + worldToView[i][1] * lightOrigin.y + worldToView[i][2] * lightOrigin.z + worldToView[i][3];
+	}
+	SetFragmentParm( RENDERPARM_LOCALLIGHTORIGIN, viewLightOrigin );
+
+	// the volume: 0 < x, y, z < w in the zero to one cube, see idRenderMatrix::CullPointToMVP
+	for( int i = 0; i < 4; i++ )
+	{
+		float row[4];
+		planeToView( vLight->baseLightProject[i], row );
+		SetFragmentParm( ( renderParm_t )( RENDERPARM_TEXGEN_0_S + i ), row );
+	}
+
+	if( useShadowMaps )
+	{
+		// what RenderInteractions sets up for the shadow map interactions
+		const shadowAtlasLight_t* atlasLight = FindShadowAtlasLight( vLight );
+
+		idRenderMatrix lightWorldToShadow[6];
+		int numShadowSides = 0;
+		if( atlasLight != NULL )
+		{
+			numShadowSides = atlasLight->numSides;
+			for( int i = 0; i < numShadowSides; i++ )
+			{
+				lightWorldToShadow[i] = atlasLight->worldToShadow[i];
+			}
+		}
+		else
+		{
+			// ShadowMapPass left the matrices of this light in shadowV / shadowP
+			if( vLight->parallel )
+			{
+				numShadowSides = r_shadowMapSplits.GetInteger() + 1;
+			}
+			else if( vLight->pointLight )
+			{
+				numShadowSides = 6;
+			}
+			else
+			{
+				numShadowSides = 1;
+			}
+			numShadowSides = Min( numShadowSides, 6 );
+			for( int i = 0; i < numShadowSides; i++ )
+			{
+				idRenderMatrix lightViewProjection;
+				idRenderMatrix::Multiply( shadowP[i], shadowV[i], lightViewProjection );
+				if( vLight->parallel || vLight->pointLight )
+				{
+					idRenderMatrix::Multiply( renderMatrix_clipSpaceToWindowSpace, lightViewProjection, lightWorldToShadow[i] );
+				}
+				else
+				{
+					// the base light projection of a projected light is 0..1 already
+					lightWorldToShadow[i] = lightViewProjection;
+				}
+			}
+		}
+
+		for( int i = 0; i < numShadowSides; i++ )
+		{
+			idRenderMatrix viewToShadow;
+			idRenderMatrix::Multiply( lightWorldToShadow[i], viewToWorld, viewToShadow );
+			renderProgManager.SetRenderParms( ( renderParm_t )( RENDERPARM_SHADOW_MATRIX_0_X + i * 4 ), viewToShadow[0], 4 );
+		}
+
+		// the side of a point light is the world axis closest to the direction to the light
+		SetFragmentParm( RENDERPARM_MODELMATRIX_X, viewToWorld[0] );
+		SetFragmentParm( RENDERPARM_MODELMATRIX_Y, viewToWorld[1] );
+		SetFragmentParm( RENDERPARM_MODELMATRIX_Z, viewToWorld[2] );
+
+		const static int JITTER_SIZE = 128;
+
+		// default high quality
+		float jitterSampleScale = 1.0f;
+		float shadowMapSamples = r_shadowMapSamples.GetInteger();
+
+		// screen power of two correction factor
+		float screenCorrectionParm[4];
+		screenCorrectionParm[0] = 1.0f / ( JITTER_SIZE * shadowMapSamples ) ;
+		screenCorrectionParm[1] = 1.0f / JITTER_SIZE;
+		// texel size for the PCF taps, the atlas texel is as big as a texel of the light's own resolution
+		screenCorrectionParm[2] = ( atlasLight != NULL ) ? 1.0f / shadowAtlasSize : 1.0f / shadowMapResolutions[vLight->shadowLOD];
+		screenCorrectionParm[3] = vLight->parallel ? r_shadowMapSunDepthBiasScale.GetFloat() : r_shadowMapRegularDepthBiasScale.GetFloat();
+		SetFragmentParm( RENDERPARM_SCREENCORRECTIONFACTOR, screenCorrectionParm ); // rpScreenCorrectionFactor
+
+		float jitterTexScale[4];
+		jitterTexScale[0] = r_shadowMapJitterScale.GetFloat() * jitterSampleScale;
+		jitterTexScale[1] = r_shadowMapJitterScale.GetFloat() * jitterSampleScale;
+		jitterTexScale[2] = -r_shadowMapBiasScale.GetFloat();
+		jitterTexScale[3] = 0.0f;
+		SetFragmentParm( RENDERPARM_JITTERTEXSCALE, jitterTexScale ); // rpJitterTexScale
+
+		float jitterTexOffset[4];
+		if( r_shadowMapRandomizeJitter.GetBool() )
+		{
+			jitterTexOffset[0] = ( rand() & 255 ) / 255.0;
+			jitterTexOffset[1] = ( rand() & 255 ) / 255.0;
+		}
+		else
+		{
+			jitterTexOffset[0] = 0;
+			jitterTexOffset[1] = 0;
+		}
+		jitterTexOffset[2] = 0.0f;
+		jitterTexOffset[3] = 0.0f;
+		SetFragmentParm( RENDERPARM_JITTERTEXOFFSET, jitterTexOffset ); // rpJitterTexOffset
+
+		if( vLight->parallel )
+		{
+			float cascadeDistances[4];
+			cascadeDistances[0] = viewDef->frustumSplitDistances[0];
+			cascadeDistances[1] = viewDef->frustumSplitDistances[1];
+			cascadeDistances[2] = viewDef->frustumSplitDistances[2];
+			cascadeDistances[3] = viewDef->frustumSplitDistances[3];
+			SetFragmentParm( RENDERPARM_CASCADEDISTANCES, cascadeDistances ); // rpCascadeDistances
+		}
+
+		// texture 5 will be the shadow maps array
+		GL_SelectTexture( INTERACTION_TEXUNIT_SHADOWMAPS );
+		if( atlasLight != NULL )
+		{
+			globalImages->shadowAtlasImage->Bind();
+		}
+		else
+		{
+			globalImages->shadowImage[vLight->shadowLOD]->Bind();
+		}
+
+		// texture 6 will be the jitter texture for soft shadowing
+		GL_SelectTexture( INTERACTION_TEXUNIT_JITTER );
+		if( r_shadowMapSamples.GetInteger() == 16 )
+		{
+			globalImages->jitterImage16->Bind();
+		}
+		else if( r_shadowMapSamples.GetInteger() == 4 )
+		{
+			globalImages->jitterImage4->Bind();
+		}
+		else
+		{
+			globalImages->jitterImage1->Bind();
+		}
+	}
+
+	// the zero to one cube deformed into the light volume
+	idRenderMatrix lightVolumeMVP;
+	idRenderMatrix::Multiply( viewDef->worldSpace.mvp, vLight->inverseBaseLightProject, lightVolumeMVP );
+	RB_SetMVP( lightVolumeMVP );
+
+	const float lightScale = r_lightScale.GetFloat();
+
+	// some rare lights have multiple animating stages
+	for( int lightStageNum = 0; lightStageNum < lightShader->GetNumStages(); lightStageNum++ )
+	{
+		const shaderStage_t* lightStage = lightShader->GetStage( lightStageNum );
+
+		// ignore stages that fail the condition
+		if( !lightRegs[ lightStage->conditionRegister ] )
+		{
+			continue;
+		}
+
+		const idVec4 lightColor(
+			lightScale * lightRegs[ lightStage->color.registers[0] ],
+			lightScale * lightRegs[ lightStage->color.registers[1] ],
+			lightScale * lightRegs[ lightStage->color.registers[2] ],
+			lightRegs[ lightStage->color.registers[3] ] );
+		if( lightColor[0] <= 0.0f && lightColor[1] <= 0.0f && lightColor[2] <= 0.0f )
+		{
+			// the interactions would draw nothing
+			continue;
+		}
+
+		// apply the world-global overbright and the 2x factor for specular
+		const idVec4 specularColor = lightColor * 2.0f;
+		SetFragmentParm( RENDERPARM_DIFFUSEMODIFIER, lightColor.ToFloatPtr() );
+		SetFragmentParm( RENDERPARM_SPECULARMODIFIER, specularColor.ToFloatPtr() );
+
+		// the light projection with the texture matrix of the stage, in view space
+		idPlane lightProjection[4];
+		for( int i = 0; i < 4; i++ )
+		{
+			lightProjection[i] = vLight->lightProject[i];
+		}
+		if( lightStage->texture.hasMatrix )
+		{
+			float lightTextureMatrix[16];
+			RB_GetShaderTextureMatrix( lightRegs, &lightStage->texture, lightTextureMatrix );
+			RB_BakeTextureMatrixIntoTexgen( lightProjection, lightTextureMatrix );
+		}
+		for( int i = 0; i < 4; i++ )
+		{
+			float plane[4];
+			planeToView( lightProjection[i].ToFloatPtr(), plane );
+			SetFragmentParm( ( renderParm_t )( RENDERPARM_LIGHTPROJECTION_S + i ), plane );
+		}
+
+		// texture 3 will be the light falloff texture
+		GL_SelectTexture( INTERACTION_TEXUNIT_FALLOFF );
+		vLight->falloffImage->Bind();
+
+		// texture 4 will be the light projection texture
+		GL_SelectTexture( INTERACTION_TEXUNIT_PROJECTION );
+		lightStage->texture.image->Bind();
+
+		DrawElementsWithCounters( &zeroOneCubeSurface );
+	}
+
+	GL_SelectTexture( 0 );
+
+	renderLog.CloseBlock();
+	return true;
+}
+
+/*
+==================
+idRenderBackend::DeferredResolve
+
+Without HDR: the view from the scene target to the back buffer, where the tonemap would draw it.
+Only the view's part of the back buffer, a gui may have drawn the rest.
+==================
+*/
+void idRenderBackend::DeferredResolve( const viewDef_t* _viewDef )
+{
+	renderLog.OpenBlock( "RB_DeferredResolve" );
+
+	const int screenWidth = renderSystem->GetWidth();
+	const int screenHeight = renderSystem->GetHeight();
+	const idScreenRect& viewport = _viewDef->viewport;
+	const bool fullScreen = ( viewport.x1 <= 0 && viewport.y1 <= 0 && viewport.x2 + 1 >= screenWidth && viewport.y2 + 1 >= screenHeight );
+
+	if( fullScreen && !backBufferDrawnThisFrame )
+	{
+		// every pixel of the back buffer is replaced, nothing is loaded into the tiles
+		Framebuffer::InvalidateDefaultFramebufferForOverwrite();
+	}
+	else
+	{
+		Framebuffer::Unbind();
+	}
+	backBufferDrawnThisFrame = true;
+
+	GL_State( GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO | GLS_DEPTHMASK | GLS_DEPTHFUNC_ALWAYS | GLS_CULL_TWOSIDED );
+	GL_Viewport( 0, 0, screenWidth, screenHeight );
+	GL_Scissor( viewport.x1, viewport.y1, viewport.x2 + 1 - viewport.x1, viewport.y2 + 1 - viewport.y1 );
+
+	GL_SelectTexture( 0 );
+	globalImages->currentRenderHDRImage->Bind();
+
+	renderProgManager.BindShader_DeferredResolve();
+	DrawElementsWithCounters( &unitSquareSurface );
+
+	renderProgManager.Unbind();
+	GL_State( GLS_DEFAULT );
+
+	renderLog.CloseBlock();
+}
+#endif // defined(ANDROID) && !defined(USE_VULKAN)
+
 /*
 ==============================================================================================
 
@@ -5463,7 +6375,24 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 		
 		const idMaterial* lightShader = vLight->lightShader;
 		renderLog.OpenBlock( lightShader->GetName() );
-		
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		// TBDR: the surfaces in the G-buffer get the light from its volume in one draw,
+		// the others from their interactions as before
+		const bool deferredLight = DeferredLight( vLight );
+		if( deferredView )
+		{
+			if( deferredLight )
+			{
+				deferredLightsDeferred++;
+			}
+			else
+			{
+				deferredLightsForward++;
+			}
+		}
+#endif
+
 		// set the depth bounds for the whole light
 		if( useLightDepthBounds )
 		{
@@ -5518,7 +6447,7 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 
 #if !defined(USE_VULKAN)
 				// Restore the main render target once, after the complete shadow set.
-				if( r_useHDR.GetBool() )
+				if( UseSceneFramebuffer() )
 				{
 					globalFramebuffers.hdrFBO->Bind();
 				}
@@ -5532,17 +6461,24 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 				ResetViewportAndScissorToDefaultCamera( _viewDef );
 			}
 
+#if defined(ANDROID) && !defined(USE_VULKAN)
+			// local and global interactions get the same shadow maps
+			const bool skipDeferredSurfaces = deferredLight && DrawDeferredLight( vLight, false );
+#else
+			const bool skipDeferredSurfaces = false;
+#endif
+
 			if( vLight->localInteractions != NULL )
 			{
 				renderLog.OpenBlock( "Local Light Interactions" );
-				RenderInteractions( vLight->localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds );
+				RenderInteractions( vLight->localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds, skipDeferredSurfaces );
 				renderLog.CloseBlock();
 			}
-			
+
 			if( vLight->globalInteractions != NULL )
 			{
 				renderLog.OpenBlock( "Global Light Interactions" );
-				RenderInteractions( vLight->globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds );
+				RenderInteractions( vLight->globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, false, useLightDepthBounds, skipDeferredSurfaces );
 				renderLog.CloseBlock();
 			}
 		}
@@ -5591,25 +6527,33 @@ void idRenderBackend::DrawInteractions( const viewDef_t* _viewDef )
 				StencilShadowPass( vLight->globalShadows, vLight );
 				renderLog.CloseBlock();
 			}
-			
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+			// DeferredLight keeps the lights with local shadows on the interactions:
+			// the global shadows are all the stencil has
+			const bool skipDeferredSurfaces = deferredLight && DrawDeferredLight( vLight, performStencilTest );
+#else
+			const bool skipDeferredSurfaces = false;
+#endif
+
 			if( vLight->localInteractions != NULL )
 			{
 				renderLog.OpenBlock( "Local Light Interactions" );
-				RenderInteractions( vLight->localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds );
+				RenderInteractions( vLight->localInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds, skipDeferredSurfaces );
 				renderLog.CloseBlock();
 			}
-			
+
 			if( vLight->localShadows != NULL )
 			{
 				renderLog.OpenBlock( "Local Light Shadows" );
 				StencilShadowPass( vLight->localShadows, vLight );
 				renderLog.CloseBlock();
 			}
-			
+
 			if( vLight->globalInteractions != NULL )
 			{
 				renderLog.OpenBlock( "Global Light Interactions" );
-				RenderInteractions( vLight->globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds );
+				RenderInteractions( vLight->globalInteractions, vLight, GLS_DEPTHFUNC_EQUAL, performStencilTest, useLightDepthBounds, skipDeferredSurfaces );
 				renderLog.CloseBlock();
 			}
 		}
@@ -7169,7 +8113,7 @@ void idRenderBackend::DrawScreenSpaceAmbientOcclusion( const viewDef_t* _viewDef
 	currentSpace = &viewDef->worldSpace;
 	RB_SetMVP( viewDef->worldSpace.mvp );
 	
-	const bool hdrIsActive = ( r_useHDR.GetBool() && globalFramebuffers.hdrFBO != NULL && globalFramebuffers.hdrFBO->IsBound() );
+	const bool hdrIsActive = ( globalFramebuffers.hdrFBO != NULL && globalFramebuffers.hdrFBO->IsBound() );
 	
 	int screenWidth = renderSystem->GetWidth();
 	int screenHeight = renderSystem->GetHeight();
@@ -7414,7 +8358,7 @@ void idRenderBackend::DrawScreenSpaceGlobalIllumination( const viewDef_t* _viewD
 	currentSpace = &viewDef->worldSpace;
 	RB_SetMVP( viewDef->worldSpace.mvp );
 	
-	const bool hdrIsActive = ( r_useHDR.GetBool() && globalFramebuffers.hdrFBO != NULL && globalFramebuffers.hdrFBO->IsBound() );
+	const bool hdrIsActive = ( globalFramebuffers.hdrFBO != NULL && globalFramebuffers.hdrFBO->IsBound() );
 	
 	int screenWidth = renderSystem->GetWidth();
 	int screenHeight = renderSystem->GetHeight();
@@ -7713,6 +8657,11 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	R_ResetWorldMerge();
 	worldMergeSurf = NULL;
 	worldMergeIndexBuffer = 0;
+
+	// DeferredBeginFrame decides, the stereo path draws without it
+	deferredFrame = false;
+	deferredView = false;
+	backBufferDrawnThisFrame = false;
 #endif
 
 	if( cmds->commandId == RC_NOP && !cmds->next )
@@ -7738,6 +8687,9 @@ void idRenderBackend::ExecuteBackEndCommands( const emptyCommand_t* cmds )
 	GL_SetDefaultState();
 
 #if defined(ANDROID) && !defined( USE_VULKAN )
+	// whether the 3D views of the frame get the G-buffer of the on-tile deferred shading
+	DeferredBeginFrame( cmds );
+
 	// the merged world surfaces of all views, the shadow atlas draws merged casters already
 	WorldMergePass( cmds );
 #endif
@@ -7872,9 +8824,21 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 	bool useHDR = r_useHDR.GetBool() && !_viewDef->is2Dgui;
 
 #if !defined(USE_VULKAN)
+	// the HDR target, or without HDR the scene target of the deferred shading
+	const bool useSceneFBO = UseSceneFramebuffer() && !_viewDef->is2Dgui;
+
+#if defined(ANDROID)
+	// the G-buffer and the lights from it, see DrawDeferredLight
+	deferredView = deferredFrame && useSceneFBO && _viewDef->viewEntitys != NULL && !_viewDef->isXraySubview && !r_skipInteractions.GetBool();
+	if( !useSceneFBO )
+	{
+		backBufferDrawnThisFrame = true;
+	}
+#endif
+
 	// Bind the target first and clear the whole of it in one go: a tile based GPU starts
 	// the render pass from the clear values then, instead of reading the target back in.
-	if( useHDR )
+	if( useSceneFBO )
 	{
 		globalFramebuffers.hdrFBO->Bind();
 	}
@@ -7885,8 +8849,8 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 
 	// SetBuffer only clears the back buffer, the first HDR view of the frame clears the HDR color.
 	// Later views keep it, a mirror's subview leaves its image there.
-	const bool clearColor = useHDR && !hdrTargetClearedThisFrame;
-	if( useHDR )
+	const bool clearColor = useSceneFBO && !hdrTargetClearedThisFrame;
+	if( useSceneFBO )
 	{
 		hdrTargetClearedThisFrame = true;
 	}
@@ -7895,6 +8859,13 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 	// No view uses the depth or stencil of another view, so the whole target can be cleared.
 	GL_Scissor( 0, 0, renderSystem->GetWidth(), renderSystem->GetHeight() );
 	GL_Clear( clearColor, true, true, STENCIL_SHADOW_TEST_VALUE, 0.0f, 0.0f, 0.0f, 1.0f, false );
+#if defined(ANDROID)
+	// every view of the scene target clears the G-buffer, it is never read back into the tiles
+	if( useSceneFBO )
+	{
+		DeferredClearGBuffer();
+	}
+#endif
 	ResetViewportAndScissorToDefaultCamera( _viewDef );
 #else
 	// Clear the depth buffer and clear the stencil to 128 for stencil shadows as well as gui masking
@@ -7962,17 +8933,41 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 	// fill the geometric buffer with normals and roughness
 	//-------------------------------------------------
 	AmbientPass( drawSurfs, numDrawSurfs, true );
-	
-	//-------------------------------------------------
-	// fill the depth buffer and the color buffer with precomputed Q3A style lighting
-	//-------------------------------------------------
-	AmbientPass( drawSurfs, numDrawSurfs, false );
-	
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	if( deferredView )
+	{
+		//-------------------------------------------------
+		// TBDR: the G-buffer in the tile memory, and the ambient of its surfaces
+		//-------------------------------------------------
+		DeferredGBufferPass( drawSurfs, numDrawSurfs );
+
+		// the surfaces of more than one interaction keep the old ambient and interactions
+		AmbientPass( drawSurfs, numDrawSurfs, false, true );
+	}
+	else
+#endif
+	{
+		//-------------------------------------------------
+		// fill the depth buffer and the color buffer with precomputed Q3A style lighting
+		//-------------------------------------------------
+		AmbientPass( drawSurfs, numDrawSurfs, false );
+	}
+
 	//-------------------------------------------------
 	// main light renderer
 	//-------------------------------------------------
 	DrawInteractions( _viewDef );
-	
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	// nothing reads the G-buffer after the lights, a render pass end must not write it to memory
+	if( useSceneFBO )
+	{
+		DeferredInvalidateGBuffer();
+	}
+	deferredView = false;
+#endif
+
 	//-------------------------------------------------
 	// capture the depth for the motion blur before rendering any post process surfaces that may contribute to the depth
 	//-------------------------------------------------
@@ -8079,6 +9074,20 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
     DBG_RenderDebugTools( drawSurfs, numDrawSurfs );
 #endif
 #if !defined(USE_VULKAN)
+#if defined(ANDROID)
+	// without HDR the scene target of the deferred shading is copied to the back buffer
+	if( useSceneFBO && !useHDR )
+	{
+		// Nothing reads the depth and stencil of the view once it is drawn,
+		// don't let the end of the render pass write them out to memory.
+		globalFramebuffers.hdrFBO->Bind();
+		const GLenum sceneDepthStencilAttachment[] = { GL_DEPTH_STENCIL_ATTACHMENT };
+		globalFramebuffers.hdrFBO->InvalidateAttachments( sceneDepthStencilAttachment, 1 );
+
+		DeferredResolve( _viewDef );
+	}
+#endif
+
 	// RB: convert back from HDR to LDR range
 	if( useHDR )
 	{

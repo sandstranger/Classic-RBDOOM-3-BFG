@@ -107,7 +107,9 @@ idRenderLightLocal::idRenderLightLocal()
 	foggedPortals			= NULL;
 	firstInteraction		= NULL;
 	lastInteraction			= NULL;
-	
+	referencesCoverVolume	= false;
+	portalFlowReferences	= false;
+
 	baseLightProject.Zero();
 	inverseBaseLightProject.Zero();
 }

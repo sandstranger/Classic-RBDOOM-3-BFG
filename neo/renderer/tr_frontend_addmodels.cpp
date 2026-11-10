@@ -1036,6 +1036,13 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 						lightDrawSurf->sort = 0.0f;
 						lightDrawSurf->renderZFail = 0;
 						lightDrawSurf->shaderRegisters = shaderRegisters;
+
+						// the triangles facing away from the light are lit too: a dynamic interaction draws the whole
+						// surface, a static one culled them unless R_CreateInteractionLightTris kept them.
+						// The multi light draws of the back end test the facing per pixel with this.
+						lightDrawSurf->lightBackFaces = ( surfInter == NULL ) || r_lightAllBackFaces.GetBool() || lightDef->lightShader->LightEffectsBackSides()
+														|| shader->ReceivesLightingOnBackSides() || entityDef->parms.noSelfShadow || entityDef->parms.noShadow
+														|| ( r_useHalfLambertLighting.GetInteger() && r_useShadowMapping.GetBool() );
 						
 						R_SetupDrawSurfJoints( lightDrawSurf, tri, shader );
 						
@@ -1113,13 +1120,22 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 			{
 				continue;
 			}
+			// r_shadowedLightBudget: the light lights the view without shadows this frame
+			if( vLight->shadowBudgetRejected )
+			{
+				continue;
+			}
 			if( tri->silEdges == NULL )
 			{
 				continue;		// can happen for beam models (shouldn't use a shadow casting material, though...)
 			}
-			
+
+			// made with shadow mapping on, the interaction has no static shadow volumes:
+			// the stencil shadows of its surfaces are dynamic volumes
+			const bool staticShadowVolumesSkipped = ( surfInter != NULL && interaction->staticShadowVolumesSkipped );
+
 			// if the static shadow does not have any shadows
-			if( surfInter != NULL && surfInter->numShadowIndexes == 0 )
+			if( surfInter != NULL && surfInter->numShadowIndexes == 0 && !staticShadowVolumesSkipped )
 			{
 				if( !r_useShadowMapping.GetBool() )
 					continue;
@@ -1212,6 +1228,19 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 						
 						R_SetupDrawSurfJoints( shadowDrawSurf, tri, shader );
 
+						// A static interaction only exists while neither the entity nor the light changed since the level
+						// was loaded, freeing it gives the light a new shadowCacheGeneration: the back end can keep the
+						// shadow of such a caster between frames. Animated materials, joints, depth hacks and per view
+						// shadow suppression make a caster dynamic.
+						if( surfInter != NULL && !shadowDrawSurf->jointCache && shader->Deform() == DFRM_NONE
+								&& ( shader->Coverage() != MC_PERFORATED || shader->ConstantRegisters() != NULL )
+								&& !entityDef->parms.weaponDepthHack && entityDef->parms.modelDepthHack == 0.0f
+								&& !entityDef->parms.suppressShadowInViewID && !entityDef->parms.suppressShadowInLightID
+								&& !entityDef->parms.allowSurfaceInViewID && !entityDef->parms.suppressSurfaceInViewID )
+						{
+							shadowDrawSurf->shadowCacheId = ( uint32 )( ( entityDef->index + 1 ) << 12 ) | ( uint32 )( surfaceNum & 0xfff );
+						}
+
 						// a point light renders six shadow map sides, most casters only reach one or two of them
 						if( vLight->pointLight && !vLight->parallel )
 						{
@@ -1251,8 +1280,8 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 			const bool forceShadowCaps = !addInteractions || r_forceShadowCaps.GetBool();
 			
 			drawSurf_t* shadowDrawSurf = ( drawSurf_t* )R_FrameAlloc( sizeof( *shadowDrawSurf ), FRAME_ALLOC_DRAW_SURFACE );
-			
-			if( surfInter != NULL )
+
+			if( surfInter != NULL && !staticShadowVolumesSkipped )
 			{
 				shadowDrawSurf->numIndexes = 0;
 				shadowDrawSurf->indexCache = surfInter->shadowIndexCache;

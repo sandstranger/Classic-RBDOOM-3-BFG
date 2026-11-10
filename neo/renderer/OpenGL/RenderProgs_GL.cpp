@@ -33,6 +33,12 @@ If you have questions concerning this license or the applicable additional terms
 
 #include "../RenderCommon.h"
 
+#if defined(ANDROID)
+#include "EngineShaders_GL.h"
+
+extern bool isGLES32Version();
+#endif
+
 idCVar r_displayGLSLCompilerMessages( "r_displayGLSLCompilerMessages", "1", CVAR_BOOL | CVAR_ARCHIVE, "Show info messages the GPU driver outputs when compiling the shaders" );
 idCVar r_alwaysExportGLSL( "r_alwaysExportGLSL", "0", CVAR_BOOL, "" );
 idCVar r_oldGLSLVersion("r_oldGLSLVersion", "0.0", CVAR_FLOAT | CVAR_ARCHIVE | CVAR_RENDERER | CVAR_ROM, "Internal use ONLY: Stores and checks if the version of GLSL is changed");
@@ -60,6 +66,7 @@ void idRenderProgManager::BindProgram( int index )
 
 	#if defined(ANDROID) && !defined(USE_VULKAN)
 	tr.backend.FlushMultiDrawBatch();
+	tr.backend.pc.c_programBinds++;
 	#endif
 	current = index;
 
@@ -108,7 +115,28 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	idStr outFileHLSL;
 	idStr outFileGLSL;
 	idStr outFileUniforms;
+	idStr programGLSL;
+	idStr programUniforms;
+	const GLenum glTarget = ( shader.stage == SHADER_STAGE_FRAGMENT ) ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER;
 
+#if defined(ANDROID)
+	if( R_IsEngineShader( shader.name.c_str() ) )
+	{
+		// the multi light interactions and the shadow cache copy are GLSL ES 3.20 of the engine
+		if( !isGLES32Version() )
+		{
+			return;
+		}
+		inFile = shader.name + shader.nameOutSuffix;
+		outFileGLSL = inFile;
+		if( !R_EngineShaderSource( shader.name.c_str(), shader.nameOutSuffix.c_str(), shader.stage, programGLSL, programUniforms ) )
+		{
+			return;
+		}
+	}
+	else
+#endif
+	{
 	// RB: replaced backslashes
 	inFile.Format( "renderprogs/%s", shader.name.c_str() );
 	inFile.StripFileExtension();
@@ -141,10 +169,8 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	outFileGLSL.StripFileExtension();
 	outFileUniforms.StripFileExtension();
 
-	GLenum glTarget;
 	if( shader.stage == SHADER_STAGE_FRAGMENT )
 	{
-		glTarget = GL_FRAGMENT_SHADER;
 		inFile += ".ps.hlsl";
 		outFileHLSL += ".ps.hlsl";
 		outFileGLSL += ".frag";
@@ -152,7 +178,6 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	}
 	else
 	{
-		glTarget = GL_VERTEX_SHADER;
 		inFile += ".vs.hlsl";
 		outFileHLSL += ".vs.hlsl";
 		outFileGLSL += ".vert";
@@ -197,8 +222,6 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	}
 
 	// if the glsl file doesn't exist or we have a newer HLSL file we need to recreate the glsl file.
-	idStr programGLSL;
-	idStr programUniforms;
 	if( ( glslFileLength <= 0 ) || ( hlslTimeStamp != FILE_NOT_FOUND_TIMESTAMP && hlslTimeStamp > glslTimeStamp ) || r_alwaysExportGLSL.GetBool() || glConfig.forceGLSLGeneration || missingTextureLodBias || missingTbrMobileShaderPath )
 	{
 		const char* hlslFileBuffer = NULL;
@@ -296,6 +319,7 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 			Mem_Free( fileBufferUniforms );
 		}
 	}
+	}
 
 	// RB: find the uniforms locations in either the vertex or fragment uniform array
 	// this uses the new layout structure
@@ -385,6 +409,8 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 		if( compiled == GL_FALSE )
 		{
 			glDeleteShader( shader.progId );
+			// not a shader any more, a program must not attach it
+			shader.progId = INVALID_PROGID;
 			return;
 		}
 	}
@@ -414,6 +440,17 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
 
     shader_t& vShader = shaders[vertexShaderIndex];
     shader_t& fShader = shaders[fragmentShaderIndex];
+
+#if defined(ANDROID)
+    // the engine programs may fail on a driver, the views are lit light by light then
+    const bool optionalProgram = R_IsEngineShader( prog.name.c_str() );
+    if( optionalProgram && ( vShader.progId == INVALID_PROGID || fShader.progId == INVALID_PROGID ) )
+    {
+        return;
+    }
+#else
+    const bool optionalProgram = false;
+#endif
 
     idStr combinedSource;
     if ( vertexShaderIndex != -1 )
@@ -458,6 +495,16 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
                 glUniformBlockBinding( program, blockIndex, 0 );
             }
         }
+#if defined(ANDROID)
+        // the light data of the multi light programs, see idRenderBackend::UploadLightBatchData
+        {
+            GLint lightBatchBlock = glGetUniformBlockIndex( program, "lightbatch_ubo" );
+            if( lightBatchBlock != -1 )
+            {
+                glUniformBlockBinding( program, lightBatchBlock, 1 );
+            }
+        }
+#endif
 
         glUseProgram( program );
         for( int i = 0; i < MAX_PROG_TEXTURE_PARMS; ++i )
@@ -544,6 +591,11 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
     if( linked == GL_FALSE )
     {
         glDeleteProgram( program );
+        if( optionalProgram )
+        {
+            idLib::Printf( "GLSL program %s didn't link, not used\n", prog.name.c_str() );
+            return;
+        }
         idLib::Error( "While linking GLSL program %d with vertexShader %s and fragmentShader %s\n",
                       programIndex,
                       ( vertexShaderIndex >= 0 ) ? vShader.name.c_str() : "<Invalid>",
@@ -574,6 +626,16 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
             glUniformBlockBinding( program, blockIndex, 0 );
         }
     }
+#if defined(ANDROID)
+    // the light data of the multi light programs, see idRenderBackend::UploadLightBatchData
+    {
+        GLint lightBatchBlock = glGetUniformBlockIndex( program, "lightbatch_ubo" );
+        if( lightBatchBlock != -1 )
+        {
+            glUniformBlockBinding( program, lightBatchBlock, 1 );
+        }
+    }
+#endif
 
     glUseProgram( program );
     for( int i = 0; i < MAX_PROG_TEXTURE_PARMS; ++i )
@@ -699,6 +761,18 @@ void idRenderProgManager::CommitUniforms( uint64 stateBits )
 }
 
 #if defined(ANDROID)
+/*
+================================================================================================
+idRenderProgManager::EngineProgramReady
+================================================================================================
+*/
+bool idRenderProgManager::EngineProgramReady( int builtin ) const
+{
+	// BindShader_Builtin binds the program at the index of the builtin
+	return builtin >= 0 && builtin < MAX_BUILTINS && builtinShaders[builtin] == builtin && builtin < renderProgs.Num()
+		   && renderProgs[builtin].progId != INVALID_PROGID;
+}
+
 /*
 ================================================================================================
 idRenderProgManager::CheckGPUInstancingShaders

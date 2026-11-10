@@ -355,7 +355,41 @@ idImage* idImageManager::ImageFromFunction( const char* _name, void ( *generator
 	// check for precompressed, load is from the front end
 	image->referencedOutsideLevelLoad = true;
 	image->ActuallyLoadImage( false );
-	
+
+	return image;
+}
+
+/*
+==================
+LazyRenderTargetFromFunction
+
+The generator runs now, but only fills in the options of the render target: the GPU storage
+comes with the first idImage::EnsureAllocated (or Bind) and goes with idImage::ReleaseStorage.
+==================
+*/
+idImage* idImageManager::LazyRenderTargetFromFunction( const char* _name, void ( *generatorFunction )( idImage* image ) )
+{
+	idStr name = _name;
+	name.BackSlashesToSlashes();
+
+	int hash = name.FileNameHash();
+	for( int i = imageHash.First( hash ); i != -1; i = imageHash.Next( i ) )
+	{
+		idImage* image = images[i];
+		if( name.Icmp( image->GetName() ) == 0 )
+		{
+			return image;
+		}
+	}
+
+	idImage* image = AllocImage( name );
+	image->generatorFunction = generatorFunction;
+	image->referencedOutsideLevelLoad = true;
+	image->SetLazyRenderTarget();
+
+	// describes the target, allocates nothing
+	image->ActuallyLoadImage( false );
+
 	return image;
 }
 

@@ -107,7 +107,9 @@ idRenderLightLocal::idRenderLightLocal()
 	foggedPortals			= NULL;
 	firstInteraction		= NULL;
 	lastInteraction			= NULL;
-	
+	shadowCacheGeneration	= R_NextShadowCacheGeneration();
+	shadowSelectedFrame		= -1000;
+
 	baseLightProject.Zero();
 	inverseBaseLightProject.Zero();
 }

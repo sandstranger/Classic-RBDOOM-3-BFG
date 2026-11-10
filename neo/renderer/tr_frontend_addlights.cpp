@@ -105,6 +105,9 @@ static void R_AddSingleLight( viewLight_t* vLight )
 	vLight->removeFromList = true;
 	vLight->shadowOnlyViewEntities = NULL;
 	vLight->preLightShadowVolumes = NULL;
+	vLight->shadowBudgetRejected = false;
+	vLight->shadowPriority = 0.0f;
+	vLight->shadowCacheGeneration = vLight->lightDef->shadowCacheGeneration;
 	
 	// globals we really should pass in...
 	const viewDef_t* viewDef = tr.viewDef;
@@ -343,7 +346,7 @@ static void R_AddSingleLight( viewLight_t* vLight )
 	
 	// this one stays on the list
 	vLight->removeFromList = false;
-	
+
 	//--------------------------------------------
 	// create interactions with all entities the light may touch, and add viewEntities
 	// that may cast shadows, even if they aren't directly visible.  Any real work
@@ -582,6 +585,132 @@ REGISTER_PARALLEL_JOB( R_AddSingleLight, "R_AddSingleLight" );
 
 /*
 =================
+R_SelectShadowedLights
+
+r_shadowedLightBudget (off by default): only the most important shadow casting lights of the view
+render shadows. Runs after R_AddSingleLight and before the models are added, so a light over the
+budget gets no caster surfaces, no shadow volume jobs and no shadow only entities at all. Every
+light keeps lighting the view, only its shadows go: the importance follows the screen coverage,
+so walking away from a light takes its shadows off the walls. That's why it is off.
+
+Importance: the share of the view the light's scissor covers (projected influence), times the
+brightness of its brightest stage, times 1 + the share of the view it reaches up close (the
+camera inside the light volume), and a cost factor that prefers a projected light (one shadow
+side) over a point light (up to six). A light that was shadowed in the previous frames gets a
+bonus, so two lights of about the same importance don't swap their shadows every frame.
+Parallel lights have their own priority: they are always shadowed and don't use the budget.
+=================
+*/
+static void R_SelectShadowedLights()
+{
+	const int maxShadowedLights = r_shadowedLightBudget.GetInteger();
+	if( maxShadowedLights <= 0 || tr.viewDef == NULL )
+	{
+		return;
+	}
+
+	const idScreenRect& viewport = tr.viewDef->viewport;
+	const float viewArea = Max( 1.0f, ( float )( viewport.x2 - viewport.x1 + 1 ) * ( float )( viewport.y2 - viewport.y1 + 1 ) );
+	const bool updateHysteresis = !tr.viewDef->isSubview;
+	const float lightScale = r_lightScale.GetFloat();
+
+	int numCandidates = 0;
+	for( viewLight_t* vLight = tr.viewDef->viewLights; vLight != NULL; vLight = vLight->next )
+	{
+		if( vLight->removeFromList || vLight->parallel || !vLight->lightDef->LightCastsShadows()
+				|| vLight->lightShader->IsFogLight() || vLight->lightShader->IsBlendLight() || vLight->lightShader->IsAmbientLight() )
+		{
+			continue;
+		}
+
+		// the brightest enabled stage
+		float brightness = 0.0f;
+		const float* regs = vLight->shaderRegisters;
+		for( int i = 0; i < vLight->lightShader->GetNumStages(); i++ )
+		{
+			const shaderStage_t* stage = vLight->lightShader->GetStage( i );
+			if( regs[ stage->conditionRegister ] == 0.0f )
+			{
+				continue;
+			}
+			const int* color = stage->color.registers;
+			brightness = Max( brightness, Max( regs[ color[0] ], Max( regs[ color[1] ], regs[ color[2] ] ) ) * lightScale );
+		}
+
+		const float coverage = idMath::ClampFloat( 0.0f, 1.0f, ( float )vLight->scissorRect.GetArea() / viewArea );
+		const bool viewInside = vLight->lightDef->globalLightBounds.ContainsPoint( tr.viewDef->renderView.vieworg );
+		const float sidesCost = vLight->pointLight ? 0.8f : 1.0f;
+
+		float priority = ( coverage + 0.001f ) * ( brightness + 0.01f ) * ( viewInside ? 2.0f : 1.0f ) * sidesCost;
+
+		// hysteresis: the lights shadowed in the last frames keep them against slightly more important ones
+		if( tr.frameCount - vLight->lightDef->shadowSelectedFrame <= 2 )
+		{
+			priority *= 1.5f;
+		}
+		vLight->shadowPriority = priority;
+		numCandidates++;
+	}
+
+	if( numCandidates <= maxShadowedLights )
+	{
+		if( updateHysteresis )
+		{
+			for( viewLight_t* vLight = tr.viewDef->viewLights; vLight != NULL; vLight = vLight->next )
+			{
+				if( vLight->shadowPriority > 0.0f )
+				{
+					vLight->lightDef->shadowSelectedFrame = tr.frameCount;
+				}
+			}
+		}
+		return;
+	}
+
+	// the budget goes to the highest priorities
+	viewLight_t** candidates = ( viewLight_t** )_alloca( numCandidates * sizeof( viewLight_t* ) );
+	int num = 0;
+	for( viewLight_t* vLight = tr.viewDef->viewLights; vLight != NULL; vLight = vLight->next )
+	{
+		if( vLight->shadowPriority > 0.0f )
+		{
+			candidates[num++] = vLight;
+		}
+	}
+	struct sortShadowLight_t
+	{
+		static int sort( const void* a, const void* b )
+		{
+			const float pa = ( *( viewLight_t* const* )a )->shadowPriority;
+			const float pb = ( *( viewLight_t* const* )b )->shadowPriority;
+			return ( pa > pb ) ? -1 : ( ( pa < pb ) ? 1 : 0 );
+		}
+	};
+	qsort( candidates, num, sizeof( candidates[0] ), sortShadowLight_t::sort );
+
+	for( int i = 0; i < num; i++ )
+	{
+		viewLight_t* vLight = candidates[i];
+		if( i < maxShadowedLights )
+		{
+			if( updateHysteresis )
+			{
+				vLight->lightDef->shadowSelectedFrame = tr.frameCount;
+			}
+			continue;
+		}
+
+		// lights the view without shadows: nothing casts into it
+		vLight->shadowBudgetRejected = true;
+		vLight->globalShadows = NULL;
+		vLight->localShadows = NULL;
+		vLight->preLightShadowVolumes = NULL;
+		vLight->shadowOnlyViewEntities = NULL;
+	}
+}
+
+/*
+=================
 R_AddLights
 =================
 */
@@ -611,9 +740,14 @@ void R_AddLights()
 	}
 	
 	//-------------------------------------------------
+	// r_shadowedLightBudget, before anything is added for the shadows of the lights
+	//-------------------------------------------------
+	R_SelectShadowedLights();
+
+	//-------------------------------------------------
 	// cull lights from the list if they turned out to not be needed
 	//-------------------------------------------------
-	
+
 	tr.pc.c_viewLights = 0;
 	viewLight_t** ptr = &tr.viewDef->viewLights;
 	while( *ptr != NULL )

@@ -237,6 +237,15 @@ void idRenderProgManager::Init()
 		// RB end
 
 		{ BUILTIN_CLASSIC, "classic.vfp", "_SRGB", IDBIT( USE_SRGB ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT }, //GK: Classic DOOM Screen Shader. Keep it with sRGB in order to keep accurate colors on both HDR or not
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		// multi light interactions and the shadow cache, GLSL ES of the engine (EngineShaders_GL.h), not renderprogs/
+		{ BUILTIN_FORWARD_LIGHTS, "_engine_forward", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_FORWARD_LIGHTS_SKINNED, "_engine_forward", "_skinned", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_FORWARD_LIGHTS_SHADOWS, "_engine_forward", "_shadows", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_FORWARD_LIGHTS_SHADOWS_SKINNED, "_engine_forward", "_shadows_skinned", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_SHADOW_CACHE_COPY, "_engine_shadowcopy", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#endif
 	};
 	int numBuiltins = sizeof( builtins ) / sizeof( builtins[0] );
 	
@@ -308,6 +317,10 @@ void idRenderProgManager::Init()
 		renderProgs[builtinShaders[BUILTIN_INTERACTION_SHADOW_MAPPING_POINT_SKINNED]].usesJoints = true;
 		renderProgs[builtinShaders[BUILTIN_INTERACTION_SHADOW_MAPPING_PARALLEL_SKINNED]].usesJoints = true;
 		// RB end
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		renderProgs[builtinShaders[BUILTIN_FORWARD_LIGHTS_SKINNED]].usesJoints = true;
+		renderProgs[builtinShaders[BUILTIN_FORWARD_LIGHTS_SHADOWS_SKINNED]].usesJoints = true;
+#endif
 	}
 	
 	cmdSystem->AddCommand( "reloadShaders", R_ReloadShaders, CMD_FL_RENDERER, "reloads shaders" );

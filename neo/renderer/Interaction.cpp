@@ -513,6 +513,26 @@ idInteraction::idInteraction()
 	entityNext				= NULL;
 	entityPrev				= NULL;
 	staticInteraction		= false;
+	staticShadowVolumesSkipped = false;
+}
+
+/*
+===============
+R_NextShadowCacheGeneration
+
+Never 0, the back end's free shadow cache entries have 0. The interactions and light defs change on
+the thread that runs the front end, the jobs of the front end only read the values.
+===============
+*/
+static int s_shadowCacheGeneration = 0;
+
+int R_NextShadowCacheGeneration()
+{
+	if( ++s_shadowCacheGeneration <= 0 )
+	{
+		s_shadowCacheGeneration = 1;
+	}
+	return s_shadowCacheGeneration;
 }
 
 /*
@@ -538,7 +558,9 @@ idInteraction* idInteraction::AllocAndLink( idRenderEntityLocal* edef, idRenderL
 	
 	interaction->numSurfaces = -1;		// not checked yet
 	interaction->surfaces = NULL;
-	
+	interaction->staticInteraction = false;
+	interaction->staticShadowVolumesSkipped = false;
+
 	// link at the start of the entity's list
 	interaction->lightNext = ldef->firstInteraction;
 	interaction->lightPrev = NULL;
@@ -643,9 +665,16 @@ static void R_FreeLightTrisIndexes( triIndex_t* indexes )
 
 void idInteraction::FreeSurfaces()
 {
+	// the light's cached static shadows may hold these surfaces: they are built again
+	if( this->numSurfaces > 0 && this->lightDef != NULL )
+	{
+		this->lightDef->shadowCacheGeneration = R_NextShadowCacheGeneration();
+	}
+
 	// anything regenerated is no longer an optimized static version
 	this->staticInteraction = false;
-	
+	this->staticShadowVolumesSkipped = false;
+
 	if( this->surfaces != NULL )
 	{
 		for( int i = 0; i < this->numSurfaces; i++ )
@@ -815,6 +844,7 @@ void idInteraction::CreateStaticInteraction()
 {
 	// note that it is a static interaction
 	staticInteraction = true;
+	staticShadowVolumesSkipped = false;
 	const idRenderModel* model = entityDef->parms.hModel;
 	if( model == NULL || model->NumSurfaces() <= 0 || model->IsDynamicModel() != DM_STATIC )
 	{
@@ -908,6 +938,17 @@ void idInteraction::CreateStaticInteraction()
 			// if the light has an optimized shadow volume, don't create shadows for any models that are part of the base areas
 			if( lightDef->parms.prelightModel == NULL || !model->IsStaticWorldModel() || r_skipPrelightShadows.GetBool() )
 			{
+				// Shadow mapping draws the light tris of the surface into the shadow maps and never
+				// reads the static shadow volumes: skip their silhouette work and static index memory.
+				// If stencil shadows are turned on later, R_AddSingleModel gives these surfaces
+				// dynamic shadow volumes (staticShadowVolumesSkipped).
+				if( r_useShadowMapping.GetBool() )
+				{
+					staticShadowVolumesSkipped = true;
+					interactionGenerated = true;
+					continue;
+				}
+
 				srfTriangles_t* shadowTris = R_CreateInteractionShadowVolume( entityDef, tri, lightDef );
 				if( shadowTris != NULL )
 				{
@@ -940,7 +981,11 @@ void idInteraction::CreateStaticInteraction()
 	if( !interactionGenerated )
 	{
 		MakeEmpty();
+		return;
 	}
+
+	// a new static caster of the light, its cached shadows don't have it
+	lightDef->shadowCacheGeneration = R_NextShadowCacheGeneration();
 }
 
 /*

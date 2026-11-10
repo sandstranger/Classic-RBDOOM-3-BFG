@@ -690,6 +690,33 @@ public:
 		BindShader_Builtin( BUILTIN_CLASSIC );
 	}
 	//GK: End
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	// GLSL ES programs of the engine, see EngineShaders_GL.h
+	// multi light interactions, see FORWARD MULTI LIGHT INTERACTIONS in RenderBackend.cpp
+	void	BindShader_ForwardLights( bool skinned, bool shadows )
+	{
+		BindShader_Builtin( shadows ? ( skinned ? BUILTIN_FORWARD_LIGHTS_SHADOWS_SKINNED : BUILTIN_FORWARD_LIGHTS_SHADOWS )
+							: ( skinned ? BUILTIN_FORWARD_LIGHTS_SKINNED : BUILTIN_FORWARD_LIGHTS ) );
+	}
+
+	void	BindShader_ShadowCacheCopy()
+	{
+		BindShader_Builtin( BUILTIN_SHADOW_CACHE_COPY );
+	}
+
+	// the optional engine programs of the multi light interactions and of the shadow cache
+	bool	ForwardLightsShadersReady( bool shadows, bool skinned = false ) const
+	{
+		return EngineProgramReady( shadows ? ( skinned ? BUILTIN_FORWARD_LIGHTS_SHADOWS_SKINNED : BUILTIN_FORWARD_LIGHTS_SHADOWS )
+								   : ( skinned ? BUILTIN_FORWARD_LIGHTS_SKINNED : BUILTIN_FORWARD_LIGHTS ) );
+	}
+	bool	ShadowCacheCopyShaderReady() const
+	{
+		return EngineProgramReady( BUILTIN_SHADOW_CACHE_COPY );
+	}
+	bool	EngineProgramReady( int builtin ) const;
+#endif
 	// the joints buffer should only be bound for vertex programs that use joints
 	bool		ShaderUsesJoints() const
 	{
@@ -861,7 +888,16 @@ private:
 		BUILTIN_DEBUG_SHADOWMAP,
 
 		BUILTIN_CLASSIC,
-		
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		// engine GLSL ES, optional: a driver that fails them keeps the per light interactions
+		BUILTIN_FORWARD_LIGHTS,
+		BUILTIN_FORWARD_LIGHTS_SKINNED,
+		BUILTIN_FORWARD_LIGHTS_SHADOWS,
+		BUILTIN_FORWARD_LIGHTS_SHADOWS_SKINNED,
+		BUILTIN_SHADOW_CACHE_COPY,
+#endif
+
 		MAX_BUILTINS
 	};
 	int builtinShaders[MAX_BUILTINS];

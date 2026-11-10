@@ -200,6 +200,16 @@ struct drawSurf_t
 	// the back end merges the draws of these surfaces (see R_WorldMergePass)
 	const triIndex_t*		staticIndexes;
 	int						mergedGroup;			// set by the back end: 0 = drawn on its own
+
+	// shadow map casters: != 0 when the caster is static geometry of a static interaction, which can't
+	// change without the light's shadowCacheGeneration changing; the shadow cache may keep it
+	uint32					shadowCacheId;
+
+	// light interaction surfaces: the interaction lights the triangles facing away from the light too
+	bool					lightBackFaces;
+
+	// set by the back end: a multi light draw lit this light interaction surface
+	bool					forwardBatched;
 };
 
 // areas have references to hold all the lights and entities in them
@@ -295,9 +305,19 @@ public:
 	areaReference_t* 		references;				// each area the light is present in will have a lightRef
 	idInteraction* 			firstInteraction;		// doubly linked list
 	idInteraction* 			lastInteraction;
-	
+
 	struct doublePortal_s* 	foggedPortals;
+
+	// a new value, unique over all lights, whenever the light or a static interaction of it changes:
+	// the shadow cache of the back end only reuses static shadow maps built for the same value
+	int						shadowCacheGeneration;
+
+	// r_shadowedLightBudget: the last frame the light was among the shadowed lights, for the hysteresis
+	int						shadowSelectedFrame;
 };
+
+// a new shadow cache generation, see idRenderLightLocal::shadowCacheGeneration
+int R_NextShadowCacheGeneration();
 
 
 class idRenderEntityLocal : public idRenderEntity
@@ -420,9 +440,16 @@ struct viewLight_t
 	drawSurf_t* 			localShadows;				// don't shadow local surfaces
 	drawSurf_t* 			globalInteractions;			// get shadows from everything
 	drawSurf_t* 			translucentInteractions;	// translucent interactions don't get shadows
-	
+
 	// R_AddSingleLight will build a chain of parameters here to setup shadow volumes
 	preLightShadowVolumeParms_t* 	preLightShadowVolumes;
+
+	// idRenderLightLocal::shadowCacheGeneration of this frame
+	int						shadowCacheGeneration;
+
+	// r_shadowedLightBudget: the light lights the view without shadows this frame
+	bool					shadowBudgetRejected;
+	float					shadowPriority;
 };
 
 // a viewEntity is created whenever a idRenderEntityLocal is considered for inclusion
@@ -1010,6 +1037,8 @@ extern idCVar r_useLightDepthBounds;		// use depth bounds test on lights to redu
 extern idCVar r_useShadowDepthBounds;		// use depth bounds test on individual shadows to reduce shadow fill
 // RB begin
 extern idCVar r_useShadowMapping;			// use shadow mapping instead of stencil shadows
+extern idCVar r_shadowMapDepth16;			// 16 bit shadow map depth on GLES
+extern idCVar r_shadowedLightBudget;		// shadow casting light budget of a view, 0 (default) = no limit
 extern idCVar r_useHalfLambertLighting;		// use Half-Lambert lighting instead of classic Lambert
 extern idCVar r_useHDR;
 extern idCVar r_useSRGB;

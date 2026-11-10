@@ -286,6 +286,15 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 	// this is the ONLY place generatorFunction will ever be called
 	if (generatorFunction)
 	{
+		if( lazyRenderTarget && fromBackEnd )
+		{
+			// something binds a lazy render target its feature didn't allocate: storage now
+			if( EnsureAllocated() )
+			{
+				renderTargetCounters.lateAllocations++;
+			}
+			return;
+		}
 		generatorFunction(this);
 		return;
 	}
@@ -709,6 +718,12 @@ idImage::Reload
 */
 void idImage::Reload( bool force )
 {
+	// the storage of a lazy render target belongs to its feature (Framebuffer), it has no content to reload
+	if( lazyRenderTarget )
+	{
+		return;
+	}
+
 	// always regenerate functional images
 	if( generatorFunction )
 	{
@@ -777,6 +792,13 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 #endif
 	opts.isRenderTarget = isRenderTarget || pic == NULL;
 	DeriveOpts();
+
+	// a lazy render target is only described here, its feature allocates it
+	if( pic == NULL && lazyRenderTarget && !forceAllocation )
+	{
+		renderTargetCounters.lazyAllocationsSkipped++;
+		return;
+	}
 
 	// RB: allow pic == NULL for internal framebuffer images
 	if( pic == NULL || opts.textureType == TT_2D_MULTISAMPLE )
@@ -880,6 +902,56 @@ void idImage::GenerateCubeImage( const byte* pic[6], int size, textureFilter_t f
 	}
 }
 
+renderTargetCounters_t renderTargetCounters;
+
+/*
+================
+idImage::EnsureAllocated
+
+The GPU storage of a lazy render target, at the size of its options: what its generator
+described, or what Resize set later. True when the image has storage.
+================
+*/
+bool idImage::EnsureAllocated()
+{
+	if( IsLoaded() )
+	{
+		return true;
+	}
+	if( !tr.IsInitialized() )
+	{
+		return false;
+	}
+
+	if( opts.format == FMT_NONE || opts.width <= 0 || opts.height <= 0 )
+	{
+		// never described: the generator with storage
+		if( generatorFunction != NULL )
+		{
+			forceAllocation = true;
+			generatorFunction( this );
+			forceAllocation = false;
+		}
+	}
+	else
+	{
+		AllocImage();
+	}
+	return IsLoaded();
+}
+
+/*
+================
+idImage::ReleaseStorage
+
+Gives the GPU storage back, the options stay for the next EnsureAllocated
+================
+*/
+void idImage::ReleaseStorage()
+{
+	PurgeImage();
+}
+
 // RB begin
 void idImage::GenerateShadowArray( int width, int height, textureFilter_t filterParm, textureRepeat_t repeatParm, textureUsage_t usageParm )
 {
@@ -896,13 +968,20 @@ void idImage::GenerateShadowArray( int width, int height, textureFilter_t filter
 	opts.numLevels = 1;
 	opts.isRenderTarget = true;
 	DeriveOpts();
-	
+
 	// if we don't have a rendering context, just return after we
 	// have filled in the parms.  We must have the values set, or
 	// an image match from a shader before the render starts would miss
 	// the generated texture
 	if( !tr.IsInitialized() )
 	{
+		return;
+	}
+
+	// a lazy shadow map is only described here, the shadow map pass allocates it
+	if( lazyRenderTarget && !forceAllocation )
+	{
+		renderTargetCounters.lazyAllocationsSkipped++;
 		return;
 	}
 	

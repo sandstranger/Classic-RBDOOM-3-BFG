@@ -514,6 +514,9 @@ void idRenderWorldLocal::UpdateLightDef( qhandle_t lightHandle, const renderLigh
 			// if we are updating shadows, the prelight model is no longer valid
 			light->lightHasMoved = true;
 			R_FreeLightDefDerivedData( light );
+
+			// a moved or reshaped light has nothing in the shadow cache
+			light->shadowCacheGeneration = R_NextShadowCacheGeneration();
 		}
 	}
 	else

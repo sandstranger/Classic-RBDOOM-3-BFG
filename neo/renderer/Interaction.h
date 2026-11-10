@@ -112,7 +112,11 @@ public:
 	idInteraction* 			entityPrev;
 	
 	bool					staticInteraction;		// true if the interaction was created at map load time in static buffer space
-	
+
+	// created with shadow mapping on: the static stencil shadow volumes weren't made, nothing reads
+	// them then. With stencil shadows the surfaces of the interaction get dynamic shadow volumes.
+	bool					staticShadowVolumesSkipped;
+
 public:
 	idInteraction();
 	

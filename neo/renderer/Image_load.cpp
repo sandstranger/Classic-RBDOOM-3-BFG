@@ -769,8 +769,8 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 	PurgeImage();
 
 #if ANDROID
-	extern bool isGLES32Version();
-	bool multisamplingAvailable = glConfig.hasMSAAEXT || isGLES32Version();
+	// GLES 3.0 has no multisample textures, only EXT_multisampled_render_to_texture renders them
+	const bool multisamplingAvailable = glConfig.hasMSAAEXT;
 #endif
 
 	filter = filterParm;

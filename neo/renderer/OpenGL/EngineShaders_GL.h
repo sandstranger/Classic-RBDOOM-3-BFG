@@ -30,7 +30,7 @@ along with Doom 3 BFG Edition Source Code.  If not, see <http://www.gnu.org/lice
 
 GLSL ES PROGRAMS OF THE ENGINE
 
-Programs written here as GLSL ES 3.20, not HLSL in the game data: the renderprogs on the device
+Programs written here as GLSL ES 3.00, not HLSL in the game data: the renderprogs on the device
 can be older than the engine. Their names start with _engine, idRenderProgManager::LoadShader
 takes the source from R_EngineShaderSource.
 
@@ -567,7 +567,7 @@ static bool R_EngineShaderSource( const char* name, const char* suffix, rpStage_
 		return false;
 	}
 
-	glsl = "#version 320 es\n";
+	glsl = "#version 300 es\n";
 	glsl += va( "// %s%s, engine program\n", name, suffix );
 
 	if( stage == SHADER_STAGE_FRAGMENT )

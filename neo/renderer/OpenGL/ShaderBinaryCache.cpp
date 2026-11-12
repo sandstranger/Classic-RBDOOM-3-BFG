@@ -21,11 +21,8 @@ public:
     ~Impl() { Shutdown(); }
 
     void Init() {
-        if (!GLAD_GL_OES_get_program_binary) {
-            idLib::Printf("idShaderBinaryCache: GL_OES_get_program_binary not supported.\n");
-            binarySupported = false;
-            return;
-        }
+        // program binaries are core GLES 3.0, GL_OES_get_program_binary isn't needed
+        numBinaryFormats = 0;
         glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &numBinaryFormats);
         if (numBinaryFormats <= 0) {
             idLib::Printf("idShaderBinaryCache: No program binary formats available.\n");
@@ -74,7 +71,7 @@ public:
             }
         }
         if (!binaryData.empty()) {
-            glProgramBinaryOES(program, format, binaryData.data(), binaryData.size());
+            glProgramBinary(program, format, binaryData.data(), (GLsizei)binaryData.size());
             GLint linkStatus;
             glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);
             if (linkStatus == GL_TRUE) return true;
@@ -87,7 +84,7 @@ public:
 
         if (ReadBinaryFromFile(hash, binaryData, format)) {
             idLib::Printf("Loading shader binary from disk: %s\n", name.c_str());
-            glProgramBinaryOES(program, format, binaryData.data(), binaryData.size());
+            glProgramBinary(program, format, binaryData.data(), (GLsizei)binaryData.size());
             GLint linkStatus;
             glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);
             if (linkStatus == GL_TRUE) {
@@ -107,12 +104,12 @@ public:
         if (!binarySupported) return;
 
         GLint binaryLength = 0;
-        glGetProgramiv(program, GL_PROGRAM_BINARY_LENGTH_OES, &binaryLength);
+        glGetProgramiv(program, GL_PROGRAM_BINARY_LENGTH, &binaryLength);
         if (binaryLength <= 0) return;
 
         GLenum format = 0;
         std::vector<unsigned char> binaryData(binaryLength);
-        glGetProgramBinaryOES(program, binaryLength, nullptr, &format, binaryData.data());
+        glGetProgramBinary(program, binaryLength, nullptr, &format, binaryData.data());
 
         if (!IsFormatSupported(format)) {
             idLib::Warning("Unsupported binary format for shader %s", name.c_str());

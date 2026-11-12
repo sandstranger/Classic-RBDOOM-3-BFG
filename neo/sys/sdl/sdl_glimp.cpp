@@ -64,12 +64,6 @@ idCVar r_useOpenGL32( "r_useOpenGL32", "0", CVAR_INTEGER, "0 = OpenGL 3.x (compa
 #endif
 // RB end
 
-#if ANDROID
-#define GLES3_2_VERSION 320
-#define GLES3_1_VERSION 310
-#define GLES3_0_VERSION 300
-#endif
-
 extern idCVar r_fullscreen;
 extern idCVar swf_cursorDPI;
 
@@ -298,21 +292,11 @@ bool GLimp_Init( glimpParms_t parms )
 #else
 		SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
 
-		extern int glesVersion;
-		int glesMinorVersion = 2;
-
-		if (glesVersion == GLES3_2_VERSION) {
-			glesMinorVersion = 2;
-		}
-		else if (glesVersion == GLES3_1_VERSION) {
-			glesMinorVersion = 1;
-		} else if (glesVersion == GLES3_0_VERSION) {
-			glesMinorVersion = 0;
-		}
-
+		// the renderer only uses GLES 3.0 (and extensions it checks for), so every GLES 3 device
+		// runs it; a driver may still hand out a newer context, which is backward compatible
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,  glesMinorVersion );
+		SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
 		glConfig.driverType = GLDRV_OPENGL_MESA;
 #endif
 #ifndef ANDROID

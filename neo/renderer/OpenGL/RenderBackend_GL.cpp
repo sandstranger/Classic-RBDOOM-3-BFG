@@ -50,7 +50,6 @@ static void R_ShutdownLightBatchIndexStream();
 #endif
 #if ANDROID
 
-#define GL_MULTISAMPLE                    0x809D
 #define GL_TEXTURE_MAX_ANISOTROPY_EXT     0x84FE
 #define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
 #endif
@@ -69,12 +68,6 @@ idCVar stereoRender_warpParmZ( "stereoRender_warpParmZ", "0", CVAR_RENDERER | CV
 idCVar stereoRender_warpParmW( "stereoRender_warpParmW", "0", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "development parm" );
 idCVar stereoRender_warpTargetFraction( "stereoRender_warpTargetFraction", "1.0", CVAR_RENDERER | CVAR_FLOAT | CVAR_ARCHIVE, "fraction of half-width the through-lens view covers" );
 idCVar r_useOpenGLDSA("r_useOpenGLDSA", "0", CVAR_RENDERER | CVAR_INTEGER | CVAR_ARCHIVE, "Enable/Disable OpenGL DSA. -1 = Enable based on system detection, 0 = Force to Disable, 1 = Force to Enable", -1, 1);
-#if defined(ANDROID) && !defined(USE_VULKAN)
-idCVar r_useMultiDrawIndirect("r_useMultiDrawIndirect", "1", CVAR_RENDERER | CVAR_ARCHIVE | CVAR_BOOL,
-    "Batch compatible GLES indexed draws with GL_EXT_multi_draw_indirect");
-idCVar r_showMultiDrawIndirectStats("r_showMultiDrawIndirectStats", "0", CVAR_RENDERER | CVAR_BOOL,
-    "Print GLES multi-draw-indirect batching statistics each frame");
-#endif
 
 //#ifdef _DEBUG
 //idCVar r_showSwapBuffers("r_showSwapBuffers", "1", CVAR_BOOL, "Show timings from GL_BlockingSwapBuffers");
@@ -96,38 +89,13 @@ void RB_SetMVP( const idRenderMatrix& mvp );
 glContext_t glcontext;
 static int		swapIndex;		// 0 or 1 into renderSync
 static GLsync	renderSync[2];
-static uintptr_t currentVertOffset = ~0;
 #if defined(ANDROID) && !defined(USE_VULKAN)
-struct drawElementsIndirectCommand_t
-{
-    GLuint count;
-    GLuint instanceCount;
-    GLuint firstIndex;
-    GLint baseVertex;
-    GLuint baseInstance;
-};
-static std::vector<drawElementsIndirectCommand_t> g_multiDrawCommands;
-static GLuint g_multiDrawIndirectBuffer = 0;
-static GLuint g_multiDrawVertexBuffer = 0;
-static GLuint g_multiDrawIndexBuffer = 0;
-static bool g_multiDrawIndirectAvailable = false;
-static int g_multiDrawIndirectBatchCount = 0;
-static int g_multiDrawIndirectDrawCallsSaved = 0;
-static int g_multiDrawIndirectSubmittedCommands = 0;
-static const size_t MAX_GLES_MDI_BATCH_COMMANDS = 256;
-enum multiDrawLayoutKey_t
-{
-    MDI_LAYOUT_NONE = 0,
-    MDI_LAYOUT_DRAW_VERT,
-    MDI_LAYOUT_SHADOW_VERT
-};
-static multiDrawLayoutKey_t g_multiDrawBatchLayout = MDI_LAYOUT_NONE;
+// the byte offset of the first vertex the attribute pointers start at, see SetVertexAttribs
+static uintptr_t currentVertOffset = ~( uintptr_t )0;
 #endif
 static bool gEnableGLSynchronization = false;
 
 #if ANDROID
-const int DEFAULT_GLES_VERSION = 320;
-int glesVersion = DEFAULT_GLES_VERSION;
 static bool g_enableDXTSupport = false;
 
 extern "C"{
@@ -136,19 +104,17 @@ void setHardwareDXTSupport(const bool enableDXTSupport) {
 	g_enableDXTSupport = enableDXTSupport;
 }
 
+// kept for the launcher, which still passes the version of the device: the renderer is GLES 3.0
+// on every device now, the context and the shaders don't depend on it any more
 __attribute__((used)) __attribute__((visibility("default")))
 void setGLESVersion(const int targetGLESVersion) {
-	glesVersion = targetGLESVersion;
+	(void)targetGLESVersion;
 }
 
 __attribute__((used)) __attribute__((visibility("default")))
 void updateGLSynchronizationState(const bool enableGLSynchronization) {
 	gEnableGLSynchronization = enableGLSynchronization;
 }
-}
-
-bool isGLES32Version (){
-    return glesVersion == DEFAULT_GLES_VERSION;
 }
 
 static inline bool IsDXTBCSupported() {
@@ -173,10 +139,6 @@ static inline bool IsDXTBCSupported() {
 	}
 
 	return false;
-}
-#else
-bool isGLES32Version (){
-    return true;
 }
 #endif
 
@@ -411,7 +373,8 @@ static void R_CheckPortableExtensions()
 	glConfig.anisotropicFilterAvailable = (glConfig.glVersion > 4.5) ? GLEW_ARB_texture_filter_anisotropic != 0 : GLEW_EXT_texture_filter_anisotropic != 0;
 #else
     glGetIntegerv(GL_MAX_SAMPLES, &glConfig.maxSupportedSamples);
-	glConfig.hasMSAAEXT = glFramebufferTexture2DMultisampleEXT != nullptr;
+	// multisampled render targets that resolve on the tile: GLES 3.0 has no multisample textures
+	glConfig.hasMSAAEXT = GLAD_GL_EXT_multisampled_render_to_texture != 0 && glFramebufferTexture2DMultisampleEXT != nullptr;
     glConfig.textureCompressionAvailable = g_enableDXTSupport && IsDXTBCSupported();
     glConfig.multitextureAvailable = true;
 	glConfig.anisotropicFilterAvailable = GLAD_GL_EXT_texture_filter_anisotropic;
@@ -450,18 +413,20 @@ static void R_CheckPortableExtensions()
 	R_PrintExtensionStatus(glConfig.textureLODBiasAvailable, "GL_EXT_texture_lod_bias");
 
 #ifdef ANDROID //karin: force setup glConfig's extension support
+	// all of these are core GLES 3.0
     glConfig.vertexBufferObjectAvailable = true;
     glConfig.mapBufferRangeAvailable = true;
     glConfig.vertexArrayObjectAvailable = true;
-    glConfig.drawElementsBaseVertexAvailable = GLAD_GL_EXT_draw_elements_base_vertex!=0;
+    // GLES 3.0 has no base vertex draws, the first vertex of a draw goes into the attribute offsets
+    glConfig.drawElementsBaseVertexAvailable = false;
     glConfig.uniformBufferAvailable = true;
     glConfig.gpuSkinningAvailable = true;
     glConfig.fragmentProgramAvailable = true;
-#if !defined(USE_VULKAN)
-    // GLAD defines generated symbols even for extensions the active driver lacks.
-    g_multiDrawIndirectAvailable = false;
-    R_PrintExtensionStatus(g_multiDrawIndirectAvailable, "GL_EXT_multi_draw_indirect");
-#endif
+
+	// optional extensions on top of GLES 3.0, every one of them has a core GLES 3.0 fallback
+	R_PrintExtensionStatus( glConfig.hasMSAAEXT, "GL_EXT_multisampled_render_to_texture" );
+	R_PrintExtensionStatus( GLAD_GL_EXT_buffer_storage != 0, "GL_EXT_buffer_storage" );
+	R_PrintExtensionStatus( GLAD_GL_EXT_discard_framebuffer != 0, "GL_EXT_discard_framebuffer" );
 #endif
 
 	// GL_ARB_seamless_cube_map
@@ -739,9 +704,17 @@ void idRenderBackend::Init()
 	//glConfig.extensions_string = ( const char* )glGetString( GL_EXTENSIONS );
 	//GL_CheckErrors();
 
-#ifdef ANDROID //karin: force setup OpenGLES3.2
-    glConfig.version_string = "320 es";
-	glConfig.shading_language_string = "320";
+#ifdef ANDROID
+	// the renderer and its shaders are GLES 3.0 / GLSL ES 3.00 on every device, whatever newer
+	// version the driver gives the context
+	idLib::Printf( "GLES driver      : %s, GLSL %s\n", glConfig.version_string != NULL ? glConfig.version_string : "?",
+				   glConfig.shading_language_string != NULL ? glConfig.shading_language_string : "?" );
+	if( glConfig.version_string == NULL || strstr( glConfig.version_string, "OpenGL ES 2." ) != NULL )
+	{
+		idLib::FatalError( "System doesn't support OpenGL ES 3.0" );
+	}
+	glConfig.version_string = "300 es";
+	glConfig.shading_language_string = "300";
 #endif
 
 	float glVersion = atof( idStr(glConfig.version_string).SubStr(0, 3) );
@@ -838,20 +811,12 @@ void idRenderBackend::Shutdown()
 {
 	cmdBufferPool.Shutdown();
 #if defined(ANDROID) && !defined(USE_VULKAN)
-    FlushMultiDrawBatch();
     if (gpuInstanceBuffer != 0)
     {
         GLuint buffer = (GLuint)gpuInstanceBuffer;
         glDeleteBuffers(1, &buffer);
         gpuInstanceBuffer = 0;
     }
-    if (g_multiDrawIndirectBuffer != 0)
-    {
-        glDeleteBuffers(1, &g_multiDrawIndirectBuffer);
-        g_multiDrawIndirectBuffer = 0;
-    }
-    g_multiDrawIndirectAvailable = false;
-    g_multiDrawCommands.clear();
 	// Delete PBOs and fences while the GLES context is still alive.
 	RB_ShutdownExposureReadback();
 	// the same for the streaming rings, they must not outlive the context in static destructors
@@ -883,61 +848,99 @@ void idRenderBackend::Shutdown()
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
 /*
-=============================
-idRenderBackend::FlushMultiDrawBatch
-=============================
+=============
+idRenderBackend::SetVertexAttribs
+
+GLES 3.0 has no base vertex draws (glDrawElementsBaseVertex is GLES 3.2): the attribute pointers
+start at the first vertex of the surface instead, its indexes count from there. The layout, the
+buffer and the offset are cached, consecutive draws of the same vertex range set nothing again,
+and only a new layout touches the enabled arrays.
+=============
 */
-void idRenderBackend::FlushMultiDrawBatch()
+void idRenderBackend::SetVertexAttribs( vertexLayoutType_t layout, unsigned int vertexBuffer, uintptr_t vertOffset )
 {
-    const size_t commandCount = g_multiDrawCommands.size();
-    if (commandCount == 0)
-    {
-        return;
-    }
+	if( vertexLayout == layout && currentVertexBuffer == vertexBuffer && currentVertOffset == vertOffset && r_useStateCaching.GetBool() )
+	{
+		return;
+	}
 
-    if (commandCount == 1 || !g_multiDrawIndirectAvailable
-        || glMultiDrawElementsIndirectEXT == NULL)
-    {
-        // A one-command batch is cheaper as a normal draw; retain the safe fallback.
-        for (size_t i = 0; i < commandCount; ++i)
-        {
-            const drawElementsIndirectCommand_t& command = g_multiDrawCommands[i];
-            glDrawElementsBaseVertex(GL_TRIANGLES, (GLsizei)command.count, GL_INDEX_TYPE,
-                (const void*)(uintptr_t)(command.firstIndex * sizeof(triIndex_t)), command.baseVertex);
-        }
-    }
-    else
-    {
-        if (g_multiDrawIndirectBuffer == 0)
-        {
-            glGenBuffers(1, &g_multiDrawIndirectBuffer);
-        }
-        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, g_multiDrawIndirectBuffer);
-        // Orphan old storage so queued commands don't overwrite data the GPU is reading.
-        glBufferData(GL_DRAW_INDIRECT_BUFFER,
-            (GLsizeiptr)(commandCount * sizeof(drawElementsIndirectCommand_t)),
-            g_multiDrawCommands.data(), GL_STREAM_DRAW);
-        glMultiDrawElementsIndirectEXT(GL_TRIANGLES, GL_INDEX_TYPE, NULL,
-            (GLsizei)commandCount, 0);
+	glBindBuffer( GL_ARRAY_BUFFER, vertexBuffer );
+	currentVertexBuffer = vertexBuffer;
 
-        ++g_multiDrawIndirectBatchCount;
-        g_multiDrawIndirectDrawCallsSaved += (int)commandCount - 1;
-        g_multiDrawIndirectSubmittedCommands += (int)commandCount;
-    }
+	if( vertexLayout != layout || !r_useStateCaching.GetBool() )
+	{
+		const bool drawVert = ( layout == LAYOUT_DRAW_VERT );
+		const bool skinned = ( layout == LAYOUT_DRAW_SHADOW_VERT_SKINNED );
 
-    g_multiDrawCommands.clear();
-    g_multiDrawVertexBuffer = 0;
-    g_multiDrawIndexBuffer = 0;
-    g_multiDrawBatchLayout = MDI_LAYOUT_NONE;
+		glEnableVertexAttribArray( PC_ATTRIB_INDEX_VERTEX );
+		if( drawVert )
+		{
+			glEnableVertexAttribArray( PC_ATTRIB_INDEX_NORMAL );
+			glEnableVertexAttribArray( PC_ATTRIB_INDEX_ST );
+			glEnableVertexAttribArray( PC_ATTRIB_INDEX_TANGENT );
+		}
+		else
+		{
+			glDisableVertexAttribArray( PC_ATTRIB_INDEX_NORMAL );
+			glDisableVertexAttribArray( PC_ATTRIB_INDEX_ST );
+			glDisableVertexAttribArray( PC_ATTRIB_INDEX_TANGENT );
+		}
+		if( drawVert || skinned )
+		{
+			glEnableVertexAttribArray( PC_ATTRIB_INDEX_COLOR );
+			glEnableVertexAttribArray( PC_ATTRIB_INDEX_COLOR2 );
+		}
+		else
+		{
+			glDisableVertexAttribArray( PC_ATTRIB_INDEX_COLOR );
+			glDisableVertexAttribArray( PC_ATTRIB_INDEX_COLOR2 );
+		}
+	}
+
+	switch( layout )
+	{
+		case LAYOUT_DRAW_VERT:
+			glVertexAttribPointer( PC_ATTRIB_INDEX_VERTEX, 3, GL_FLOAT, GL_FALSE, sizeof( idDrawVert ), ( void* )( vertOffset + DRAWVERT_XYZ_OFFSET ) );
+			glVertexAttribPointer( PC_ATTRIB_INDEX_NORMAL, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( vertOffset + DRAWVERT_NORMAL_OFFSET ) );
+			glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( vertOffset + DRAWVERT_COLOR_OFFSET ) );
+			glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( vertOffset + DRAWVERT_COLOR2_OFFSET ) );
+			glVertexAttribPointer( PC_ATTRIB_INDEX_ST, 2, GL_HALF_FLOAT, GL_TRUE, sizeof( idDrawVert ), ( void* )( vertOffset + DRAWVERT_ST_OFFSET ) );
+			glVertexAttribPointer( PC_ATTRIB_INDEX_TANGENT, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( vertOffset + DRAWVERT_TANGENT_OFFSET ) );
+			break;
+
+		case LAYOUT_DRAW_SHADOW_VERT:
+			glVertexAttribPointer( PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, sizeof( idShadowVert ), ( void* )( vertOffset + SHADOWVERT_XYZW_OFFSET ) );
+			break;
+
+		case LAYOUT_DRAW_SHADOW_VERT_SKINNED:
+			glVertexAttribPointer( PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, sizeof( idShadowVertSkinned ), ( void* )( vertOffset + SHADOWVERTSKINNED_XYZW_OFFSET ) );
+			glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idShadowVertSkinned ), ( void* )( vertOffset + SHADOWVERTSKINNED_COLOR_OFFSET ) );
+			glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idShadowVertSkinned ), ( void* )( vertOffset + SHADOWVERTSKINNED_COLOR2_OFFSET ) );
+			break;
+
+		default:
+			assert( !"SetVertexAttribs: bad layout" );
+			break;
+	}
+
+	vertexLayout = layout;
+	currentVertOffset = vertOffset;
 }
-#endif
 
 /*
 =============
-idRenderBackend::DrawElementsWithCounters
+idRenderBackend::BindIndexBuffer
 =============
 */
-#if defined(ANDROID) && !defined(USE_VULKAN)
+void idRenderBackend::BindIndexBuffer( unsigned int indexBuffer )
+{
+	if( currentIndexBuffer != indexBuffer || !r_useStateCaching.GetBool() )
+	{
+		glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, indexBuffer );
+		currentIndexBuffer = indexBuffer;
+	}
+}
+
 /*
 =============
 idRenderBackend::DrawWorldMergeRange
@@ -966,45 +969,14 @@ void idRenderBackend::DrawStaticIndexRange( unsigned int indexBuffer, int firstI
 		return;
 	}
 
-	FlushMultiDrawBatch();
-
 	idVertexBuffer* vertexBuffer = &vertexCache.staticData.vertexBuffer;
 
 	renderProgManager.CommitUniforms( glStateBits );
 
-	if( ( GLintptr )currentIndexBuffer != ( GLintptr )indexBuffer || !r_useStateCaching.GetBool() )
-	{
-		glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, indexBuffer );
-		currentIndexBuffer = indexBuffer;
-	}
+	BindIndexBuffer( indexBuffer );
 
 	// the indexes count from the first vertex of the static buffer
-	if( ( vertexLayout != LAYOUT_DRAW_VERT ) || ( ( GLintptr )currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) ||
-			!r_useStateCaching.GetBool() || ( !isGLES32Version() && currentVertOffset != 0 ) )
-	{
-		glBindBuffer( GL_ARRAY_BUFFER, ( GLintptr )vertexBuffer->GetAPIObject() );
-		currentVertexBuffer = ( GLintptr )vertexBuffer->GetAPIObject();
-
-		glEnableVertexAttribArray( PC_ATTRIB_INDEX_VERTEX );
-		glEnableVertexAttribArray( PC_ATTRIB_INDEX_NORMAL );
-		glEnableVertexAttribArray( PC_ATTRIB_INDEX_COLOR );
-		glEnableVertexAttribArray( PC_ATTRIB_INDEX_COLOR2 );
-		glEnableVertexAttribArray( PC_ATTRIB_INDEX_ST );
-		glEnableVertexAttribArray( PC_ATTRIB_INDEX_TANGENT );
-
-		glVertexAttribPointer( PC_ATTRIB_INDEX_VERTEX, 3, GL_FLOAT, GL_FALSE, sizeof( idDrawVert ), ( void* )( DRAWVERT_XYZ_OFFSET ) );
-		glVertexAttribPointer( PC_ATTRIB_INDEX_NORMAL, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_NORMAL_OFFSET ) );
-		glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_COLOR_OFFSET ) );
-		glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_COLOR2_OFFSET ) );
-		glVertexAttribPointer( PC_ATTRIB_INDEX_ST, 2, GL_HALF_FLOAT, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_ST_OFFSET ) );
-		glVertexAttribPointer( PC_ATTRIB_INDEX_TANGENT, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_TANGENT_OFFSET ) );
-
-		vertexLayout = LAYOUT_DRAW_VERT;
-		if( !isGLES32Version() )
-		{
-			currentVertOffset = 0;
-		}
-	}
+	SetVertexAttribs( LAYOUT_DRAW_VERT, ( unsigned int )vertexBuffer->GetAPIObject(), 0 );
 
 	glDrawElements( GL_TRIANGLES, numIndexes, GL_UNSIGNED_INT, ( const void* )( ( uintptr_t )firstIndex * sizeof( uint32 ) ) );
 
@@ -1256,35 +1228,15 @@ static void R_ShutdownLightBatchIndexStream()
 }
 #endif
 
-#if defined(ANDROID) && !defined(USE_VULKAN)
-void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf, const gpuInstanceData_t* instances, int instanceCount )
-#else
-void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
-#endif
-{
-#if defined(ANDROID) && !defined(USE_VULKAN)
-	// the first surface of a merged world group draws the whole group
-	if( worldMergeSurf != NULL && surf == worldMergeSurf )
-	{
-		DrawWorldMergeRange( worldMergeFirstIndex, worldMergeNumIndexes );
-		return;
-	}
+/*
+=============
+R_GetDrawBuffers
 
-    const bool useInstancing = (instances != NULL && instanceCount > 1);
-    const bool useMultiDraw = g_multiDrawIndirectAvailable
-        && r_useMultiDrawIndirect.GetBool()
-        && isGLES32Version()
-        && !r_singleTriangle.GetBool()
-        && !surf->jointCache
-        && !useInstancing;
-    if (!useMultiDraw)
-    {
-        FlushMultiDrawBatch();
-    }
-#endif
-	// get vertex buffer
-	const vertCacheHandle_t vbHandle = surf->ambientCache;
-	idVertexBuffer* vertexBuffer;
+The vertex and the index buffer of a vertex cache handle pair, NULL when the frame data is stale
+=============
+*/
+static bool R_GetDrawBuffers( vertCacheHandle_t vbHandle, vertCacheHandle_t ibHandle, idVertexBuffer*& vertexBuffer, idIndexBuffer*& indexBuffer, const char* caller )
+{
 	if( vertexCache.CacheIsStatic( vbHandle ) )
 	{
 		vertexBuffer = &vertexCache.staticData.vertexBuffer;
@@ -1294,16 +1246,12 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 		const uint64 frameNum = ( int )( vbHandle >> VERTCACHE_FRAME_SHIFT ) & VERTCACHE_FRAME_MASK;
 		if( frameNum != ( ( vertexCache.currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )
 		{
-			idLib::Warning( "RB_DrawElementsWithCounters, vertexBuffer == NULL" );
-			return;
+			idLib::Warning( "%s, vertexBuffer == NULL", caller );
+			return false;
 		}
 		vertexBuffer = &vertexCache.frameData[vertexCache.drawListNum].vertexBuffer;
 	}
-	const int vertOffset = ( int )( vbHandle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
-	
-	// get index buffer
-	const vertCacheHandle_t ibHandle = surf->indexCache;
-	idIndexBuffer* indexBuffer;
+
 	if( vertexCache.CacheIsStatic( ibHandle ) )
 	{
 		indexBuffer = &vertexCache.staticData.indexBuffer;
@@ -1313,33 +1261,177 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 		const uint64 frameNum = ( int )( ibHandle >> VERTCACHE_FRAME_SHIFT ) & VERTCACHE_FRAME_MASK;
 		if( frameNum != ( ( vertexCache.currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )
 		{
-			idLib::Warning( "RB_DrawElementsWithCounters, indexBuffer == NULL" );
-			return;
+			idLib::Warning( "%s, indexBuffer == NULL", caller );
+			return false;
 		}
 		indexBuffer = &vertexCache.frameData[vertexCache.drawListNum].indexBuffer;
 	}
-	// RB: 64 bit fixes, changed int to GLintptr
-	const GLintptr indexOffset = ( GLintptr )( ibHandle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
-	// RB end
+	return true;
+}
+
+/*
+=============
+idRenderBackend::DrawElementsWithCounters
+=============
+*/
 #if defined(ANDROID) && !defined(USE_VULKAN)
-    if (useMultiDraw && !g_multiDrawCommands.empty()
-        && (g_multiDrawVertexBuffer != (GLuint)vertexBuffer->GetAPIObject()
-            || g_multiDrawIndexBuffer != (GLuint)indexBuffer->GetAPIObject()
-            || g_multiDrawBatchLayout != MDI_LAYOUT_DRAW_VERT
-            || vertexLayout != LAYOUT_DRAW_VERT))
-    {
-        FlushMultiDrawBatch();
-    }
-#endif
-	
+// the per instance attributes of the USE_GPU_INSTANCING programs, see gpuInstanceData_t
+static const GLuint instanceMVPAttribs[4] = { 1, 5, 6, 7 };
+static const GLuint instanceModelViewAttribs[4] = { 10, 11, 12, 13 };
+static const GLuint instanceLocalViewOriginAttrib = 14;
+static const GLuint instanceLocalLightOriginAttrib = 15;
+
+/*
+=============
+R_UploadInstances
+
+The per instance data into the persistent ring, or into a buffer of its own orphaned for every draw.
+Leaves the buffer bound to GL_ARRAY_BUFFER.
+=============
+*/
+static void R_UploadInstances( const gpuInstanceData_t* instances, int instanceCount, unsigned int& fallbackBuffer, GLuint& instanceBuffer, GLintptr& instanceOffset )
+{
+	const GLsizeiptr instanceBytes = sizeof( gpuInstanceData_t ) * instanceCount;
+	if( !R_StreamInstanceData( instances, instanceBytes, instanceBuffer, instanceOffset ) )
+	{
+		// no persistent mapping: a fresh allocation per draw
+		if( fallbackBuffer == 0 )
+		{
+			GLuint buffer = 0;
+			glGenBuffers( 1, &buffer );
+			fallbackBuffer = buffer;
+		}
+		instanceBuffer = ( GLuint )fallbackBuffer;
+		instanceOffset = 0;
+		glBindBuffer( GL_ARRAY_BUFFER, instanceBuffer );
+		glBufferData( GL_ARRAY_BUFFER, instanceBytes, instances, GL_STREAM_DRAW );
+	}
+	glBindBuffer( GL_ARRAY_BUFFER, instanceBuffer );
+}
+
+static void R_InstanceAttrib( GLuint attrib, GLintptr instanceOffset, int firstFloat )
+{
+	glEnableVertexAttribArray( attrib );
+	glVertexAttribPointer( attrib, 4, GL_FLOAT, GL_FALSE, sizeof( gpuInstanceData_t ), ( const void* )( instanceOffset + firstFloat * sizeof( float ) ) );
+	glVertexAttribDivisor( attrib, 1 );
+}
+
+static void R_InstanceAttribOff( GLuint attrib )
+{
+	glVertexAttribDivisor( attrib, 0 );
+	glDisableVertexAttribArray( attrib );
+}
+
+void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf, const gpuInstanceData_t* instances, int instanceCount )
+{
+	// the first surface of a merged world group draws the whole group
+	if( worldMergeSurf != NULL && surf == worldMergeSurf )
+	{
+		DrawWorldMergeRange( worldMergeFirstIndex, worldMergeNumIndexes );
+		return;
+	}
+
+	const bool useInstancing = ( instances != NULL && instanceCount > 1 );
+
+	idVertexBuffer* vertexBuffer;
+	idIndexBuffer* indexBuffer;
+	if( !R_GetDrawBuffers( surf->ambientCache, surf->indexCache, vertexBuffer, indexBuffer, "RB_DrawElementsWithCounters" ) )
+	{
+		return;
+	}
+	const uintptr_t vertOffset = ( uintptr_t )( ( surf->ambientCache >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK );
+	const GLintptr indexOffset = ( GLintptr )( ( surf->indexCache >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK );
+
+	RENDERLOG_PRINTF( "Binding Buffers: %p:%i %p:%i\n", vertexBuffer, ( int )vertOffset, indexBuffer, ( int )indexOffset );
+
+	if( surf->jointCache )
+	{
+		// DG: this happens all the time in the erebus1 map with blendlight.vfp,
+		// so don't call assert (through verify) here until it's fixed (if fixable)
+		// RB: it would require an additional blend light skinned shader
+		if( !renderProgManager.ShaderUsesJoints() )
+		{
+			return;
+		}
+
+		idUniformBuffer jointBuffer;
+		if( !vertexCache.GetJointBuffer( surf->jointCache, &jointBuffer ) )
+		{
+			idLib::Warning( "RB_DrawElementsWithCounters, jointBuffer == NULL" );
+			return;
+		}
+		assert( ( jointBuffer.GetOffset() & ( glConfig.uniformBufferOffsetAlignment - 1 ) ) == 0 );
+		glBindBufferRange( GL_UNIFORM_BUFFER, 0, jointBuffer.GetAPIObject(), jointBuffer.GetOffset(), jointBuffer.GetSize() );
+	}
+	else if( !verify( !renderProgManager.ShaderUsesJoints() || renderProgManager.ShaderHasOptionalSkinning() ) )
+	{
+		return;
+	}
+
+	renderProgManager.CommitUniforms( glStateBits );
+
+	BindIndexBuffer( ( unsigned int )indexBuffer->GetAPIObject() );
+	SetVertexAttribs( LAYOUT_DRAW_VERT, ( unsigned int )vertexBuffer->GetAPIObject(), vertOffset );
+
+	const GLsizei numIndexes = r_singleTriangle.GetBool() ? 3 : surf->numIndexes;
+	if( useInstancing )
+	{
+		GLuint instanceBuffer = 0;
+		GLintptr instanceOffset = 0;
+		R_UploadInstances( instances, instanceCount, gpuInstanceBuffer, instanceBuffer, instanceOffset );
+		for( int row = 0; row < 4; ++row )
+		{
+			R_InstanceAttrib( instanceMVPAttribs[row], instanceOffset, row * 4 );
+			R_InstanceAttrib( instanceModelViewAttribs[row], instanceOffset, 16 + row * 4 );
+		}
+		R_InstanceAttrib( instanceLocalViewOriginAttrib, instanceOffset, 32 );
+		R_InstanceAttrib( instanceLocalLightOriginAttrib, instanceOffset, 36 );
+
+		glDrawElementsInstanced( GL_TRIANGLES, numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset, instanceCount );
+
+		for( int row = 0; row < 4; ++row )
+		{
+			R_InstanceAttribOff( instanceMVPAttribs[row] );
+			R_InstanceAttribOff( instanceModelViewAttribs[row] );
+		}
+		R_InstanceAttribOff( instanceLocalViewOriginAttrib );
+		R_InstanceAttribOff( instanceLocalLightOriginAttrib );
+		// the vertex attributes keep pointing into the vertex buffer, only the binding changed
+		glBindBuffer( GL_ARRAY_BUFFER, ( GLuint )vertexBuffer->GetAPIObject() );
+	}
+	else
+	{
+		glDrawElements( GL_TRIANGLES, numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset );
+	}
+
+	const int numDrawn = surf->numIndexes * ( useInstancing ? instanceCount : 1 );
+	pc.c_drawElements++;
+	pc.c_drawIndexes += numDrawn;
+	pc.c_drawsByCategory[drawCategory]++;
+	pc.c_indexesByCategory[drawCategory] += numDrawn;
+}
+#else
+void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
+{
+	idVertexBuffer* vertexBuffer;
+	idIndexBuffer* indexBuffer;
+	if( !R_GetDrawBuffers( surf->ambientCache, surf->indexCache, vertexBuffer, indexBuffer, "RB_DrawElementsWithCounters" ) )
+	{
+		return;
+	}
+	const int vertOffset = ( int )( surf->ambientCache >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
+	// RB: 64 bit fixes, changed int to GLintptr
+	const GLintptr indexOffset = ( GLintptr )( surf->indexCache >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
+	// RB end
+
 	RENDERLOG_PRINTF( "Binding Buffers: %p:%i %p:%i\n", vertexBuffer, vertOffset, indexBuffer, indexOffset );
-	
+
 	if( surf->jointCache )
 	{
 		// DG: this happens all the time in the erebus1 map with blendlight.vfp,
 		// so don't call assert (through verify) here until it's fixed (if fixable)
 		// else the game crashes on linux when using debug builds
-		
+
 		// FIXME: fix this properly if possible?
 		// RB: yes but it would require an additional blend light skinned shader
 		//if( !verify( renderProgManager.ShaderUsesJoints() ) )
@@ -1356,237 +1448,104 @@ void idRenderBackend::DrawElementsWithCounters( const drawSurf_t* surf )
 			return;
 		}
 	}
-	
-	if (surf->jointCache)
+
+	if( surf->jointCache )
 	{
 		idUniformBuffer jointBuffer;
-		if (!vertexCache.GetJointBuffer(surf->jointCache, &jointBuffer))
+		if( !vertexCache.GetJointBuffer( surf->jointCache, &jointBuffer ) )
 		{
-			idLib::Warning("RB_DrawElementsWithCounters, jointBuffer == NULL");
+			idLib::Warning( "RB_DrawElementsWithCounters, jointBuffer == NULL" );
 			return;
 		}
-		assert((jointBuffer.GetOffset() & (glConfig.uniformBufferOffsetAlignment - 1)) == 0);
+		assert( ( jointBuffer.GetOffset() & ( glConfig.uniformBufferOffsetAlignment - 1 ) ) == 0 );
 
 		// RB: 64 bit fixes, changed GLuint to GLintptr
 		const GLintptr ubo = jointBuffer.GetAPIObject();
 		// RB end
 
-		glBindBufferRange(GL_UNIFORM_BUFFER, 0, ubo, jointBuffer.GetOffset(), jointBuffer.GetSize());
+		glBindBufferRange( GL_UNIFORM_BUFFER, 0, ubo, jointBuffer.GetOffset(), jointBuffer.GetSize() );
 	}
 
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    // Uniform writes flush before changing values, so unchanged uniforms can be
-    // uploaded once and shared by all commands in the pending batch.
-    if (!(useMultiDraw && !g_multiDrawCommands.empty()))
-    {
-        renderProgManager.CommitUniforms(glStateBits);
-    }
-#else
-	renderProgManager.CommitUniforms(glStateBits);
-#endif
-#ifndef ANDROID
-	if (glConfig.directStateAccess) {		
-		// RB: 64 bit fixes, changed GLuint to GLintptr
-		if ((GLintptr)currentIndexBuffer != (GLintptr)indexBuffer->GetAPIObject() || !r_useStateCaching.GetBool())
-		{
-			glVertexArrayElementBuffer(glConfig.global_vao, indexBuffer->GetAPIObject());
-			currentIndexBuffer = (GLintptr)indexBuffer->GetAPIObject();
-		}
+	renderProgManager.CommitUniforms( glStateBits );
 
-		if ((vertexLayout != LAYOUT_DRAW_VERT) || ((GLintptr)currentVertexBuffer != (GLintptr)vertexBuffer->GetAPIObject()) || !r_useStateCaching.GetBool())
-		{
-			glVertexArrayVertexBuffer(glConfig.global_vao, 0, vertexBuffer->GetAPIObject(), 0, sizeof(idDrawVert));
-			currentVertexBuffer = (GLintptr)vertexBuffer->GetAPIObject();
-
-			glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX);
-			glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_NORMAL);
-			glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR);
-			glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2);
-			glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_ST);
-			glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_TANGENT);
-
-			glVertexArrayAttribFormat(glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX, 3, GL_FLOAT, GL_FALSE, DRAWVERT_XYZ_OFFSET);
-			glVertexArrayAttribFormat(glConfig.global_vao, PC_ATTRIB_INDEX_NORMAL, 4, GL_UNSIGNED_BYTE, GL_TRUE, DRAWVERT_NORMAL_OFFSET);
-			glVertexArrayAttribFormat(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, DRAWVERT_COLOR_OFFSET);
-			glVertexArrayAttribFormat(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, DRAWVERT_COLOR2_OFFSET);
-			glVertexArrayAttribFormat(glConfig.global_vao, PC_ATTRIB_INDEX_ST, 2, GL_HALF_FLOAT, GL_TRUE, DRAWVERT_ST_OFFSET);
-			glVertexArrayAttribFormat(glConfig.global_vao, PC_ATTRIB_INDEX_TANGENT, 4, GL_UNSIGNED_BYTE, GL_TRUE, DRAWVERT_TANGENT_OFFSET);
-
-			glVertexArrayAttribBinding(glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX, 0);
-			glVertexArrayAttribBinding(glConfig.global_vao, PC_ATTRIB_INDEX_NORMAL, 0);
-			glVertexArrayAttribBinding(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR, 0);
-			glVertexArrayAttribBinding(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2, 0);
-			glVertexArrayAttribBinding(glConfig.global_vao, PC_ATTRIB_INDEX_ST, 0);
-			glVertexArrayAttribBinding(glConfig.global_vao, PC_ATTRIB_INDEX_TANGENT, 0);
-
-			vertexLayout = LAYOUT_DRAW_VERT;
-		}
-		glBindVertexArray(glConfig.global_vao);
-	}
-	else
-#endif
+	if( glConfig.directStateAccess )
 	{
 		// RB: 64 bit fixes, changed GLuint to GLintptr
-		if ((GLintptr)currentIndexBuffer != (GLintptr)indexBuffer->GetAPIObject() ||
-        !r_useStateCaching.GetBool() || (!isGLES32Version() && currentVertOffset != vertOffset))
+		if( ( GLintptr )currentIndexBuffer != ( GLintptr )indexBuffer->GetAPIObject() || !r_useStateCaching.GetBool() )
 		{
-			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLintptr)indexBuffer->GetAPIObject());
-			currentIndexBuffer = (GLintptr)indexBuffer->GetAPIObject();
+			glVertexArrayElementBuffer( glConfig.global_vao, indexBuffer->GetAPIObject() );
+			currentIndexBuffer = ( GLintptr )indexBuffer->GetAPIObject();
 		}
 
-		if ((vertexLayout != LAYOUT_DRAW_VERT) || ((GLintptr)currentVertexBuffer != (GLintptr)vertexBuffer->GetAPIObject()) ||
-        !r_useStateCaching.GetBool() || (!isGLES32Version() && currentVertOffset != vertOffset))
+		if( ( vertexLayout != LAYOUT_DRAW_VERT ) || ( ( GLintptr )currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) || !r_useStateCaching.GetBool() )
 		{
-            glBindBuffer(GL_ARRAY_BUFFER, (GLintptr)vertexBuffer->GetAPIObject());
-			currentVertexBuffer = (GLintptr)vertexBuffer->GetAPIObject();
+			glVertexArrayVertexBuffer( glConfig.global_vao, 0, vertexBuffer->GetAPIObject(), 0, sizeof( idDrawVert ) );
+			currentVertexBuffer = ( GLintptr )vertexBuffer->GetAPIObject();
 
-			glEnableVertexAttribArray(PC_ATTRIB_INDEX_VERTEX);
-			glEnableVertexAttribArray(PC_ATTRIB_INDEX_NORMAL);
-			glEnableVertexAttribArray(PC_ATTRIB_INDEX_COLOR);
-			glEnableVertexAttribArray(PC_ATTRIB_INDEX_COLOR2);
-			glEnableVertexAttribArray(PC_ATTRIB_INDEX_ST);
-			glEnableVertexAttribArray(PC_ATTRIB_INDEX_TANGENT);
+			glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX );
+			glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_NORMAL );
+			glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR );
+			glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2 );
+			glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_ST );
+			glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_TANGENT );
 
-			if (!isGLES32Version()){
-				glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 3, GL_FLOAT, GL_FALSE, sizeof(idDrawVert), (void*)(vertOffset + DRAWVERT_XYZ_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_NORMAL, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idDrawVert), (void*)(vertOffset + DRAWVERT_NORMAL_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idDrawVert), (void*)(vertOffset + DRAWVERT_COLOR_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idDrawVert), (void*)(vertOffset + DRAWVERT_COLOR2_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_ST, 2, GL_HALF_FLOAT, GL_TRUE, sizeof(idDrawVert), (void*)(vertOffset + DRAWVERT_ST_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_TANGENT, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(idDrawVert), (void*)(vertOffset + DRAWVERT_TANGENT_OFFSET));
-			} else {
-				glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 3, GL_FLOAT, GL_FALSE,
-									  sizeof(idDrawVert), (void *) (DRAWVERT_XYZ_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_NORMAL, 4, GL_UNSIGNED_BYTE, GL_TRUE,
-									  sizeof(idDrawVert), (void *) (DRAWVERT_NORMAL_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE,
-									  sizeof(idDrawVert), (void *) (DRAWVERT_COLOR_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE,
-									  sizeof(idDrawVert), (void *) (DRAWVERT_COLOR2_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_ST, 2, GL_HALF_FLOAT, GL_TRUE,
-									  sizeof(idDrawVert), (void *) (DRAWVERT_ST_OFFSET));
-				glVertexAttribPointer(PC_ATTRIB_INDEX_TANGENT, 4, GL_UNSIGNED_BYTE, GL_TRUE,
-									  sizeof(idDrawVert), (void *) (DRAWVERT_TANGENT_OFFSET));
-			}
+			glVertexArrayAttribFormat( glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX, 3, GL_FLOAT, GL_FALSE, DRAWVERT_XYZ_OFFSET );
+			glVertexArrayAttribFormat( glConfig.global_vao, PC_ATTRIB_INDEX_NORMAL, 4, GL_UNSIGNED_BYTE, GL_TRUE, DRAWVERT_NORMAL_OFFSET );
+			glVertexArrayAttribFormat( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, DRAWVERT_COLOR_OFFSET );
+			glVertexArrayAttribFormat( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, DRAWVERT_COLOR2_OFFSET );
+			glVertexArrayAttribFormat( glConfig.global_vao, PC_ATTRIB_INDEX_ST, 2, GL_HALF_FLOAT, GL_TRUE, DRAWVERT_ST_OFFSET );
+			glVertexArrayAttribFormat( glConfig.global_vao, PC_ATTRIB_INDEX_TANGENT, 4, GL_UNSIGNED_BYTE, GL_TRUE, DRAWVERT_TANGENT_OFFSET );
+
+			glVertexArrayAttribBinding( glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX, 0 );
+			glVertexArrayAttribBinding( glConfig.global_vao, PC_ATTRIB_INDEX_NORMAL, 0 );
+			glVertexArrayAttribBinding( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR, 0 );
+			glVertexArrayAttribBinding( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2, 0 );
+			glVertexArrayAttribBinding( glConfig.global_vao, PC_ATTRIB_INDEX_ST, 0 );
+			glVertexArrayAttribBinding( glConfig.global_vao, PC_ATTRIB_INDEX_TANGENT, 0 );
+
 			vertexLayout = LAYOUT_DRAW_VERT;
-            if (!isGLES32Version()) {
-                currentVertOffset = vertOffset;
-            }
-        }
+		}
+		glBindVertexArray( glConfig.global_vao );
+	}
+	else
+	{
+		// RB: 64 bit fixes, changed GLuint to GLintptr
+		if( ( GLintptr )currentIndexBuffer != ( GLintptr )indexBuffer->GetAPIObject() || !r_useStateCaching.GetBool() )
+		{
+			glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, ( GLintptr )indexBuffer->GetAPIObject() );
+			currentIndexBuffer = ( GLintptr )indexBuffer->GetAPIObject();
+		}
+
+		if( ( vertexLayout != LAYOUT_DRAW_VERT ) || ( ( GLintptr )currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) || !r_useStateCaching.GetBool() )
+		{
+			glBindBuffer( GL_ARRAY_BUFFER, ( GLintptr )vertexBuffer->GetAPIObject() );
+			currentVertexBuffer = ( GLintptr )vertexBuffer->GetAPIObject();
+
+			glEnableVertexAttribArray( PC_ATTRIB_INDEX_VERTEX );
+			glEnableVertexAttribArray( PC_ATTRIB_INDEX_NORMAL );
+			glEnableVertexAttribArray( PC_ATTRIB_INDEX_COLOR );
+			glEnableVertexAttribArray( PC_ATTRIB_INDEX_COLOR2 );
+			glEnableVertexAttribArray( PC_ATTRIB_INDEX_ST );
+			glEnableVertexAttribArray( PC_ATTRIB_INDEX_TANGENT );
+
+			glVertexAttribPointer( PC_ATTRIB_INDEX_VERTEX, 3, GL_FLOAT, GL_FALSE, sizeof( idDrawVert ), ( void* )( DRAWVERT_XYZ_OFFSET ) );
+			glVertexAttribPointer( PC_ATTRIB_INDEX_NORMAL, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_NORMAL_OFFSET ) );
+			glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_COLOR_OFFSET ) );
+			glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_COLOR2_OFFSET ) );
+			glVertexAttribPointer( PC_ATTRIB_INDEX_ST, 2, GL_HALF_FLOAT, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_ST_OFFSET ) );
+			glVertexAttribPointer( PC_ATTRIB_INDEX_TANGENT, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idDrawVert ), ( void* )( DRAWVERT_TANGENT_OFFSET ) );
+
+			vertexLayout = LAYOUT_DRAW_VERT;
+		}
 	}
 	// RB end
-#if defined(ANDROID) && !defined(USE_VULKAN)
-	const GLuint mvpAttribs[4] = { 1, 5, 6, 7 };
-	const GLuint modelViewAttribs[4] = { 10, 11, 12, 13 };
-	const GLuint instanceAttribs[10] = { 1, 5, 6, 7, 10, 11, 12, 13, 14, 15 };
-	if (useInstancing)
-	{
-		const GLsizeiptr instanceBytes = sizeof(gpuInstanceData_t) * instanceCount;
-		GLuint instanceBuffer = 0;
-		GLintptr instanceOffset = 0;
-		if (!R_StreamInstanceData(instances, instanceBytes, instanceBuffer, instanceOffset))
-		{
-			// no persistent mapping: a fresh allocation per draw, as before
-			if (gpuInstanceBuffer == 0)
-			{
-				GLuint buffer = 0;
-				glGenBuffers(1, &buffer);
-				gpuInstanceBuffer = buffer;
-			}
-			instanceBuffer = (GLuint)gpuInstanceBuffer;
-			instanceOffset = 0;
-			glBindBuffer(GL_ARRAY_BUFFER, instanceBuffer);
-			glBufferData(GL_ARRAY_BUFFER, instanceBytes, instances, GL_STREAM_DRAW);
-		}
-		glBindBuffer(GL_ARRAY_BUFFER, instanceBuffer);
-		const GLsizei stride = sizeof(gpuInstanceData_t);
-		for (int row = 0; row < 4; ++row)
-		{
-			const GLuint mvpAttrib = mvpAttribs[row];
-			const GLuint modelViewAttrib = modelViewAttribs[row];
-			glEnableVertexAttribArray(mvpAttrib);
-			glVertexAttribPointer(mvpAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(instanceOffset + row * 4 * sizeof(float)));
-			glVertexAttribDivisor(mvpAttrib, 1);
-			glEnableVertexAttribArray(modelViewAttrib);
-			glVertexAttribPointer(modelViewAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(instanceOffset + 16 * sizeof(float) + row * 4 * sizeof(float)));
-			glVertexAttribDivisor(modelViewAttrib, 1);
-		}
-		glEnableVertexAttribArray(14);
-		glVertexAttribPointer(14, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(instanceOffset + 32 * sizeof(float)));
-		glVertexAttribDivisor(14, 1);
-		glEnableVertexAttribArray(15);
-		glVertexAttribPointer(15, 4, GL_FLOAT, GL_FALSE, stride, (const void*)(instanceOffset + 36 * sizeof(float)));
-		glVertexAttribDivisor(15, 1);
-	}
-    if (useMultiDraw)
-    {
-        drawElementsIndirectCommand_t command;
-        command.count = (GLuint)surf->numIndexes;
-        command.instanceCount = 1;
-        command.firstIndex = (GLuint)(indexOffset / sizeof(triIndex_t));
-        command.baseVertex = (GLint)(vertOffset / sizeof(idDrawVert));
-        // EXT_base_instance is optional, so the reserved field must remain zero.
-        command.baseInstance = 0;
-        g_multiDrawCommands.push_back(command);
-        if (g_multiDrawCommands.size() == 1)
-        {
-            g_multiDrawVertexBuffer = (GLuint)vertexBuffer->GetAPIObject();
-            g_multiDrawIndexBuffer = (GLuint)indexBuffer->GetAPIObject();
-            g_multiDrawBatchLayout = MDI_LAYOUT_DRAW_VERT;
-        }
-        pc.c_drawElements++;
-        pc.c_drawIndexes += surf->numIndexes;
-        pc.c_drawsByCategory[drawCategory]++;
-        pc.c_indexesByCategory[drawCategory] += surf->numIndexes;
-        if (g_multiDrawCommands.size() >= MAX_GLES_MDI_BATCH_COMMANDS)
-        {
-            FlushMultiDrawBatch();
-        }
-        return;
-    }
-	if (useInstancing)
-	{
-		glDrawElementsInstancedBaseVertex(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
-			GL_INDEX_TYPE, (triIndex_t*)indexOffset, instanceCount, vertOffset / sizeof(idDrawVert));
-	}
-	else if (!isGLES32Version())
-	{
-		glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes, GL_INDEX_TYPE, (triIndex_t*)indexOffset);
-	}
-	else
-	{
-		glDrawElementsBaseVertex(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
-			GL_INDEX_TYPE, (triIndex_t*)indexOffset, vertOffset / sizeof(idDrawVert));
-	}
-	if (useInstancing)
-	{
-		for (int i = 0; i < 10; ++i)
-		{
-			const GLuint attrib = instanceAttribs[i];
-			glVertexAttribDivisor(attrib, 0);
-			glDisableVertexAttribArray(attrib);
-		}
-		glBindBuffer(GL_ARRAY_BUFFER, (GLuint)vertexBuffer->GetAPIObject());
-	}
-	pc.c_drawElements++;
-	pc.c_drawIndexes += surf->numIndexes * (useInstancing ? instanceCount : 1);
-	pc.c_drawsByCategory[drawCategory]++;
-	pc.c_indexesByCategory[drawCategory] += surf->numIndexes * (useInstancing ? instanceCount : 1);
-#else
-	if (!isGLES32Version())
-	{
-		glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
-			GL_INDEX_TYPE, (triIndex_t*)indexOffset);
-	}
-	else
-	{
-		glDrawElementsBaseVertex(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
-			GL_INDEX_TYPE, (triIndex_t*)indexOffset, vertOffset / sizeof(idDrawVert));
-	}
+
+	glDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : surf->numIndexes,
+							  GL_INDEX_TYPE, ( triIndex_t* )indexOffset, vertOffset / sizeof( idDrawVert ) );
 	pc.c_drawElements++;
 	pc.c_drawIndexes += surf->numIndexes;
-#endif
 }
+#endif
 
 
 /*
@@ -1604,12 +1563,6 @@ idRenderBackend::GL_StartFrame
 */
 void idRenderBackend::GL_StartFrame()
 {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    FlushMultiDrawBatch();
-    g_multiDrawIndirectBatchCount = 0;
-    g_multiDrawIndirectDrawCallsSaved = 0;
-    g_multiDrawIndirectSubmittedCommands = 0;
-#endif
 	if (gEnableGLSynchronization && glConfig.syncAvailable && glIsSync(renderSync[swapIndex]))
 	{
 		const auto glSync = renderSync[swapIndex];
@@ -1642,17 +1595,6 @@ idRenderBackend::GL_EndFrame
 */
 void idRenderBackend::GL_EndFrame()
 {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    FlushMultiDrawBatch();
-    if (r_showMultiDrawIndirectStats.GetBool())
-    {
-        idLib::Printf("GLES MDI: available=%d, batches=%d, submitted draws=%d, draw calls saved=%d\n",
-            g_multiDrawIndirectAvailable ? 1 : 0,
-            g_multiDrawIndirectBatchCount,
-            g_multiDrawIndirectSubmittedCommands,
-            g_multiDrawIndirectDrawCallsSaved);
-    }
-#endif
 	// Fix for the steam overlay not showing up while in game without Shell/Debug/Console/Menu also rendering
 	glColorMask( 1, 1, 1, 1 );
 	
@@ -1669,9 +1611,6 @@ may touch, including the editor.
 */
 void idRenderBackend::GL_SetDefaultState()
 {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    FlushMultiDrawBatch();
-#endif
 	RENDERLOG_PRINTF( "--- GL_SetDefaultState ---\n" );
 
 #ifndef ANDROID
@@ -1687,6 +1626,9 @@ void idRenderBackend::GL_SetDefaultState()
 	currentIndexBuffer = 0;
 	currentFramebuffer = 0;
 	vertexLayout = LAYOUT_UNKNOWN;
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	currentVertOffset = ~( uintptr_t )0;
+#endif
 	polyOfsScale = 0.0f;
 	polyOfsBias = 0.0f;
 	glStateBits = 0;
@@ -1770,9 +1712,6 @@ void idRenderBackend::GL_State( uint64 stateBits, bool forceGlState )
 	{
 		return;
 	}
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    FlushMultiDrawBatch();
-#endif
 	
 	//
 	// culling
@@ -2197,9 +2136,6 @@ idRenderBackend::GL_Scissor
 */
 void idRenderBackend::GL_Scissor( int x /* left*/, int y /* bottom */, int w, int h )
 {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    FlushMultiDrawBatch();
-#endif
 	glScissor( x, y, w, h );
 }
 
@@ -2210,9 +2146,6 @@ idRenderBackend::GL_Viewport
 */
 void idRenderBackend::GL_Viewport( int x /* left */, int y /* bottom */, int w, int h )
 {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    FlushMultiDrawBatch();
-#endif
 	glViewport( x, y, w, h );
 }
 
@@ -2223,12 +2156,6 @@ idRenderBackend::GL_PolygonOffset
 */
 void idRenderBackend::GL_PolygonOffset( float scale, float bias )
 {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    if (polyOfsScale != scale || polyOfsBias != bias)
-    {
-        FlushMultiDrawBatch();
-    }
-#endif
 	polyOfsScale = scale;
 	polyOfsBias = bias;
 	
@@ -2285,9 +2212,6 @@ idRenderBackend::GL_Clear
 */
 void idRenderBackend::GL_Clear( bool color, bool depth, bool stencil, byte stencilValue, float r, float g, float b, float a, bool clearHDR )
 {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    FlushMultiDrawBatch();
-#endif
 	int clearFlags = 0;
 	if( color )
 	{
@@ -2429,10 +2353,8 @@ void idRenderBackend::CheckCVars()
 	}
 
 #ifndef ANDROID
+	// GLES has no GL_MULTISAMPLE switch: a multisampled surface or render target always resolves
 	if( r_antiAliasing.IsModified() )
-#else
-	if( r_antiAliasing.IsModified() && (glConfig.hasMSAAEXT || isGLES32Version()))
-#endif
 	{
 		switch( r_antiAliasing.GetInteger() )
 		{
@@ -2450,7 +2372,8 @@ void idRenderBackend::CheckCVars()
 				break;
 		}
 	}
-	
+#endif
+
 	if( r_useHDR.IsModified() || r_useHalfLambertLighting.IsModified() )
 	{
 		glConfig.forceGLSLGeneration = true;
@@ -2515,94 +2438,25 @@ idRenderBackend::DrawStencilShadowPass
 #if defined(ANDROID) && !defined(USE_VULKAN)
 void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass,
 		const gpuInstanceData_t* instances, int instanceCount )
-#else
-void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass )
-#endif
 {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    const bool useInstancing = instances != NULL && instanceCount > 1 && !drawSurf->jointCache;
-    const bool useMultiDrawShadow = g_multiDrawIndirectAvailable
-        && r_useMultiDrawIndirect.GetBool()
-        && isGLES32Version()
-        && !r_singleTriangle.GetBool()
-        && !drawSurf->jointCache
-        && !useInstancing
-        && (renderZPass || !r_useStencilShadowPreload.GetBool());
-    if (!useMultiDrawShadow)
-    {
-        FlushMultiDrawBatch();
-    }
-#endif
-	// get vertex buffer
-	const vertCacheHandle_t vbHandle = drawSurf->shadowCache;
+	const bool useInstancing = instances != NULL && instanceCount > 1 && !drawSurf->jointCache;
+
 	idVertexBuffer* vertexBuffer;
-	if( vertexCache.CacheIsStatic( vbHandle ) )
-	{
-		vertexBuffer = &vertexCache.staticData.vertexBuffer;
-	}
-	else
-	{
-		const uint64 frameNum = ( int )( vbHandle >> VERTCACHE_FRAME_SHIFT ) & VERTCACHE_FRAME_MASK;
-		if( frameNum != ( ( vertexCache.currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )
-		{
-			idLib::Warning( "DrawStencilShadowPass, vertexBuffer == NULL" );
-			return;
-		}
-		vertexBuffer = &vertexCache.frameData[vertexCache.drawListNum].vertexBuffer;
-	}
-	const int vertOffset = ( int )( vbHandle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
-	
-	// get index buffer
-	const vertCacheHandle_t ibHandle = drawSurf->indexCache;
 	idIndexBuffer* indexBuffer;
-	if( vertexCache.CacheIsStatic( ibHandle ) )
+	if( !R_GetDrawBuffers( drawSurf->shadowCache, drawSurf->indexCache, vertexBuffer, indexBuffer, "DrawStencilShadowPass" ) )
 	{
-		indexBuffer = &vertexCache.staticData.indexBuffer;
+		return;
 	}
-	else
-	{
-		const uint64 frameNum = ( int )( ibHandle >> VERTCACHE_FRAME_SHIFT ) & VERTCACHE_FRAME_MASK;
-		if( frameNum != ( ( vertexCache.currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )
-		{
-			idLib::Warning( "DrawStencilShadowPass, indexBuffer == NULL" );
-			return;
-		}
-		indexBuffer = &vertexCache.frameData[vertexCache.drawListNum].indexBuffer;
-	}
-	const uint64 indexOffset = ( int )( ibHandle >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    if (useMultiDrawShadow && !g_multiDrawCommands.empty()
-        && (g_multiDrawVertexBuffer != (GLuint)vertexBuffer->GetAPIObject()
-            || g_multiDrawIndexBuffer != (GLuint)indexBuffer->GetAPIObject()
-            || g_multiDrawBatchLayout != MDI_LAYOUT_SHADOW_VERT
-            || vertexLayout != LAYOUT_DRAW_SHADOW_VERT))
-    {
-        FlushMultiDrawBatch();
-    }
-#endif
-	
+	const uintptr_t vertOffset = ( uintptr_t )( ( drawSurf->shadowCache >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK );
+	// pointer sized: the offset becomes the index pointer, 32 bits on armeabi-v7a
+	const GLintptr indexOffset = ( GLintptr )( ( drawSurf->indexCache >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK );
+
 	RENDERLOG_PRINTF( "Binding Buffers: %p %p\n", vertexBuffer, indexBuffer );
-	
-	// RB: 64 bit fixes, changed GLuint to GLintptr
-	if((GLintptr)currentIndexBuffer != ( GLintptr )indexBuffer->GetAPIObject()
-            || (!isGLES32Version() && currentVertOffset != vertOffset) || !r_useStateCaching.GetBool() )
-	{
-#ifndef ANDROID
-		if (glConfig.directStateAccess) {
-			glVertexArrayElementBuffer(glConfig.global_vao, indexBuffer->GetAPIObject());
-		}
-		else
-#endif
-		{
-			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLintptr)indexBuffer->GetAPIObject());
-		}
-		currentIndexBuffer = ( GLintptr )indexBuffer->GetAPIObject();
-	}
-	
+
 	if( drawSurf->jointCache )
 	{
 		assert( renderProgManager.ShaderUsesJoints() );
-		
+
 		idUniformBuffer jointBuffer;
 		if( !vertexCache.GetJointBuffer( drawSurf->jointCache, &jointBuffer ) )
 		{
@@ -2610,323 +2464,215 @@ void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const b
 			return;
 		}
 		assert( ( jointBuffer.GetOffset() & ( glConfig.uniformBufferOffsetAlignment - 1 ) ) == 0 );
-		
+		glBindBufferRange( GL_UNIFORM_BUFFER, 0, jointBuffer.GetAPIObject(), jointBuffer.GetOffset(), jointBuffer.GetSize() );
+	}
+
+	BindIndexBuffer( ( unsigned int )indexBuffer->GetAPIObject() );
+	SetVertexAttribs( drawSurf->jointCache ? LAYOUT_DRAW_SHADOW_VERT_SKINNED : LAYOUT_DRAW_SHADOW_VERT, ( unsigned int )vertexBuffer->GetAPIObject(), vertOffset );
+
+	if( useInstancing )
+	{
+		// shadow.vs with USE_GPU_INSTANCING reads the MVP rows and the local light origin
+		GLuint instanceBuffer = 0;
+		GLintptr instanceOffset = 0;
+		R_UploadInstances( instances, instanceCount, gpuInstanceBuffer, instanceBuffer, instanceOffset );
+		for( int row = 0; row < 4; ++row )
+		{
+			R_InstanceAttrib( instanceMVPAttribs[row], instanceOffset, row * 4 );
+		}
+		R_InstanceAttrib( instanceLocalLightOriginAttrib, instanceOffset, 36 );
+	}
+
+	renderProgManager.CommitUniforms( glStateBits );
+
+	const GLsizei numIndexes = r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes;
+	const int numDrawn = drawSurf->numIndexes * ( useInstancing ? instanceCount : 1 );
+	const int numPasses = ( !renderZPass && r_useStencilShadowPreload.GetBool() ) ? 2 : 1;
+	for( int pass = 0; pass < numPasses; pass++ )
+	{
+		if( pass == 1 )
+		{
+			// render again with Z-pass
+			glStencilOpSeparate( GL_FRONT, GL_KEEP, GL_KEEP, GL_INCR );
+			glStencilOpSeparate( GL_BACK, GL_KEEP, GL_KEEP, GL_DECR );
+		}
+
+		if( useInstancing )
+		{
+			glDrawElementsInstanced( GL_TRIANGLES, numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset, instanceCount );
+		}
+		else
+		{
+			glDrawElements( GL_TRIANGLES, numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset );
+		}
+
+		// RB: added stats
+		pc.c_shadowElements++;
+		pc.c_drawsByCategory[DRAW_CATEGORY_SHADOW]++;
+		pc.c_shadowIndexes += numDrawn;
+	}
+
+	if( useInstancing )
+	{
+		for( int row = 0; row < 4; ++row )
+		{
+			R_InstanceAttribOff( instanceMVPAttribs[row] );
+		}
+		R_InstanceAttribOff( instanceLocalLightOriginAttrib );
+		glBindBuffer( GL_ARRAY_BUFFER, ( GLuint )vertexBuffer->GetAPIObject() );
+	}
+}
+#else
+void idRenderBackend::DrawStencilShadowPass( const drawSurf_t* drawSurf, const bool renderZPass )
+{
+	idVertexBuffer* vertexBuffer;
+	idIndexBuffer* indexBuffer;
+	if( !R_GetDrawBuffers( drawSurf->shadowCache, drawSurf->indexCache, vertexBuffer, indexBuffer, "DrawStencilShadowPass" ) )
+	{
+		return;
+	}
+	const int vertOffset = ( int )( drawSurf->shadowCache >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
+	const uint64 indexOffset = ( int )( drawSurf->indexCache >> VERTCACHE_OFFSET_SHIFT ) & VERTCACHE_OFFSET_MASK;
+
+	RENDERLOG_PRINTF( "Binding Buffers: %p %p\n", vertexBuffer, indexBuffer );
+
+	// RB: 64 bit fixes, changed GLuint to GLintptr
+	if( ( GLintptr )currentIndexBuffer != ( GLintptr )indexBuffer->GetAPIObject() || !r_useStateCaching.GetBool() )
+	{
+		if( glConfig.directStateAccess )
+		{
+			glVertexArrayElementBuffer( glConfig.global_vao, indexBuffer->GetAPIObject() );
+		}
+		else
+		{
+			glBindBuffer( GL_ELEMENT_ARRAY_BUFFER, ( GLintptr )indexBuffer->GetAPIObject() );
+		}
+		currentIndexBuffer = ( GLintptr )indexBuffer->GetAPIObject();
+	}
+
+	if( drawSurf->jointCache )
+	{
+		assert( renderProgManager.ShaderUsesJoints() );
+
+		idUniformBuffer jointBuffer;
+		if( !vertexCache.GetJointBuffer( drawSurf->jointCache, &jointBuffer ) )
+		{
+			idLib::Warning( "DrawStencilShadowPass, jointBuffer == NULL" );
+			return;
+		}
+		assert( ( jointBuffer.GetOffset() & ( glConfig.uniformBufferOffsetAlignment - 1 ) ) == 0 );
+
 		const GLintptr ubo = jointBuffer.GetAPIObject();
 		glBindBufferRange( GL_UNIFORM_BUFFER, 0, ubo, jointBuffer.GetOffset(), jointBuffer.GetSize() );
-		
-		if( ( vertexLayout != LAYOUT_DRAW_SHADOW_VERT_SKINNED ) || ((GLintptr)currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() )
-        || !r_useStateCaching.GetBool() || (!isGLES32Version() && currentVertOffset != vertOffset) )
+
+		if( ( vertexLayout != LAYOUT_DRAW_SHADOW_VERT_SKINNED ) || ( ( GLintptr )currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) || !r_useStateCaching.GetBool() )
 		{
-#ifndef ANDROID
-			if (!glConfig.directStateAccess)
-#endif
+			if( !glConfig.directStateAccess )
 			{
-				glBindBuffer(GL_ARRAY_BUFFER, (GLintptr)vertexBuffer->GetAPIObject());
-				currentVertexBuffer = (GLintptr)vertexBuffer->GetAPIObject();
+				glBindBuffer( GL_ARRAY_BUFFER, ( GLintptr )vertexBuffer->GetAPIObject() );
+				currentVertexBuffer = ( GLintptr )vertexBuffer->GetAPIObject();
 
-				glEnableVertexAttribArray(PC_ATTRIB_INDEX_VERTEX);
-				glDisableVertexAttribArray(PC_ATTRIB_INDEX_NORMAL);
-				glEnableVertexAttribArray(PC_ATTRIB_INDEX_COLOR);
-				glEnableVertexAttribArray(PC_ATTRIB_INDEX_COLOR2);
-				glDisableVertexAttribArray(PC_ATTRIB_INDEX_ST);
-				glDisableVertexAttribArray(PC_ATTRIB_INDEX_TANGENT);
+				glEnableVertexAttribArray( PC_ATTRIB_INDEX_VERTEX );
+				glDisableVertexAttribArray( PC_ATTRIB_INDEX_NORMAL );
+				glEnableVertexAttribArray( PC_ATTRIB_INDEX_COLOR );
+				glEnableVertexAttribArray( PC_ATTRIB_INDEX_COLOR2 );
+				glDisableVertexAttribArray( PC_ATTRIB_INDEX_ST );
+				glDisableVertexAttribArray( PC_ATTRIB_INDEX_TANGENT );
 
-if (!isGLES32Version()) {
-    glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE,
-                          sizeof(idShadowVertSkinned),
-                          (void *) (vertOffset + SHADOWVERTSKINNED_XYZW_OFFSET));
-    glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE,
-                          sizeof(idShadowVertSkinned),
-                          (void *) (vertOffset + SHADOWVERTSKINNED_COLOR_OFFSET));
-    glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE,
-                          sizeof(idShadowVertSkinned),
-                          (void *) (vertOffset + SHADOWVERTSKINNED_COLOR2_OFFSET));
-} else {
-    glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE,
-                          sizeof(idShadowVertSkinned), (void *) (SHADOWVERTSKINNED_XYZW_OFFSET));
-    glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE,
-                          sizeof(idShadowVertSkinned), (void *) (SHADOWVERTSKINNED_COLOR_OFFSET));
-    glVertexAttribPointer(PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE,
-                          sizeof(idShadowVertSkinned), (void *) (SHADOWVERTSKINNED_COLOR2_OFFSET));
-}
+				glVertexAttribPointer( PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, sizeof( idShadowVertSkinned ), ( void* )( SHADOWVERTSKINNED_XYZW_OFFSET ) );
+				glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idShadowVertSkinned ), ( void* )( SHADOWVERTSKINNED_COLOR_OFFSET ) );
+				glVertexAttribPointer( PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof( idShadowVertSkinned ), ( void* )( SHADOWVERTSKINNED_COLOR2_OFFSET ) );
 			}
-#ifndef ANDROID
-			else 
+			else
 			{
-				glVertexArrayVertexBuffer(glConfig.global_vao, 0, vertexBuffer->GetAPIObject(), 0, sizeof(idShadowVertSkinned));
-				currentVertexBuffer = (GLintptr)vertexBuffer->GetAPIObject();
+				glVertexArrayVertexBuffer( glConfig.global_vao, 0, vertexBuffer->GetAPIObject(), 0, sizeof( idShadowVertSkinned ) );
+				currentVertexBuffer = ( GLintptr )vertexBuffer->GetAPIObject();
 
-				glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX);
-				glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_NORMAL);
-				glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR);
-				glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2);
-				glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_ST);
-				glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_TANGENT);
+				glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX );
+				glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_NORMAL );
+				glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR );
+				glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2 );
+				glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_ST );
+				glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_TANGENT );
 
-				glVertexArrayAttribFormat(glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, SHADOWVERTSKINNED_XYZW_OFFSET);
-				glVertexArrayAttribFormat(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, SHADOWVERTSKINNED_COLOR_OFFSET);
-				glVertexArrayAttribFormat(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, SHADOWVERTSKINNED_COLOR2_OFFSET);
+				glVertexArrayAttribFormat( glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, SHADOWVERTSKINNED_XYZW_OFFSET );
+				glVertexArrayAttribFormat( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR, 4, GL_UNSIGNED_BYTE, GL_TRUE, SHADOWVERTSKINNED_COLOR_OFFSET );
+				glVertexArrayAttribFormat( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2, 4, GL_UNSIGNED_BYTE, GL_TRUE, SHADOWVERTSKINNED_COLOR2_OFFSET );
 
-				glVertexArrayAttribBinding(glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX, 0);
-				glVertexArrayAttribBinding(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR, 0);
-				glVertexArrayAttribBinding(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2, 0);
+				glVertexArrayAttribBinding( glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX, 0 );
+				glVertexArrayAttribBinding( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR, 0 );
+				glVertexArrayAttribBinding( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2, 0 );
 			}
-#endif
 			vertexLayout = LAYOUT_DRAW_SHADOW_VERT_SKINNED;
-            if (!isGLES32Version()) {
-                currentVertOffset = vertOffset;
-            }
 		}
-		glBindVertexArray(glConfig.global_vao);
+		glBindVertexArray( glConfig.global_vao );
 	}
 	else
 	{
-		if( ( vertexLayout != LAYOUT_DRAW_SHADOW_VERT ) || ((GLintptr)currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) ||
-        (!isGLES32Version() && currentVertOffset != vertOffset) || !r_useStateCaching.GetBool() )
+		if( ( vertexLayout != LAYOUT_DRAW_SHADOW_VERT ) || ( ( GLintptr )currentVertexBuffer != ( GLintptr )vertexBuffer->GetAPIObject() ) || !r_useStateCaching.GetBool() )
 		{
-#ifndef ANDROID
-			if (!glConfig.directStateAccess) {
-				glBindBuffer(GL_ARRAY_BUFFER, (GLintptr)vertexBuffer->GetAPIObject());
-				currentVertexBuffer = (GLintptr)vertexBuffer->GetAPIObject();
-
-				glEnableVertexAttribArray(PC_ATTRIB_INDEX_VERTEX);
-				glDisableVertexAttribArray(PC_ATTRIB_INDEX_NORMAL);
-				glDisableVertexAttribArray(PC_ATTRIB_INDEX_COLOR);
-				glDisableVertexAttribArray(PC_ATTRIB_INDEX_COLOR2);
-				glDisableVertexAttribArray(PC_ATTRIB_INDEX_ST);
-				glDisableVertexAttribArray(PC_ATTRIB_INDEX_TANGENT);
-
-#if defined(USE_GLES2) || defined(USE_GLES3)
-				glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, sizeof(idShadowVert), (void*)(vertOffset + SHADOWVERT_XYZW_OFFSET));
-#else
-				glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, sizeof(idShadowVert), (void*)(SHADOWVERT_XYZW_OFFSET));
-#endif
-			}
-			else 
+			if( !glConfig.directStateAccess )
 			{
-				glVertexArrayVertexBuffer(glConfig.global_vao, 0, vertexBuffer->GetAPIObject(), 0, sizeof(idShadowVert));
-				currentVertexBuffer = (GLintptr)vertexBuffer->GetAPIObject();
+				glBindBuffer( GL_ARRAY_BUFFER, ( GLintptr )vertexBuffer->GetAPIObject() );
+				currentVertexBuffer = ( GLintptr )vertexBuffer->GetAPIObject();
 
-				glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX);
-				glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_NORMAL);
-				glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR);
-				glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2);
-				glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_ST);
-				glEnableVertexArrayAttrib(glConfig.global_vao, PC_ATTRIB_INDEX_TANGENT);
+				glEnableVertexAttribArray( PC_ATTRIB_INDEX_VERTEX );
+				glDisableVertexAttribArray( PC_ATTRIB_INDEX_NORMAL );
+				glDisableVertexAttribArray( PC_ATTRIB_INDEX_COLOR );
+				glDisableVertexAttribArray( PC_ATTRIB_INDEX_COLOR2 );
+				glDisableVertexAttribArray( PC_ATTRIB_INDEX_ST );
+				glDisableVertexAttribArray( PC_ATTRIB_INDEX_TANGENT );
 
-				glVertexArrayAttribFormat(glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, SHADOWVERT_XYZW_OFFSET);
-
-				glVertexArrayAttribBinding(glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX, 0);
+				glVertexAttribPointer( PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, sizeof( idShadowVert ), ( void* )( SHADOWVERT_XYZW_OFFSET ) );
 			}
-#else
-			glBindBuffer(GL_ARRAY_BUFFER, (GLintptr)vertexBuffer->GetAPIObject());
-			currentVertexBuffer = (GLintptr)vertexBuffer->GetAPIObject();
+			else
+			{
+				glVertexArrayVertexBuffer( glConfig.global_vao, 0, vertexBuffer->GetAPIObject(), 0, sizeof( idShadowVert ) );
+				currentVertexBuffer = ( GLintptr )vertexBuffer->GetAPIObject();
 
-			glEnableVertexAttribArray(PC_ATTRIB_INDEX_VERTEX);
-			glDisableVertexAttribArray(PC_ATTRIB_INDEX_NORMAL);
-			glDisableVertexAttribArray(PC_ATTRIB_INDEX_COLOR);
-			glDisableVertexAttribArray(PC_ATTRIB_INDEX_COLOR2);
-			glDisableVertexAttribArray(PC_ATTRIB_INDEX_ST);
-			glDisableVertexAttribArray(PC_ATTRIB_INDEX_TANGENT);
+				glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX );
+				glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_NORMAL );
+				glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR );
+				glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_COLOR2 );
+				glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_ST );
+				glEnableVertexArrayAttrib( glConfig.global_vao, PC_ATTRIB_INDEX_TANGENT );
 
-            if (!isGLES32Version()) {
-                glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE,
-                                      sizeof(idShadowVert),
-                                      (void *) (vertOffset + SHADOWVERT_XYZW_OFFSET));
-            }
-            else {
-                glVertexAttribPointer(PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE,
-                                      sizeof(idShadowVert), (void *) (SHADOWVERT_XYZW_OFFSET));
-            }
-#endif
+				glVertexArrayAttribFormat( glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX, 4, GL_FLOAT, GL_FALSE, SHADOWVERT_XYZW_OFFSET );
+
+				glVertexArrayAttribBinding( glConfig.global_vao, PC_ATTRIB_INDEX_VERTEX, 0 );
+			}
 			vertexLayout = LAYOUT_DRAW_SHADOW_VERT;
-            if (!isGLES32Version()) {
-                currentVertOffset = vertOffset;
-            }
 		}
 	}
 	// RB end
-	
-#if defined(ANDROID) && !defined(USE_VULKAN)
-	const GLuint mvpAttribs[4] = { 1, 5, 6, 7 };
-	const GLuint lightOriginAttrib = 15;
-	if( useInstancing )
-	{
-		const GLsizeiptr instanceBytes = sizeof( gpuInstanceData_t ) * instanceCount;
-		GLuint instanceBuffer = 0;
-		GLintptr instanceOffset = 0;
-		if( !R_StreamInstanceData( instances, instanceBytes, instanceBuffer, instanceOffset ) )
-		{
-			if( gpuInstanceBuffer == 0 )
-			{
-				GLuint buffer = 0;
-				glGenBuffers( 1, &buffer );
-				gpuInstanceBuffer = buffer;
-			}
-			instanceBuffer = (GLuint)gpuInstanceBuffer;
-			instanceOffset = 0;
-			glBindBuffer( GL_ARRAY_BUFFER, instanceBuffer );
-			glBufferData( GL_ARRAY_BUFFER, instanceBytes, instances, GL_STREAM_DRAW );
-		}
-		glBindBuffer( GL_ARRAY_BUFFER, instanceBuffer );
-		const GLsizei stride = sizeof( gpuInstanceData_t );
-		for( int row = 0; row < 4; ++row )
-		{
-			const GLuint attrib = mvpAttribs[row];
-			glEnableVertexAttribArray( attrib );
-			glVertexAttribPointer( attrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)( instanceOffset + row * 4 * sizeof( float ) ) );
-			glVertexAttribDivisor( attrib, 1 );
-		}
-		glEnableVertexAttribArray( lightOriginAttrib );
-		glVertexAttribPointer( lightOriginAttrib, 4, GL_FLOAT, GL_FALSE, stride, (const void*)( instanceOffset + 36 * sizeof( float ) ) );
-		glVertexAttribDivisor( lightOriginAttrib, 1 );
-	}
-#endif
 
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    if (!(useMultiDrawShadow && !g_multiDrawCommands.empty()))
-    {
-        renderProgManager.CommitUniforms(glStateBits);
-    }
-#else
 	renderProgManager.CommitUniforms( glStateBits );
-#endif
-	
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    if (useMultiDrawShadow)
-    {
-        drawElementsIndirectCommand_t command;
-        command.count = (GLuint)drawSurf->numIndexes;
-        command.instanceCount = 1;
-        command.firstIndex = (GLuint)(indexOffset / sizeof(triIndex_t));
-        command.baseVertex = (GLint)(vertOffset / sizeof(idShadowVert));
-        command.baseInstance = 0;
-        g_multiDrawCommands.push_back(command);
-        if (g_multiDrawCommands.size() == 1)
-        {
-            g_multiDrawVertexBuffer = (GLuint)vertexBuffer->GetAPIObject();
-            g_multiDrawIndexBuffer = (GLuint)indexBuffer->GetAPIObject();
-            g_multiDrawBatchLayout = MDI_LAYOUT_SHADOW_VERT;
-        }
-        pc.c_shadowElements++;
-        pc.c_drawsByCategory[DRAW_CATEGORY_SHADOW]++;
-        pc.c_shadowIndexes += drawSurf->numIndexes;
-        if (g_multiDrawCommands.size() >= MAX_GLES_MDI_BATCH_COMMANDS)
-        {
-            FlushMultiDrawBatch();
-        }
-        return;
-    }
-#endif
-	if( drawSurf->jointCache )
-	{
-        if (!isGLES32Version()) {
-            glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-                           GL_INDEX_TYPE, (triIndex_t *) indexOffset);
-        }
-        else {
-            glDrawElementsBaseVertex(GL_TRIANGLES,
-                                     r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-                                     GL_INDEX_TYPE, (triIndex_t *) indexOffset,
-                                     vertOffset / sizeof(idShadowVertSkinned));
-        }
-	}
-	else
-	{
-#if defined(ANDROID) && !defined(USE_VULKAN)
-		if( useInstancing )
-		{
-			glDrawElementsInstancedBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-					GL_INDEX_TYPE, (triIndex_t*)indexOffset, instanceCount, vertOffset / sizeof( idShadowVert ) );
-		}
-		else
-#endif
-		if( !isGLES32Version() )
-		{
-			glDrawElements( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-					GL_INDEX_TYPE, (triIndex_t*)indexOffset );
-		}
-		else
-		{
-			glDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-				GL_INDEX_TYPE, (triIndex_t*)indexOffset, vertOffset / sizeof( idShadowVert ) );
-		}
-	}
-	
+
+	const GLint baseVertex = drawSurf->jointCache ? vertOffset / sizeof( idShadowVertSkinned ) : vertOffset / sizeof( idShadowVert );
+	glDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset, baseVertex );
+
 	// RB: added stats
 	pc.c_shadowElements++;
 	pc.c_drawsByCategory[DRAW_CATEGORY_SHADOW]++;
-	#if defined(ANDROID) && !defined(USE_VULKAN)
-	pc.c_shadowIndexes += drawSurf->numIndexes * ( useInstancing ? instanceCount : 1 );
-#else
 	pc.c_shadowIndexes += drawSurf->numIndexes;
-#endif
 	// RB end
-	
+
 	if( !renderZPass && r_useStencilShadowPreload.GetBool() )
 	{
 		// render again with Z-pass
 		glStencilOpSeparate( GL_FRONT, GL_KEEP, GL_KEEP, GL_INCR );
 		glStencilOpSeparate( GL_BACK, GL_KEEP, GL_KEEP, GL_DECR );
-		
-		if( drawSurf->jointCache )
-		{
-            if (!isGLES32Version()) {
-                glDrawElements(GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-                               GL_INDEX_TYPE, (triIndex_t *) indexOffset);
-            } else {
-                glDrawElementsBaseVertex(GL_TRIANGLES,
-                                         r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-                                         GL_INDEX_TYPE, (triIndex_t *) indexOffset,
-                                         vertOffset / sizeof(idShadowVertSkinned));
-            }
-		}
-		else
-		{
-#if defined(ANDROID) && !defined(USE_VULKAN)
-		if( useInstancing )
-		{
-			glDrawElementsInstancedBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-					GL_INDEX_TYPE, (triIndex_t*)indexOffset, instanceCount, vertOffset / sizeof( idShadowVert ) );
-		}
-		else
-#endif
-		if( !isGLES32Version() )
-		{
-			glDrawElements( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-				GL_INDEX_TYPE, (triIndex_t*)indexOffset );
-		}
-		else
-		{
-			glDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes,
-				GL_INDEX_TYPE, (triIndex_t*)indexOffset, vertOffset / sizeof( idShadowVert ) );
-		}
-    }
-		
+
+		glDrawElementsBaseVertex( GL_TRIANGLES, r_singleTriangle.GetBool() ? 3 : drawSurf->numIndexes, GL_INDEX_TYPE, ( triIndex_t* )indexOffset, baseVertex );
+
 		// RB: added stats
 		pc.c_shadowElements++;
 		pc.c_drawsByCategory[DRAW_CATEGORY_SHADOW]++;
-		#if defined(ANDROID) && !defined(USE_VULKAN)
-	pc.c_shadowIndexes += drawSurf->numIndexes * ( useInstancing ? instanceCount : 1 );
-#else
-	pc.c_shadowIndexes += drawSurf->numIndexes;
-#endif
+		pc.c_shadowIndexes += drawSurf->numIndexes;
 		// RB end
 	}
-
-#if defined(ANDROID) && !defined(USE_VULKAN)
-	if( useInstancing )
-	{
-		for( int row = 0; row < 4; ++row )
-		{
-			glVertexAttribDivisor( mvpAttribs[row], 0 );
-			glDisableVertexAttribArray( mvpAttribs[row] );
-		}
-		glVertexAttribDivisor( lightOriginAttrib, 0 );
-		glDisableVertexAttribArray( lightOriginAttrib );
-	}
-#endif
 }
+#endif
 
 /*
 ============================================================================

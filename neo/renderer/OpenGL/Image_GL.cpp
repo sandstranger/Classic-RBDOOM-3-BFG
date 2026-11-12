@@ -71,6 +71,24 @@ static std::vector<uint8_t> s_etc2CacheBuffer;
 static std::vector<uint8_t> s_textureBuffer;
 static std::mutex imageMutex;
 
+/*
+========================
+R_MultisampleTextureTarget
+
+GLES 3.0 has no multisample textures (GL_TEXTURE_2D_MULTISAMPLE is GLES 3.1): a TT_2D_MULTISAMPLE
+image is a plain 2D texture that EXT_multisampled_render_to_texture renders into with MSAA resolved
+on the tile, see idImage::GenerateImage and Framebuffer::AttachImage2D.
+========================
+*/
+static inline GLenum R_MultisampleTextureTarget()
+{
+#if defined(ANDROID)
+    return GL_TEXTURE_2D;
+#else
+    return glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
+#endif
+}
+
 extern "C" {
 __attribute__((used)) __attribute__((visibility("default")))
 void enableTexturesShrinking(const bool enableTexturesShrinking) {
@@ -319,9 +337,6 @@ void idImage::Bind() {
 
 
     if (!IsLoaded()) {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-        tr.backend.FlushMultiDrawBatch();
-#endif
         ActuallyLoadImage(true);
     }
 
@@ -343,9 +358,6 @@ void idImage::Bind() {
         }
     }
     if (*currentMap != texnum || currentMap == &uncachedMap || !r_useStateCaching.GetBool()) {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-        tr.backend.FlushMultiDrawBatch();
-#endif
 
 #if !defined(USE_GLES2) && !defined(USE_GLES3) && !ANDROID
         if( glConfig.directStateAccess )
@@ -367,7 +379,7 @@ void idImage::Bind() {
                     target = GL_TEXTURE_2D_ARRAY;
                     break;
                 case TT_2D_MULTISAMPLE:
-                    target = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
+                    target = R_MultisampleTextureTarget();
                     break;
             }
             // the unit is only selected for a bind, code that works on the bound
@@ -402,7 +414,7 @@ void idImage::CopyFramebufferLegacy(int x, int y, int imageWidth, int imageHeigh
             target = GL_TEXTURE_2D_ARRAY;
             break;
         case TT_2D_MULTISAMPLE:
-            target = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
+            target = R_MultisampleTextureTarget();
             break;
         default:
             return;
@@ -943,7 +955,14 @@ void idImage::SetTexParametersLegacy() {
             target = GL_TEXTURE_2D_ARRAY;
             break;
         case TT_2D_MULTISAMPLE:
+#if defined(ANDROID)
+            // a plain 2D texture that is sampled after the resolve, see R_MultisampleTextureTarget:
+            // without the filter of its image it would wait for mip levels it never gets
+            target = GL_TEXTURE_2D;
+            break;
+#else
             return;
+#endif
         default:
             idLib::FatalError("%s: bad texture type %d", GetName(), opts.textureType);
             return;
@@ -1580,8 +1599,8 @@ void idImage::AllocImage() {
             numSides = ( usage == TD_SHADOW_ATLAS ) ? 1 : 6;
             break;
         case TT_2D_MULTISAMPLE:
-            target = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
-            uploadTarget = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
+            target = R_MultisampleTextureTarget();
+            uploadTarget = R_MultisampleTextureTarget();
             numSides = 1;
             break;
 
@@ -1650,18 +1669,8 @@ void idImage::AllocImage() {
 #ifndef ANDROID
             glTexImage2DMultisample(uploadTarget, opts.samples, internalFormat, w, h, GL_FALSE);
 #else
-            if (glConfig.hasMSAAEXT) {
-                glTexImage2D(uploadTarget, 0, internalFormat, w, h, 0, dataFormat, dataType,
-                             nullptr);
-            } else if (glTexStorage2DMultisample != nullptr) {
-                glTexStorage2DMultisample(
-                        GL_TEXTURE_2D_MULTISAMPLE,
-                        opts.samples,
-                        internalFormat,
-                        w, h,
-                        GL_FALSE
-                );
-            }
+            // the single sample storage, EXT_multisampled_render_to_texture keeps the samples on the tile
+            glTexImage2D(uploadTarget, 0, internalFormat, w, h, 0, dataFormat, dataType, nullptr);
 #endif
         } else {
             if (opts.textureType == TT_CUBIC) {

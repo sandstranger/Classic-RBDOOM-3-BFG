@@ -59,8 +59,13 @@ static const int MAX_TAGS = 256;
 
 
 // RB: 64 bit fixes, changed int to size_t
+// never returns NULL for a size > 0: out of memory is a fatal error, after the handler freed what it could
 void* 		Mem_Alloc16( const size_t size, const memTag_t tag );
 void		Mem_Free16( void* ptr );
+
+// called once when an allocation fails, returns true when it freed memory so the allocation is tried again
+typedef bool ( *memOutOfMemoryHandler_t )( size_t failedBytes );
+void		Mem_SetOutOfMemoryHandler( memOutOfMemoryHandler_t handler );
 
 ID_INLINE void* 	Mem_Alloc( const size_t size, const memTag_t tag )
 {

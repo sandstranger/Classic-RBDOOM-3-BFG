@@ -306,11 +306,7 @@ public:
 	
 	void				Init();
 	void				Shutdown();
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    // Submit pending MDI commands before any draw state changes.
-    void            FlushMultiDrawBatch();
-#endif
-	
+
 	void				ExecuteBackEndCommands( const emptyCommand_t* cmds );
 	void				StereoRenderExecuteBackEndCommands( const emptyCommand_t* const allCmds );
 	void				GL_BlockingSwapBuffers();
@@ -496,6 +492,10 @@ private:
 #endif
 
 #if defined(ANDROID) && !defined( USE_VULKAN )
+	// GLES 3.0 has no base vertex draws: the attribute pointers start at the first vertex of the draw
+	void				SetVertexAttribs( vertexLayoutType_t layout, unsigned int vertexBuffer, uintptr_t vertOffset );
+	void				BindIndexBuffer( unsigned int indexBuffer );
+
 	// world surfaces of several areas drawn with one call, see WorldMergePass
 	void				WorldMergePass( const emptyCommand_t* cmds );
 	void				DrawWorldMergeRange( int firstIndex, int numIndexes );

@@ -37,6 +37,60 @@ If you have questions concerning this license or the applicable additional terms
 
 extern int getMipmapSkipLevel(int numLevels);
 
+#if defined( ID_LOW_MEMORY )
+// a 2048 texture is 4 MB of ETC2 or 16 MB of RGBA8 before its mip levels, a 32 bit process can't keep many
+#define IMAGE_MAX_TEXTURE_SIZE_DEFAULT "1024"
+#else
+#define IMAGE_MAX_TEXTURE_SIZE_DEFAULT "0"
+#endif
+idCVar image_maxTextureSize( "image_maxTextureSize", IMAGE_MAX_TEXTURE_SIZE_DEFAULT, CVAR_RENDERER | CVAR_INTEGER,
+							 "the largest width or height a diffuse, normal or specular map of a surface gets on the GPU, the larger top levels are left out; 0 for no limit. Menus, GUIs and fonts keep their size. Images loaded after a change get it (reloadImages all)" );
+
+/*
+================
+idImage::MipLevelsToSkip
+
+The storage (AllocImage) and every upload loop use this, after the options are final: they always
+agree. Render targets and images without mip levels keep their size.
+
+image_maxTextureSize only takes the lit surface maps: the bulk of a level's texture memory, seen
+minified at a distance. The menu and GUI images (SWF atlases, implicit "blend blend" materials:
+TD_DEFAULT), fonts and the rest are shown 1:1 on screen and turned to mush when their top levels
+were left out.
+================
+*/
+static bool R_TextureSizeLimitApplies( textureUsage_t usage )
+{
+	switch( usage )
+	{
+		case TD_DIFFUSE:
+		case TD_BUMP:
+		case TD_SPECULAR:
+		case TD_COVERAGE:
+			return true;
+		default:
+			return false;
+	}
+}
+
+int idImage::MipLevelsToSkip() const
+{
+	if( opts.numLevels <= 1 || opts.isRenderTarget )
+	{
+		return 0;
+	}
+	int skip = getMipmapSkipLevel( opts.numLevels );
+	const int maxSize = image_maxTextureSize.GetInteger();
+	if( maxSize > 0 && R_TextureSizeLimitApplies( usage ) )
+	{
+		while( skip < opts.numLevels - 1 && Max( opts.width >> skip, opts.height >> skip ) > maxSize )
+		{
+			skip++;
+		}
+	}
+	return Min( skip, opts.numLevels - 1 );
+}
+
 /*
 ================
 BitsForFormat
@@ -411,14 +465,9 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 			opts.format = FMT_RGBA8;
 		}
 		else
-#elif defined(ANDROID) //karin: force convert light texture format from RGB565 to RGBA8888
-		if( header.format == FMT_RGB565 )
-		{
-			opts.format = FMT_RGBA8;
-		}
-		else
 #endif
 		{
+			// GLES: RGB565 is uploaded as GL_RGB565 with GL_UNSIGNED_SHORT_5_6_5, half the memory of RGBA8
 			opts.format = ( textureFormat_t )header.format;
 		}
 		actuallyloaded = true;
@@ -526,7 +575,7 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 					// clear the data so it's not left uninitialized
 					idTempArray<byte> clear(opts.width * opts.height * 4);
 					memset(clear.Ptr(), 0, clear.Size());
-					int mipmapsToSkip = getMipmapSkipLevel(opts.numLevels);
+					int mipmapsToSkip = MipLevelsToSkip();
 					for (int level = 0; level < opts.numLevels; level++)
 					{
 						SubImageUpload(level,mipmapsToSkip, 0, 0, 0, opts.width >> level, opts.height >> level, clear.Ptr());
@@ -558,13 +607,17 @@ void idImage::ActuallyLoadImage(bool fromBackEnd)
 			Mem_Free( pic );
 		}
 		binaryFileTime = im.WriteGeneratedFile( sourceFileTime );
+#if defined( ANDROID )
+		// the file keeps the big endian RGB565, the upload below takes native shorts
+		im.Rgb565ToNative();
+#endif
 	}
 
 	if (idStr::Icmp(GetName(), "_doomClassic")) {
 		AllocImage();
 	}
 
-	int mipmapsToSkip = getMipmapSkipLevel(im.NumImages());
+	int mipmapsToSkip = MipLevelsToSkip();
 	for( int i = 0; i < im.NumImages(); i++ )
 	{
         if (i < mipmapsToSkip){
@@ -769,8 +822,8 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 	PurgeImage();
 
 #if ANDROID
-	extern bool isGLES32Version();
-	bool multisamplingAvailable = glConfig.hasMSAAEXT || isGLES32Version();
+	// GLES 3.0 has no multisample textures, only EXT_multisampled_render_to_texture renders them
+	const bool multisamplingAvailable = glConfig.hasMSAAEXT;
 #endif
 
 	filter = filterParm;
@@ -823,9 +876,12 @@ void idImage::GenerateImage( const byte* pic, int width, int height, textureFilt
 		im.Load2DFromMemory( width, height, pic, opts.numLevels, opts.format, opts.colorFormat, opts.gammaMips );
 
 		commonLocal.LoadPacifierBinarizeEnd();
+#if defined( ANDROID )
+		im.Rgb565ToNative();
+#endif
 
 		AllocImage();
-		int mipmapsToSkip = getMipmapSkipLevel(im.NumImages());
+		int mipmapsToSkip = MipLevelsToSkip();
 		for( int i = 0; i < im.NumImages(); i++ )
 		{
 			if (i < mipmapsToSkip)
@@ -887,9 +943,12 @@ void idImage::GenerateCubeImage( const byte* pic[6], int size, textureFilter_t f
 	im.LoadCubeFromMemory( size, pic, opts.numLevels, opts.format, opts.gammaMips );
 
 	commonLocal.LoadPacifierBinarizeEnd();
+#if defined( ANDROID )
+	im.Rgb565ToNative();
+#endif
 
 	AllocImage();
-	int mipmapsToSkip = getMipmapSkipLevel(im.NumImages());
+	int mipmapsToSkip = MipLevelsToSkip();
 	for( int i = 0; i < im.NumImages(); i++ )
 	{
 		if (i < mipmapsToSkip)

@@ -34,16 +34,87 @@ Contains the DxtDecoder implementation.
 #pragma hdrstop
 #include "DXTCodec_local.h"
 #include "DXTCodec.h"
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
 #include <arm_neon.h>
 #include <cstdint>
+#include <cstring>
+
+/*
+================================================================================================
+
+	NEON of the decoder: AArch64 and ARMv7
+
+	The NEON paths below used AArch64 only intrinsics (vqtbl1q, vdivq, vsqrtq, vcvtaq) and were
+	compiled out on armeabi-v7a, which decoded every DXT texture with the scalar code. These
+	helpers are the AArch64 instruction there and an ARMv7 NEON sequence with the same results.
+
+================================================================================================
+*/
+
+// table[indices], indices below 16
+static inline uint8x16_t R_Tbl16( uint8x16_t table, uint8x16_t indices )
+{
+#if defined( ID_NEON_A64 )
+	return vqtbl1q_u8( table, indices );
+#else
+	uint8x8x2_t t;
+	t.val[0] = vget_low_u8( table );
+	t.val[1] = vget_high_u8( table );
+	return vcombine_u8( vtbl2_u8( t, vget_low_u8( indices ) ), vtbl2_u8( t, vget_high_u8( indices ) ) );
+#endif
+}
+
+// to the nearest integer, halves away from zero (vcvtaq), for the non negative values of the decoder
+static inline uint32x4_t R_CvtRoundU32( float32x4_t v )
+{
+#if defined( ID_NEON_A64 )
+	return vcvtaq_u32_f32( v );
+#else
+	return vcvtq_u32_f32( vaddq_f32( v, vdupq_n_f32( 0.5f ) ) );
+#endif
+}
+
+// the square root of x >= 0, 0 stays 0
+static inline float32x4_t R_Sqrt( float32x4_t x )
+{
+#if defined( ID_NEON_A64 )
+	return vsqrtq_f32( x );
+#else
+	// x / sqrt( x ) with two Newton steps of the reciprocal square root estimate
+	const float32x4_t safe = vmaxq_f32( x, vdupq_n_f32( 1e-30f ) );
+	float32x4_t r = vrsqrteq_f32( safe );
+	r = vmulq_f32( r, vrsqrtsq_f32( vmulq_f32( safe, r ), r ) );
+	r = vmulq_f32( r, vrsqrtsq_f32( vmulq_f32( safe, r ), r ) );
+	return vmulq_f32( x, r );
+#endif
+}
+
+// a / b truncated toward zero, exact for integers a in [-128, 127] and b in [1, 32] like the scalar
+// integer division of the YCoCg scale
+static inline int32x4_t R_DivTrunc( float32x4_t a, float32x4_t b )
+{
+#if defined( ID_NEON_A64 )
+	return vcvtq_s32_f32( vdivq_f32( a, b ) );
+#else
+	// the reciprocal with two Newton steps is good to about 1e-7: |a| / b is off by less than 2e-5, an
+	// integer quotient can come out a hair below itself, and a fraction is at most 31 / 32. A 64th on
+	// top truncates both right.
+	float32x4_t r = vrecpeq_f32( b );
+	r = vmulq_f32( r, vrecpsq_f32( b, r ) );
+	r = vmulq_f32( r, vrecpsq_f32( b, r ) );
+	const float32x4_t q = vaddq_f32( vmulq_f32( vabsq_f32( a ), r ), vdupq_n_f32( 1.0f / 64.0f ) );
+	const int32x4_t magnitude = vreinterpretq_s32_u32( vcvtq_u32_f32( q ) );
+	const uint32x4_t negative = vcltq_f32( a, vdupq_n_f32( 0.0f ) );
+	return vbslq_s32( negative, vnegq_s32( magnitude ), magnitude );
+#endif
+}
 #endif
 /*
 ========================
 idDxtDecoder::EmitBlock
 ========================
 */
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
 void idDxtDecoder::EmitBlock( byte* outPtr, int x, int y, const byte* colorBlock )
 {
     outPtr += ( y * width + x ) * 4;
@@ -74,7 +145,7 @@ void idDxtDecoder::EmitBlock( byte* outPtr, int x, int y, const byte* colorBlock
 idDxtDecoder::DecodeAlphaValues
 ========================
 */
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
 void idDxtDecoder::DecodeAlphaValues( byte* colorBlock, const int offset )
 {
     uint8_t alphas[16] = {0};
@@ -98,16 +169,17 @@ void idDxtDecoder::DecodeAlphaValues( byte* colorBlock, const int offset )
     }
 
     uint8x16_t aPalette = vld1q_u8(alphas);
-    uint8_t rawIndices[8];
+    uint8_t rawIndices[8] = {0};
     for(int i = 0; i < 6; ++i) rawIndices[i] = ReadByte();
-    uint64_t bits = *(uint64_t*)rawIndices;
+    uint64_t bits;
+    memcpy(&bits, rawIndices, sizeof(bits));
     alignas(16) uint8_t idx[16];
 
     for(int i = 0; i < 16; ++i) {
         idx[i] = (uint8_t)((bits >> (i * 3)) & 7);
     }
     uint8x16_t indices = vld1q_u8(idx);
-    uint8x16_t finalAlphas = vqtbl1q_u8(aPalette, indices);
+    uint8x16_t finalAlphas = R_Tbl16(aPalette, indices);
     uint8x16x4_t rgba = vld4q_u8(colorBlock);
     rgba.val[offset] = finalAlphas;
     vst4q_u8(colorBlock, rgba);
@@ -163,7 +235,7 @@ void idDxtDecoder::DecodeAlphaValues( byte* colorBlock, const int offset )
 idDxtDecoder::DecodeColorValues
 ========================
 */
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
 void idDxtDecoder::DecodeColorValues( byte* colorBlock, bool noBlack, bool writeAlpha )
 {
     alignas(16) uint8_t colors[16];
@@ -205,7 +277,7 @@ void idDxtDecoder::DecodeColorValues( byte* colorBlock, bool noBlack, bool write
     uint32x4_t rgbMask = vdupq_n_u32(0x00FFFFFF);
     for( int i = 0; i < 4; i++ ) {
         uint8x16_t pIdx = vld1q_u8(&lookup_idx[i * 16]);
-        uint8x16_t newPixels = vqtbl1q_u8(palette, pIdx);
+        uint8x16_t newPixels = R_Tbl16(palette, pIdx);
         uint8_t* target = colorBlock + i * 16;
 
         if( writeAlpha ) {
@@ -375,7 +447,7 @@ idDxtDecoder::DecompressYCoCgDXT5
 ========================
 */
 
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
 void idDxtDecoder::DecompressYCoCgDXT5( const byte* inBuf, byte* outBuf, int _width, int _height )
 {
     DecompressImageDXT5_nVidia7x( inBuf, outBuf, _width, _height );
@@ -400,22 +472,16 @@ void idDxtDecoder::DecompressYCoCgDXT5( const byte* inBuf, byte* outBuf, int _wi
         float32x4_t r_low_f  = vcvtq_f32_s32( vmovl_s16( vget_low_s16( r16 ) ) );
         float32x4_t r_high_f = vcvtq_f32_s32( vmovl_s16( vget_high_s16( r16 ) ) );
 
-        r_low_f = vdivq_f32( r_low_f, scale_low_f );
-        r_high_f = vdivq_f32( r_high_f, scale_high_f );
-
-        int16x8_t r_res16 = vcombine_s16( vmovn_s32( vcvtq_s32_f32( r_low_f ) ),
-                                          vmovn_s32( vcvtq_s32_f32( r_high_f ) ) );
+        int16x8_t r_res16 = vcombine_s16( vmovn_s32( R_DivTrunc( r_low_f, scale_low_f ) ),
+                                          vmovn_s32( R_DivTrunc( r_high_f, scale_high_f ) ) );
         px.val[0] = vqmovun_s16( vaddq_s16( r_res16, v_128_s16 ) );
 
         int16x8_t g16 = vreinterpretq_s16_u16( vsubl_u8( px.val[1], v_128_u8 ) );
         float32x4_t g_low_f  = vcvtq_f32_s32( vmovl_s16( vget_low_s16( g16 ) ) );
         float32x4_t g_high_f = vcvtq_f32_s32( vmovl_s16( vget_high_s16( g16 ) ) );
 
-        g_low_f = vdivq_f32( g_low_f, scale_low_f );
-        g_high_f = vdivq_f32( g_high_f, scale_high_f );
-
-        int16x8_t g_res16 = vcombine_s16( vmovn_s32( vcvtq_s32_f32( g_low_f ) ),
-                                          vmovn_s32( vcvtq_s32_f32( g_high_f ) ) );
+        int16x8_t g_res16 = vcombine_s16( vmovn_s32( R_DivTrunc( g_low_f, scale_low_f ) ),
+                                          vmovn_s32( R_DivTrunc( g_high_f, scale_high_f ) ) );
         px.val[1] = vqmovun_s16( vaddq_s16( g_res16, v_128_s16 ) );
 
         px.val[2] = vdup_n_u8( 0 );
@@ -475,7 +541,7 @@ void idDxtDecoder::DecompressYCoCgCTX1DXT5A( const byte* inBuf, byte* outBuf, in
 idDxtDecoder::DecodeNormalYValues
 ========================
 */
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
 void idDxtDecoder::DecodeNormalYValues( byte* normalBlock, const int offsetY, byte& c0, byte& c1 )
 {
     unsigned short normal0 = ReadUShort();
@@ -503,7 +569,7 @@ void idDxtDecoder::DecodeNormalYValues( byte* normalBlock, const int offsetY, by
 
     const uint8x16_t idx = vld1q_u8( idxBytes );
 
-    const uint8x16_t yOut = vqtbl1q_u8( yTable, idx );
+    const uint8x16_t yOut = R_Tbl16( yTable, idx );
 
     uint8x16x4_t rgba = vld4q_u8( normalBlock );
     rgba.val[offsetY] = yOut;
@@ -600,7 +666,7 @@ void idDxtDecoder::DeriveNormalZValues( byte* normalBlock )
 idDxtDecoder::UnRotateNormals
 ========================
 */
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
 void UnRotateNormals( const byte* block, float* normals, byte c0, byte c1 )
 {
     const float angle = -( float( c0 ) / 255.0f ) * idMath::PI;
@@ -763,7 +829,7 @@ void idDxtDecoder::DecompressNormalMapDXT1Renormalize( const byte* inBuf, byte* 
 idDxtDecoder::DecompressNormalMapDXT5Renormalize
 ========================
 */
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
 void idDxtDecoder::DecompressNormalMapDXT5Renormalize( const byte* inBuf, byte* outBuf, int _width, int _height )
 {
     byte block[64];
@@ -825,17 +891,17 @@ void idDxtDecoder::DecompressNormalMapDXT5Renormalize( const byte* inBuf, byte* 
                 renormalize(x_low, y_low, z_low);
                 renormalize(x_high, y_high, z_high);
 
-                uint16x4_t rx_l = vmovn_u32( vcvtaq_u32_f32( x_low ) );
-                uint16x4_t rx_h = vmovn_u32( vcvtaq_u32_f32( x_high ) );
-                px.val[0] = vmovn_u16( vcombine_u16( rx_l, rx_h ) );
+                uint16x4_t rx_l = vmovn_u32( R_CvtRoundU32( x_low ) );
+                uint16x4_t rx_h = vmovn_u32( R_CvtRoundU32( x_high ) );
+                px.val[0] = vqmovn_u16( vcombine_u16( rx_l, rx_h ) );
 
-                uint16x4_t ry_l = vmovn_u32( vcvtaq_u32_f32( y_low ) );
-                uint16x4_t ry_h = vmovn_u32( vcvtaq_u32_f32( y_high ) );
-                px.val[1] = vmovn_u16( vcombine_u16( ry_l, ry_h ) );
+                uint16x4_t ry_l = vmovn_u32( R_CvtRoundU32( y_low ) );
+                uint16x4_t ry_h = vmovn_u32( R_CvtRoundU32( y_high ) );
+                px.val[1] = vqmovn_u16( vcombine_u16( ry_l, ry_h ) );
 
-                uint16x4_t rz_l = vmovn_u32( vcvtaq_u32_f32( z_low ) );
-                uint16x4_t rz_h = vmovn_u32( vcvtaq_u32_f32( z_high ) );
-                px.val[2] = vmovn_u16( vcombine_u16( rz_l, rz_h ) );
+                uint16x4_t rz_l = vmovn_u32( R_CvtRoundU32( z_low ) );
+                uint16x4_t rz_h = vmovn_u32( R_CvtRoundU32( z_high ) );
+                px.val[2] = vqmovn_u16( vcombine_u16( rz_l, rz_h ) );
 
                 vst4_u8( block + k, px );
             }
@@ -922,7 +988,7 @@ void BiasScaleNormals( const byte* block, float* normals, const byte c0, const b
 idDxtDecoder::DecompressNormalMapDXT5
 ========================
 */
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
 void idDxtDecoder::DecompressNormalMapDXT5( const byte* inBuf, byte* outBuf, int _width, int _height ) {
     byte block[64];
     byte c0, c1;
@@ -953,7 +1019,7 @@ void idDxtDecoder::DecompressNormalMapDXT5( const byte* inBuf, byte* outBuf, int
                     float32x4_t z = vsubq_f32(one, vaddq_f32(xx, yy));
                     z = vmaxq_f32(z, zero);
 
-                    z = vsqrtq_f32(z);
+                    z = R_Sqrt(z);
 
                     x = vmulq_f32(vaddq_f32(x, one), scale);
                     y = vmulq_f32(vaddq_f32(y, one), scale);
@@ -967,17 +1033,17 @@ void idDxtDecoder::DecompressNormalMapDXT5( const byte* inBuf, byte* outBuf, int
 
                 uint8x8x4_t out_px;
 
-                uint16x4_t rx0 = vmovn_u32(vcvtaq_u32_f32(res0.val[0]));
-                uint16x4_t rx1 = vmovn_u32(vcvtaq_u32_f32(res1.val[0]));
-                out_px.val[0] = vmovn_u16(vcombine_u16(rx0, rx1));
+                uint16x4_t rx0 = vmovn_u32(R_CvtRoundU32(res0.val[0]));
+                uint16x4_t rx1 = vmovn_u32(R_CvtRoundU32(res1.val[0]));
+                out_px.val[0] = vqmovn_u16(vcombine_u16(rx0, rx1));
 
-                uint16x4_t ry0 = vmovn_u32(vcvtaq_u32_f32(res0.val[1]));
-                uint16x4_t ry1 = vmovn_u32(vcvtaq_u32_f32(res1.val[1]));
-                out_px.val[1] = vmovn_u16(vcombine_u16(ry0, ry1));
+                uint16x4_t ry0 = vmovn_u32(R_CvtRoundU32(res0.val[1]));
+                uint16x4_t ry1 = vmovn_u32(R_CvtRoundU32(res1.val[1]));
+                out_px.val[1] = vqmovn_u16(vcombine_u16(ry0, ry1));
 
-                uint16x4_t rz0 = vmovn_u32(vcvtaq_u32_f32(res0.val[2]));
-                uint16x4_t rz1 = vmovn_u32(vcvtaq_u32_f32(res1.val[2]));
-                out_px.val[2] = vmovn_u16(vcombine_u16(rz0, rz1));
+                uint16x4_t rz0 = vmovn_u32(R_CvtRoundU32(res0.val[2]));
+                uint16x4_t rz1 = vmovn_u32(R_CvtRoundU32(res1.val[2]));
+                out_px.val[2] = vqmovn_u16(vcombine_u16(rz0, rz1));
 
                 out_px.val[3] = vdup_n_u8(255);
 

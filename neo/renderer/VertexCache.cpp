@@ -80,6 +80,24 @@ UnmapGeoBufferSet
 */
 static void UnmapGeoBufferSet( geoBufferSet_t& gbs )
 {
+#if defined( ANDROID ) && !defined( USE_VULKAN )
+	// only what the frame wrote goes to the GPU, see idGLBufferRing::SubmitSlot
+	if( gbs.mappedVertexBase != NULL )
+	{
+		gbs.vertexBuffer.UnmapBuffer( gbs.vertexMemUsed.GetValue() );
+		gbs.mappedVertexBase = NULL;
+	}
+	if( gbs.mappedIndexBase != NULL )
+	{
+		gbs.indexBuffer.UnmapBuffer( gbs.indexMemUsed.GetValue() );
+		gbs.mappedIndexBase = NULL;
+	}
+	if( gbs.mappedJointBase != NULL )
+	{
+		gbs.jointBuffer.UnmapBuffer( gbs.jointMemUsed.GetValue() );
+		gbs.mappedJointBase = NULL;
+	}
+#else
 	if( gbs.mappedVertexBase != NULL )
 	{
 		gbs.vertexBuffer.UnmapBuffer();
@@ -95,6 +113,7 @@ static void UnmapGeoBufferSet( geoBufferSet_t& gbs )
 		gbs.jointBuffer.UnmapBuffer();
 		gbs.mappedJointBase = NULL;
 	}
+#endif
 }
 
 /*
@@ -135,7 +154,8 @@ void idVertexCache::Init( int _uniformBufferOffsetAlignment )
 		AllocGeoBufferSet( frameData[i], VERTCACHE_VERTEX_MEMORY_PER_FRAME, VERTCACHE_INDEX_MEMORY_PER_FRAME, VERTCACHE_JOINT_MEMORY_PER_FRAME, BU_DYNAMIC );
 	}
 #if 1
-	AllocGeoBufferSet( staticData, STATIC_VERTEX_MEMORY, STATIC_INDEX_MEMORY, 0, BU_STATIC );
+	// GLES: GrowStatic makes them larger when a map needs it, up to STATIC_*_MEMORY
+	AllocGeoBufferSet( staticData, STATIC_VERTEX_MEMORY_START, STATIC_INDEX_MEMORY_START, 0, BU_STATIC );
 #else
 	AllocGeoBufferSet( staticData, STATIC_VERTEX_MEMORY, STATIC_INDEX_MEMORY, 0, BU_DYNAMIC );
 #endif
@@ -330,8 +350,49 @@ vertCacheHandle_t idVertexCache::AllocStaticVertex( const void* data, int bytes 
 	{
 		idLib::FatalError( "AllocStaticVertex failed, increase STATIC_VERTEX_MEMORY" );
 	}
+#if defined( ANDROID ) && !defined( USE_VULKAN )
+	if( staticData.vertexMemUsed.GetValue() + bytes > staticData.vertexBuffer.GetAllocedSize() )
+	{
+		GrowStatic( CACHE_VERTEX, staticData.vertexMemUsed.GetValue() + bytes );
+	}
+#endif
 	return ActuallyAlloc( staticData, data, bytes, CACHE_VERTEX );
 }
+
+#if defined( ANDROID ) && !defined( USE_VULKAN )
+/*
+==============
+idVertexCache::GrowStatic
+
+The static buffers of a map: allocated by the front end during the level load and when models are
+instantiated later, on the thread that has the GL context. The new storage gets a quarter on top of
+what is needed, at least half the old size more, never more than the handles can address. The
+backend looks the buffer object up at every draw and resets its binding cache every frame.
+==============
+*/
+void idVertexCache::GrowStatic( cacheType_t type, int neededBytes )
+{
+	const int maxBytes = ( type == CACHE_VERTEX ) ? STATIC_VERTEX_MEMORY : STATIC_INDEX_MEMORY;
+	const int oldBytes = ( type == CACHE_VERTEX ) ? staticData.vertexBuffer.GetAllocedSize() : staticData.indexBuffer.GetAllocedSize();
+	const int usedBytes = ( type == CACHE_VERTEX ) ? staticData.vertexMemUsed.GetValue() : staticData.indexMemUsed.GetValue();
+
+	int64 newBytes = Max( ( int64 )neededBytes + neededBytes / 4, ( int64 )oldBytes + oldBytes / 2 );
+	newBytes = ( newBytes + 1024 * 1024 - 1 ) & ~( int64 )( 1024 * 1024 - 1 );
+	newBytes = Min( newBytes, ( int64 )maxBytes );
+	if( newBytes < neededBytes )
+	{
+		idLib::FatalError( "idVertexCache::GrowStatic: %d bytes of static %s data don't fit", neededBytes, ( type == CACHE_VERTEX ) ? "vertex" : "index" );
+	}
+
+	const bool grown = ( type == CACHE_VERTEX ) ? staticData.vertexBuffer.GrowStatic( ( int )newBytes, usedBytes )
+					   : staticData.indexBuffer.GrowStatic( ( int )newBytes, usedBytes );
+	if( !grown )
+	{
+		idLib::FatalError( "idVertexCache::GrowStatic: no GL buffer for %d bytes of static %s data", ( int )newBytes, ( type == CACHE_VERTEX ) ? "vertex" : "index" );
+	}
+	idLib::Printf( "static %s cache: %d KB -> %d KB\n", ( type == CACHE_VERTEX ) ? "vertex" : "index", oldBytes / 1024, ( int )( newBytes / 1024 ) );
+}
+#endif
 
 /*
 ==============
@@ -344,6 +405,12 @@ vertCacheHandle_t idVertexCache::AllocStaticIndex( const void* data, int bytes )
 	{
 		idLib::FatalError( "AllocStaticIndex failed, increase STATIC_INDEX_MEMORY" );
 	}
+#if defined( ANDROID ) && !defined( USE_VULKAN )
+	if( staticData.indexMemUsed.GetValue() + bytes > staticData.indexBuffer.GetAllocedSize() )
+	{
+		GrowStatic( CACHE_INDEX, staticData.indexMemUsed.GetValue() + bytes );
+	}
+#endif
 	return ActuallyAlloc( staticData, data, bytes, CACHE_INDEX );
 }
 

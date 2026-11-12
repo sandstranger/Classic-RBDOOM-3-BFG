@@ -35,8 +35,6 @@ If you have questions concerning this license or the applicable additional terms
 
 #if defined(ANDROID)
 #include "EngineShaders_GL.h"
-
-extern bool isGLES32Version();
 #endif
 
 idCVar r_displayGLSLCompilerMessages( "r_displayGLSLCompilerMessages", "1", CVAR_BOOL | CVAR_ARCHIVE, "Show info messages the GPU driver outputs when compiling the shaders" );
@@ -65,7 +63,6 @@ void idRenderProgManager::BindProgram( int index )
 	}
 
 	#if defined(ANDROID) && !defined(USE_VULKAN)
-	tr.backend.FlushMultiDrawBatch();
 	tr.backend.pc.c_programBinds++;
 	#endif
 	current = index;
@@ -81,9 +78,6 @@ idRenderProgManager::Unbind
 */
 void idRenderProgManager::Unbind()
 {
-	#if defined(ANDROID) && !defined(USE_VULKAN)
-	tr.backend.FlushMultiDrawBatch();
-	#endif
 	current = -1;
 
 	glUseProgram( 0 );
@@ -122,11 +116,7 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 #if defined(ANDROID)
 	if( R_IsEngineShader( shader.name.c_str() ) )
 	{
-		// the multi light interactions and the shadow cache copy are GLSL ES 3.20 of the engine
-		if( !isGLES32Version() )
-		{
-			return;
-		}
+		// the multi light interactions and the shadow cache copy are GLSL ES 3.00 of the engine
 		inFile = shader.name + shader.nameOutSuffix;
 		outFileGLSL = inFile;
 		if( !R_EngineShaderSource( shader.name.c_str(), shader.nameOutSuffix.c_str(), shader.stage, programGLSL, programUniforms ) )
@@ -147,8 +137,9 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 	{
 		case GLDRV_OPENGL_MESA:
 		{
-			outFileGLSL.Format( "renderprogs/glsles-3_20/%s%s", shader.name.c_str(), shader.nameOutSuffix.c_str() );
-			outFileUniforms.Format( "renderprogs/glsles-3_20/%s%s", shader.name.c_str(), shader.nameOutSuffix.c_str() );
+			// GLSL ES 3.00, a directory of its own: what the GLSL ES 3.20 renderer wrote is never read
+			outFileGLSL.Format( "renderprogs/glsles-3_00/%s%s", shader.name.c_str(), shader.nameOutSuffix.c_str() );
+			outFileUniforms.Format( "renderprogs/glsles-3_00/%s%s", shader.name.c_str(), shader.nameOutSuffix.c_str() );
 			break;
 		}
 
@@ -427,7 +418,12 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
     if (!shaderCacheWasInit)
     {
         binaryCache.Init();
+#if defined( ID_LOW_MEMORY )
+		// the binaries on disk make the next start fast, the RAM copies only a shader reload
+		binaryCache.SetMaxRAMCacheSize(4 * 1024 * 1024);
+#else
 		binaryCache.SetMaxRAMCacheSize(32 * 1024 * 1024);
+#endif
         shaderCacheWasInit = true;
     }
 
@@ -560,6 +556,11 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
             glBindAttribLocation( program, attribsPC[i].bind, attribsPC[i].glsl );
         }
     }
+
+#if defined(ANDROID)
+    // GLES 3.0 program binaries, see idShaderBinaryCache: some drivers only keep one with the hint
+    glProgramParameteri( program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE );
+#endif
 
     glLinkProgram( program );
 

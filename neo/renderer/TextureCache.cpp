@@ -62,6 +62,33 @@ public:
 
     size_t GetTotalAllocated() const { return m_totalAllocated.load(std::memory_order_relaxed); }
 
+    // Release only queues a buffer for reuse, the memory stays allocated: this frees the queued ones.
+    // Buckets in use by another thread are skipped, it is called on low memory.
+    size_t TrimFree() {
+        size_t freed = 0;
+        for (size_t idx = 0; idx < NUM_BUCKETS; ++idx) {
+            Bucket& bucket = m_buckets[idx];
+            std::unique_lock<std::mutex> lock(bucket.mutex, std::try_to_lock);
+            if (!lock.owns_lock()) {
+                continue;
+            }
+            const size_t bucketSize = static_cast<size_t>(4096) << idx;
+            while (!bucket.freeBuffers.empty()) {
+                uint8_t* buf = bucket.freeBuffers.front();
+                bucket.freeBuffers.pop();
+                auto it = std::find(bucket.allBuffers.begin(), bucket.allBuffers.end(), buf);
+                if (it != bucket.allBuffers.end()) {
+                    *it = bucket.allBuffers.back();
+                    bucket.allBuffers.pop_back();
+                }
+                delete[] buf;
+                freed += bucketSize;
+            }
+        }
+        m_totalAllocated.fetch_sub(freed, std::memory_order_relaxed);
+        return freed;
+    }
+
     void Shutdown() {
         for (auto& bucket : m_buckets) {
             std::lock_guard<std::mutex> lock(bucket.mutex);
@@ -514,6 +541,24 @@ void idTextureCache::ClearRamCache() {
     m_ramCacheList.clear();
     m_ramCacheIndex.clear();
     m_ramCacheCurrentSize = 0;
+    // on low memory and between maps: without this the pool kept all of it allocated
+    BufferPool::Instance().TrimFree();
+}
+
+bool idTextureCache::TryClearRamCache() {
+    std::unique_lock<std::mutex> lock(m_ramCacheMutex, std::try_to_lock);
+    if (!lock.owns_lock() || m_ramCacheList.empty()) {
+        return false;
+    }
+    for (auto& entry : m_ramCacheList) {
+        BufferPool::Instance().Release(entry.etc2Data, entry.etc2Size);
+    }
+    m_ramCacheList.clear();
+    m_ramCacheIndex.clear();
+    m_ramCacheCurrentSize = 0;
+    // the pool keeps what was released, give it back to the system
+    BufferPool::Instance().TrimFree();
+    return true;
 }
 
 void idTextureCache::ForceEvictRamCache(float fraction) {

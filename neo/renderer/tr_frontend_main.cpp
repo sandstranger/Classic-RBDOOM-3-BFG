@@ -41,7 +41,12 @@ FRAME MEMORY ALLOCATION
 */
 
 static const unsigned int FRAME_ALLOC_ALIGNMENT = 128;
+#if defined( ID_LOW_MEMORY )
+// a 32 bit process: only the pages a frame touches are resident, but the address space is short
+static const unsigned int MAX_FRAME_MEMORY = 32 * 1024 * 1024;
+#else
 static const unsigned int MAX_FRAME_MEMORY = 64 * 1024 * 1024;	// larger so that we can noclip on PC for dev purposes
+#endif
 
 idFrameData		smpFrameData[NUM_FRAME_DATA];
 idFrameData* 	frameData;

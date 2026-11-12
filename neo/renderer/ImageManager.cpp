@@ -922,6 +922,16 @@ void idImageManager::EndLevelLoad()
 	idLib::Printf( "%5i images loaded in %5.1f seconds\n", loadCount, ( end - start ) * 0.001 );
 	idLib::Printf( "----------------------------------------\n" );
 	//R_ListImages_f( idCmdArgs( "sorted sorted", false ) );
+
+#if defined( ID_LOW_MEMORY ) && !defined( USE_VULKAN )
+	// the decode and transcode buffers grew to the largest texture of the map: a 32 bit process
+	// gives them back for the game, the few images loaded later allocate them again
+	extern void ClearTexturesBuffers();
+	ClearTexturesBuffers();
+#endif
+#if defined( ANDROID )
+	Sys_PrintMemoryStatus( "after the level load" );
+#endif
 }
 
 /*

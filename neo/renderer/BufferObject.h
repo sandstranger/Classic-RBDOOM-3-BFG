@@ -64,8 +64,14 @@ public:
     void BeginFrame();
     void EndFrame();
 
+    // the backend frame that runs next: EndFrame fences its commands and counts on
+    uint64_t FrameIndex() const { return frameIndex; }
+    // until the GPU is done with the commands of a backend frame, returns at once for one it is done with
+    void WaitForFrame(uint64_t frame);
+
 private:
     GLsync fences[SLOT_COUNT]{};
+    uint64_t fenceFrames[SLOT_COUNT]{};		// the frame of each fence
     uint64_t frameIndex = 0;
 };
 
@@ -76,7 +82,21 @@ public:
     idGLBufferRing() = default;
     ~idGLBufferRing() { Destroy(); }
 
+    // a slot per frame of g_frameFences, mapped every frame or persistently
     bool Create(GLenum target, GLsizeiptr size, bool persistent);
+
+    // the dynamic buffers of the vertex cache, written by the CPU over a frame and drawn by the next
+    // backend frame. Persistently mapped (allowPersistent and EXT_buffer_storage): two slots, a slot
+    // waits for the frame that drew it last before it is written again. Otherwise CPU memory, of which
+    // SubmitSlot gives only the written bytes to fresh GL storage: the GPU memory is what the frames use,
+    // not the whole size, and the driver keeps the storage of the frames still drawing.
+    bool CreateStreaming(GLenum target, GLsizeiptr size, bool allowPersistent);
+    bool IsStreaming() const { return streaming_; }
+    // the slot to write next, see CreateStreaming; the slot of the frame for the rings of Create
+    int  AcquireSlot();
+    // writtenBytes from the start of the slot are written, the next backend frame draws them
+    void SubmitSlot(int slot, GLsizeiptr writtenBytes);
+
     void Destroy();
 
     GLuint Buffer(int slot) const;
@@ -98,6 +118,14 @@ private:
     bool coherent_ = false;
     GLuint      buffers[SLOT_COUNT]{};
     void*       mapped[SLOT_COUNT]{};
+
+    // CreateStreaming
+    bool        streaming_ = false;
+    int         numSlots_ = SLOT_COUNT;
+    int         lastSlot_ = -1;
+    bool        slotSubmitted_[SLOT_COUNT]{};
+    uint64_t    slotDrawFrame_[SLOT_COUNT]{};	// the backend frame that draws what was submitted
+    byte*       staging_ = nullptr;				// the CPU copy when not persistently mapped
 };
 
 void UnbindBufferObjects();
@@ -175,6 +203,12 @@ public:
         return static_cast<idDrawVert*>(MapBuffer(mapType));
     }
     void                UnmapBuffer();
+#ifdef ANDROID
+    // a dynamic buffer of which writtenBytes from the start were written, see idGLBufferRing::SubmitSlot
+    void                UnmapBuffer(int writtenBytes);
+    // a static buffer gets larger storage that keeps the first keepBytes, see idVertexCache::GrowStatic
+    bool                GrowStatic(int newAllocSize, int keepBytes);
+#endif
 
 private:
     void                ClearWithoutFreeing();
@@ -205,6 +239,10 @@ public:
         return static_cast<triIndex_t*>(MapBuffer(mapType));
     }
     void                UnmapBuffer();
+#ifdef ANDROID
+    void                UnmapBuffer(int writtenBytes);
+    bool                GrowStatic(int newAllocSize, int keepBytes);
+#endif
 
 private:
     void                ClearWithoutFreeing();
@@ -232,6 +270,9 @@ public:
 
     void*               MapBuffer(bufferMapType_t mapType);
     void                UnmapBuffer();
+#ifdef ANDROID
+    void                UnmapBuffer(int writtenBytes);
+#endif
 
 private:
     void                ClearWithoutFreeing();

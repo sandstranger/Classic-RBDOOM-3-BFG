@@ -57,7 +57,11 @@ public:
 	
 	ID_TIME_T			LoadFromGeneratedFile( ID_TIME_T sourceFileTime );
 	ID_TIME_T			WriteGeneratedFile( ID_TIME_T sourceFileTime );
-	
+#if defined( ANDROID )
+	// RGB565 made in memory (Load*FromMemory) is big endian like the files, GLES uploads native shorts
+	void				Rgb565ToNative();
+#endif
+
 	const bimageFile_t& 	GetFileHeader()
 	{
 		return fileData;

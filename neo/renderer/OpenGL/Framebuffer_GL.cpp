@@ -1685,9 +1685,6 @@ void Framebuffer::Bind()
 
     if (currentBoundFramebuffer != this)
     {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-        tr.backend.FlushMultiDrawBatch();
-#endif
         glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer);
         currentBoundFramebuffer = this;
 #if defined(ANDROID)
@@ -1761,9 +1758,6 @@ void Framebuffer::Unbind()
 
     if (currentBoundFramebuffer != nullptr)
     {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-        tr.backend.FlushMultiDrawBatch();
-#endif
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
         currentBoundFramebuffer = nullptr;
@@ -1840,7 +1834,12 @@ void Framebuffer::AddColorBuffer(int format, int index, int multiSamples)
 
     colorFormat = format;
 
+#if defined(ANDROID)
+    // GLES 3.0 has no multisample textures: only EXT_multisampled_render_to_texture renders MSAA into one
+    const bool useMSAA = (multiSamples > 0) && glConfig.hasMSAAEXT;
+#else
     const bool useMSAA = (multiSamples > 0);
+#endif
     msaaSamples = useMSAA;
     const bool notCreatedYet = (colorTextures[index] == 0);
 
@@ -1873,7 +1872,12 @@ void Framebuffer::AddColorBuffer(int format, int index, int multiSamples)
 void Framebuffer::AddDepthBuffer(int format, int multiSamples)
 {
     depthFormat = format;
+#if defined(ANDROID)
+    // GLES 3.0 has no multisample textures: only EXT_multisampled_render_to_texture renders MSAA into one
+    const bool useMSAA = (multiSamples > 0) && glConfig.hasMSAAEXT;
+#else
     const bool useMSAA = (multiSamples > 0);
+#endif
     msaaSamples = useMSAA;
     const bool notCreatedYet = (depthTexture == 0);
 
@@ -1980,8 +1984,14 @@ int Framebuffer::GetNumAttachments() const
 
 void Framebuffer::AttachImage2D(int target, const idImage* image, int index, int mipmapLod)
 {
+#if defined(ANDROID)
+    // GLES 3.0: a multisampled image is a 2D texture too, see R_MultisampleTextureTarget
+    if ((target != GL_TEXTURE_2D) &&
+        (target < GL_TEXTURE_CUBE_MAP_POSITIVE_X || target > GL_TEXTURE_CUBE_MAP_NEGATIVE_Z))
+#else
     if ((target != GL_TEXTURE_2D) && (target != GL_TEXTURE_2D_MULTISAMPLE) &&
         (target < GL_TEXTURE_CUBE_MAP_POSITIVE_X || target > GL_TEXTURE_CUBE_MAP_NEGATIVE_Z))
+#endif
     {
         common->Warning("Framebuffer::AttachImage2D( %s ): invalid target", fboName.c_str());
         return;
@@ -2014,13 +2024,22 @@ void Framebuffer::AttachImage2D(int target, const idImage* image, int index, int
 
 void Framebuffer::AttachImage3D(const idImage* image)
 {
+#if defined(ANDROID)
+    // GLES 3.0 has no layered attachments (glFramebufferTexture is GLES 3.2), the first layer
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, image->texnum, 0, 0);
+#else
     glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, image->texnum, 0);
+#endif
     TrackColorAttachment(0, image->texnum);
 }
 
 void Framebuffer::AttachImageDepth(int target, const idImage* image)
 {
+#if defined(ANDROID)
+    if (target != GL_TEXTURE_2D)
+#else
     if ((target != GL_TEXTURE_2D) && (target != GL_TEXTURE_2D_MULTISAMPLE))
+#endif
     {
         common->Warning("Framebuffer::AttachImageDepth( %s ): invalid target", fboName.c_str());
         return;

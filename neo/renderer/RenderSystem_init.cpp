@@ -46,6 +46,9 @@ If you have questions concerning this license or the applicable additional terms
 #if ANDROID
 #include "TextureCache.h"
 #endif
+#if defined( ID_NEON )
+#include <arm_neon.h>
+#endif
 // foresthale 2014-03-01: fixed custom screenshot resolution by doing a more direct render path
 #define BUGFIXEDSCREENSHOTRESOLUTION 1
 #ifdef BUGFIXEDSCREENSHOTRESOLUTION
@@ -937,7 +940,8 @@ void R_ReadTiledPixels( int width, int height, byte* buffer, renderView_t* ref =
 			
 			glReadBuffer( GL_BACK );
 #ifdef ANDROID //karin: glReadPixels only support GL_RGBAxxx on OpenGLES
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
+            // vld4q / vst3q: ARMv7 NEON has them too
             byte *tmpbuf = (byte *) R_StaticAlloc(w * h * 4);
             glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, tmpbuf);
             const int tmpsize = sysWidth * sysHeight;

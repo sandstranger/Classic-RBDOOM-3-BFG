@@ -837,9 +837,10 @@ const char* fragmentInsert =
 	"\n"
 };
 
+// GLSL ES 3.00 only: the renderer runs on every GLES 3.0 device, see idRenderBackend::Init
 const char* vertexInsert_GLSL_ES_3_00 =
         {
-                "#version 320 es\n"
+                "#version 300 es\n"
                 "#define PC\n"
                 "// TBR_MOBILE_SHADER_PATH\n"
                 "precision highp float;\n"
@@ -858,7 +859,7 @@ const char* vertexInsert_GLSL_ES_3_00 =
 
 const char* fragmentInsert_GLSL_ES_3_00 =
         {
-                "#version 320 es\n"
+                "#version 300 es\n"
                 "#define PC\n"
                 "// TBR_MOBILE_SHADER_PATH\n"
                 "precision highp float;\n"
@@ -904,6 +905,30 @@ const char* fragmentInsert_GLSL_ES_3_00 =
                 "vec4 texCUBElod( samplerCube sampler, vec4 texcoord ) { return textureLod( sampler, texcoord.xyz, texcoord.w ); }\n"
                 "\n"
         };
+
+/*
+========================
+GLSL_ES_FIND_MSB
+
+findMSB is GLSL ES 3.10. The SSAO and SSGI renderprogs keep it behind GL_EXT_gpu_shader5, which the
+HLSL preprocessing never defines, but renderprogs of other game data may call it: ConvertCG2GLSL
+renames the calls and puts this in front of such a program, the program still compiles on GLES 3.0.
+A name of its own: a driver that knows findMSB in GLSL ES 3.00 anyway can't take it for a redefinition.
+========================
+*/
+#define GLSL_ES_FIND_MSB \
+	"highp int rFindMSB( highp int value )\n" \
+	"{\n" \
+	"	highp int v = ( value < 0 ) ? ~value : value;\n" \
+	"	if( v == 0 ) { return -1; }\n" \
+	"	highp int r = 0;\n" \
+	"	if( v >= 65536 ) { v = v / 65536; r += 16; }\n" \
+	"	if( v >= 256 ) { v = v / 256; r += 8; }\n" \
+	"	if( v >= 16 ) { v = v / 16; r += 4; }\n" \
+	"	if( v >= 4 ) { v = v / 4; r += 2; }\n" \
+	"	if( v >= 2 ) { r += 1; }\n" \
+	"	return r;\n" \
+	"}\n"
 
 /*
 ========================
@@ -1421,6 +1446,7 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
 
     bool inMain = false;
     bool justEnteredMain = false;
+    bool usesFindMSB = false;
     const bool textureLodBias = R_GLSLUsesTextureLodBias( name, stage );
     const char* uniformArrayName = ( stage == SHADER_STAGE_VERTEX ) ? VERTEX_UNIFORM_ARRAY_NAME : FRAGMENT_UNIFORM_ARRAY_NAME;
     char newline[128] = { "\n" };
@@ -1889,6 +1915,15 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
         }
 
 
+        // GLSL ES 3.00 has no findMSB, see GLSL_ES_FIND_MSB
+        if( glConfig.driverType == GLDRV_OPENGL_MESA && !vkGLSL && token.Cmp( "findMSB" ) == 0 )
+        {
+            program += ( token.linesCrossed > 0 ) ? newline : ( token.WhiteSpaceBeforeToken() > 0 ? " " : "" );
+            program += "rFindMSB";
+            usesFindMSB = true;
+            continue;
+        }
+
         bool foundFunction = false;
         for( int i = 0; builtinConversion[i].nameCG != NULL; i++ )
         {
@@ -1989,6 +2024,11 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
         }
     }
 
+
+    if( usesFindMSB )
+    {
+        out += GLSL_ES_FIND_MSB;
+    }
 
     if( uniformList.Num() > 0 )
     {
@@ -2155,9 +2195,6 @@ void idRenderProgManager::SetUniformValue( const renderParm_t rp, const float* v
     {
         return;
     }
-#if defined(ANDROID)
-    tr.backend.FlushMultiDrawBatch();
-#endif
     uniformChangeSerial[rp] = ++uniformSerial;
 #endif
     for( int i = 0; i < 4; i++ )
@@ -2174,9 +2211,6 @@ idRenderProgManager::ZeroUniforms
 */
 void idRenderProgManager::ZeroUniforms()
 {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-    tr.backend.FlushMultiDrawBatch();
-#endif
     memset( uniforms.Ptr(), 0, uniforms.Allocated() );
 #if !defined(USE_VULKAN)
     ++uniformSerial;

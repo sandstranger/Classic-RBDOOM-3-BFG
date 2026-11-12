@@ -179,6 +179,34 @@ Defines and macros usable in all code
 
 #define ALIGN( x, a ) ( ( ( x ) + ((a)-1) ) & ~((a)-1) )
 
+/*
+================================================================================================
+
+	ARM and memory profiles
+
+	ID_NEON			NEON intrinsics (arm_neon.h) are available: AArch64, or 32 bit ARM built with NEON
+	ID_NEON_A64		the AArch64 only intrinsics are available too (vqtbl1q, vdivq, vsqrtq, vcvtaq, vzip1 ...)
+	ID_ARMV7		32 bit ARM, armeabi-v7a
+	ID_LOW_MEMORY	a 32 bit Android process: 3 GB or less of address space on devices with 1-2 GB of
+					RAM, the GPU buffers, textures and caches are sized for that, see where it is used
+
+================================================================================================
+*/
+#if defined(__aarch64__) || defined(_M_ARM64)
+	#define ID_NEON						1
+	#define ID_NEON_A64					1
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+	#define ID_NEON						1
+#endif
+
+#if defined(__arm__) && !defined(__aarch64__)
+	#define ID_ARMV7					1
+#endif
+
+#if defined(__ANDROID__) && !defined(__LP64__)
+	#define ID_LOW_MEMORY				1
+#endif
+
 // RB: changed UINT_PTR to uintptr_t
 #define _alloca16( x )					((void *)ALIGN( (uintptr_t)_alloca( ALIGN( x, 16 ) + 16 ), 16 ) )
 #define _alloca128( x )					((void *)ALIGN( (uintptr_t)_alloca( ALIGN( x, 128 ) + 128 ), 128 ) )

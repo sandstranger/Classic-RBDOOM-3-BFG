@@ -42,7 +42,10 @@ If you have questions concerning this license or the applicable additional terms
 namespace
 {
 static const int RB_EXPOSURE_READBACK_COUNT = 3;
-static const GLsizeiptr RB_EXPOSURE_READBACK_BYTES = 64 * 64 * 4 * sizeof(float);
+// _currentRenderHDR64 is RGBA8 on GLES: GLES 3.0 reads a normalized color buffer as RGBA unsigned
+// bytes, GL_FLOAT is only for float buffers and fails with GL_INVALID_OPERATION on strict drivers
+static const int RB_EXPOSURE_READBACK_VALUES = 64 * 64 * 4;
+static const GLsizeiptr RB_EXPOSURE_READBACK_BYTES = RB_EXPOSURE_READBACK_VALUES;
 
 struct rbExposureReadbackSlot_t
 {
@@ -56,6 +59,23 @@ static unsigned long long rbExposureReadbackNextSequence = 1;
 static int rbExposureReadbackWriteIndex = 0;
 static bool rbExposureReadbackInitialized = false;
 static bool rbExposureReadbackHasInitialSample = false;
+
+// what a GL_FLOAT read of the normalized buffer would have given
+static void RB_ExposureBytesToFloats( const byte* bytes, float* image )
+{
+	const float scale = 1.0f / 255.0f;
+	for( int i = 0; i < RB_EXPOSURE_READBACK_VALUES; i++ )
+	{
+		image[i] = bytes[i] * scale;
+	}
+}
+
+static void RB_ReadExposurePixelsNow( float* image )
+{
+	static byte bytes[RB_EXPOSURE_READBACK_VALUES];
+	glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, bytes );
+	RB_ExposureBytesToFloats( bytes, image );
+}
 }
 
 void RB_InitExposureReadback()
@@ -144,7 +164,7 @@ static bool RB_ReadExposurePixelsAsync( float* image )
 	if ( !rbExposureReadbackInitialized )
 	{
 		// Keep HDR working on drivers where PBO allocation is unavailable.
-		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+		RB_ReadExposurePixelsNow( image );
 		return true;
 	}
 
@@ -152,7 +172,7 @@ static bool RB_ReadExposurePixelsAsync( float* image )
 	{
 		// Seed exposure synchronously once so the first HDR frame never tonemaps
 		// with uninitialized luminance while the asynchronous ring is warming up.
-		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+		RB_ReadExposurePixelsNow( image );
 		rbExposureReadbackHasInitialSample = true;
 		return true;
 	}
@@ -189,7 +209,7 @@ static bool RB_ReadExposurePixelsAsync( float* image )
 	if ( waitFailed )
 	{
 		RB_ShutdownExposureReadback();
-		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+		RB_ReadExposurePixelsNow( image );
 		return true;
 	}
 
@@ -205,7 +225,7 @@ static bool RB_ReadExposurePixelsAsync( float* image )
 		bool mapSucceeded = false;
 		if ( mapped != nullptr )
 		{
-			memcpy( image, mapped, (size_t)RB_EXPOSURE_READBACK_BYTES );
+			RB_ExposureBytesToFloats( ( const byte* )mapped, image );
 			mapSucceeded = ( glUnmapBuffer( GL_PIXEL_PACK_BUFFER ) == GL_TRUE );
 		}
 
@@ -219,7 +239,7 @@ static bool RB_ReadExposurePixelsAsync( float* image )
 			// If a completed PBO cannot be mapped reliably, fall back to the
 			// synchronous path instead of leaving exposure frozen indefinitely.
 			RB_ShutdownExposureReadback();
-			glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+			RB_ReadExposurePixelsNow( image );
 			return true;
 		}
 		hasSample = true;
@@ -234,7 +254,7 @@ static bool RB_ReadExposurePixelsAsync( float* image )
 		GLint previousPackBuffer = 0;
 		glGetIntegerv( GL_PIXEL_PACK_BUFFER_BINDING, &previousPackBuffer );
 		glBindBuffer( GL_PIXEL_PACK_BUFFER, writeSlot.buffer );
-		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, NULL );
+		glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, NULL );
 		GLsync fence = glFenceSync( GL_SYNC_GPU_COMMANDS_COMPLETE, 0 );
 		glBindBuffer( GL_PIXEL_PACK_BUFFER, previousPackBuffer );
 
@@ -243,7 +263,7 @@ static bool RB_ReadExposurePixelsAsync( float* image )
 			// A missing fence makes safe asynchronous reuse impossible.
 			// Tear down the ring and fall back to the original synchronous path.
 			RB_ShutdownExposureReadback();
-			glReadPixels( 0, 0, 64, 64, GL_RGBA, GL_FLOAT, image );
+			RB_ReadExposurePixelsNow( image );
 			return true;
 		}
 
@@ -1875,7 +1895,12 @@ void idRenderBackend::WorldMergePass( const emptyCommand_t* cmds )
 		}
 
 		// managed through the copy target, binding it as element buffer would change the VAO
+#if defined( ID_LOW_MEMORY )
+		// a 32 bit process: one buffer that gets the written indexes, not four of up to 16 MB
+		if( !s_worldMergeRing->CreateStreaming( GL_COPY_WRITE_BUFFER, wantedSize, false ) )
+#else
 		if( !s_worldMergeRing->Create( GL_COPY_WRITE_BUFFER, wantedSize, R_HasBufferStorage() ) )
+#endif
 		{
 			delete s_worldMergeRing;
 			s_worldMergeRing = NULL;
@@ -1884,10 +1909,11 @@ void idRenderBackend::WorldMergePass( const emptyCommand_t* cmds )
 		}
 		s_worldMergeRingSize = wantedSize;
 		idLib::Printf( "World surface merging: %d KB of indexes per frame, %s\n", wantedSize / 1024,
-					   s_worldMergeRing->IsPersistent() ? "persistently mapped" : "mapped every frame" );
+					   s_worldMergeRing->IsPersistent() ? "persistently mapped" : ( s_worldMergeRing->IsStreaming() ? "uploaded every frame" : "mapped every frame" ) );
 	}
 
-	const int slot = g_frameFences.CurrentSlot();
+	// the slot of this frame, or of the streaming ring
+	const int slot = s_worldMergeRing->AcquireSlot();
 	uint32* mapped = ( uint32* )s_worldMergeRing->MapForWrite( slot );
 	if( mapped == NULL )
 	{
@@ -4177,8 +4203,6 @@ void idRenderBackend::StencilShadowPass( const drawSurf_t* drawSurfs, const view
         const int stencilShadowMode = usePreload ? 1 : (renderZPass ? 0 : 2);
         if (usePreload || stencilShadowMode != previousStencilShadowMode)
         {
-            // Finish earlier draws before changing stencil operations.
-            tr.backend.FlushMultiDrawBatch();
             if (renderZPass)
             {
                 glStencilOpSeparate(GL_FRONT, GL_KEEP, GL_KEEP, GL_INCR);
@@ -4233,8 +4257,6 @@ void idRenderBackend::StencilShadowPass( const drawSurf_t* drawSurfs, const view
 	}
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
-    // Finish queued shadows before the caller restores the stencil state.
-    tr.backend.FlushMultiDrawBatch();
 	if( r_gpuInstancingDebug.GetBool() && stencilShadowBatchCount > 0 )
 	{
 		idLib::Printf( "GPU instancing stencil-shadow pass: %d batches, %d draw calls saved\n",
@@ -5611,7 +5633,6 @@ void idRenderBackend::DrawShadowCacheCopy( int cacheX, int cacheY, int frameX, i
 
 	DrawElementsWithCounters( &unitSquareSurface );
 
-	FlushMultiDrawBatch();
 	glBindSampler( 0, 0 );
 	pc.c_shadowCacheCopies++;
 }

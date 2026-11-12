@@ -88,6 +88,8 @@ public:
     size_t GetRamCacheSize() const { return m_ramCacheCurrentSize; }
     void ClearRamCache();
     void ForceEvictRamCache(float fraction);
+    // ClearRamCache for the out of memory handler: returns false at once when the cache is in use
+    bool TryClearRamCache();
 
 private:
     idTextureCache() = default;
@@ -120,6 +122,11 @@ private:
     std::unordered_map<uint64_t, std::list<RamCacheEntry>::iterator> m_ramCacheIndex;
     std::list<RamCacheEntry> m_ramCacheList;
     std::mutex m_ramCacheMutex;
+#if defined( ID_LOW_MEMORY )
+    // a 32 bit process: the textures on the GPU and the disk cache matter more than a RAM copy
+    size_t m_ramCacheMaxSize = 16 * 1024 * 1024;
+#else
     size_t m_ramCacheMaxSize = 200 * 1024 * 1024;
+#endif
     size_t m_ramCacheCurrentSize = 0;
 };

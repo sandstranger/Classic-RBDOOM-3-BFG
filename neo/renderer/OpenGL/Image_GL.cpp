@@ -37,7 +37,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../TextureCache.h"
 
 #endif
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
 #include "arm_neon.h"
 #endif
 
@@ -68,8 +68,25 @@ static std::string g_pathToTextureCacheDir;
 static std::vector<uint8_t> s_decodeBuffer;
 static std::vector<uint8_t> s_etc2Buffer;
 static std::vector<uint8_t> s_etc2CacheBuffer;
-static std::vector<uint8_t> s_textureBuffer;
 static std::mutex imageMutex;
+
+/*
+========================
+R_MultisampleTextureTarget
+
+GLES 3.0 has no multisample textures (GL_TEXTURE_2D_MULTISAMPLE is GLES 3.1): a TT_2D_MULTISAMPLE
+image is a plain 2D texture that EXT_multisampled_render_to_texture renders into with MSAA resolved
+on the tile, see idImage::GenerateImage and Framebuffer::AttachImage2D.
+========================
+*/
+static inline GLenum R_MultisampleTextureTarget()
+{
+#if defined(ANDROID)
+    return GL_TEXTURE_2D;
+#else
+    return glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
+#endif
+}
 
 extern "C" {
 __attribute__((used)) __attribute__((visibility("default")))
@@ -119,11 +136,83 @@ static inline GLenum GetEtc2InternalFormat(bool isSrgb) {
            : GL_COMPRESSED_RGBA8_ETC2_EAC;
 }
 
+/*
+========================
+R_Etc2FormatForDxt
+
+The ETC2 a DXT texture is transcoded to when the GPU has no S3TC. DXT1 carries no alpha the engine
+reads: the specular maps, and the coverage and font images whose alpha is the green channel (the
+CFM_GREEN_ALPHA swizzle). ETC2 RGB8 is 4 bits per pixel like DXT1, RGBA8 EAC doubled them.
+========================
+*/
+static inline GLenum R_Etc2FormatForDxt(textureFormat_t format, textureUsage_t usage, textureColor_t colorFormat) {
+    if (format == FMT_DXT1 && (usage == TD_SPECULAR || colorFormat == CFM_GREEN_ALPHA)) {
+        return GL_COMPRESSED_RGB8_ETC2;
+    }
+    return GL_COMPRESSED_RGBA8_ETC2_EAC;
+}
+
+static inline size_t R_Etc2BlockBytes(GLenum format) {
+    return (format == GL_COMPRESSED_RGB8_ETC2 || format == GL_COMPRESSED_SRGB8_ETC2) ? 8 : 16;
+}
+
+/*
+========================
+R_IsTexStorageFormat
+
+glTexStorage takes sized formats only. GL_INTENSITY16 and GL_LUMINANCE16_ALPHA16 (FMT_X16,
+FMT_Y16_X16) are no GLES formats at all, they keep the old path and fail there as before.
+========================
+*/
+static inline bool R_IsTexStorageFormat(GLenum internalFormat) {
+    return internalFormat != GL_INTENSITY16 && internalFormat != GL_LUMINANCE16_ALPHA16;
+}
+
+// glTexStorage refuses more levels than the size has, the per level definition made them 1x1
+static inline int R_MaxMipLevels(int width, int height) {
+    int levels = 1;
+    for (int size = Max(width, height); size > 1; size >>= 1) {
+        levels++;
+    }
+    return levels;
+}
+
+/*
+========================
+R_PadRgbaToBlocks
+
+Tight RGBA rows (stride width) to rows of whole 4x4 blocks (stride paddedWidth) in place, the
+padding repeats the edge pixels. etcpak reads the blocks with the padded stride: the tight rows
+gave the levels below 4 pixels and the sizes that are no multiple of 4 pixels of the wrong rows.
+========================
+*/
+static void R_PadRgbaToBlocks(uint8_t *pixels, int width, int height, int paddedWidth, int paddedHeight) {
+    const size_t rowBytes = static_cast<size_t>(width) * 4;
+    const size_t strideBytes = static_cast<size_t>(paddedWidth) * 4;
+
+    if (paddedWidth != width) {
+        // from the last row up: a row never lands on one that was not moved yet
+        for (int y = height - 1; y >= 0; y--) {
+            uint8_t *row = pixels + static_cast<size_t>(y) * strideBytes;
+            memmove(row, pixels + static_cast<size_t>(y) * rowBytes, rowBytes);
+            const uint8_t *last = row + rowBytes - 4;
+            for (int x = width; x < paddedWidth; x++) {
+                memcpy(row + static_cast<size_t>(x) * 4, last, 4);
+            }
+        }
+    }
+
+    const uint8_t *lastRow = pixels + static_cast<size_t>(height - 1) * strideBytes;
+    for (int y = height; y < paddedHeight; y++) {
+        memcpy(pixels + static_cast<size_t>(y) * strideBytes, lastRow, strideBytes);
+    }
+}
+
 
 static inline void SwapRB_NEON(uint8_t *dpic, size_t pixelCount) {
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
     size_t i = 0;
-    for (; i <= pixelCount - 16; i += 16) {
+    for (; i + 16 <= pixelCount; i += 16) {
         uint8x16x4_t pixels = vld4q_u8(&dpic[i * 4]);
         uint8x16_t temp = pixels.val[0];
         pixels.val[0] = pixels.val[2];
@@ -319,9 +408,6 @@ void idImage::Bind() {
 
 
     if (!IsLoaded()) {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-        tr.backend.FlushMultiDrawBatch();
-#endif
         ActuallyLoadImage(true);
     }
 
@@ -343,9 +429,6 @@ void idImage::Bind() {
         }
     }
     if (*currentMap != texnum || currentMap == &uncachedMap || !r_useStateCaching.GetBool()) {
-#if defined(ANDROID) && !defined(USE_VULKAN)
-        tr.backend.FlushMultiDrawBatch();
-#endif
 
 #if !defined(USE_GLES2) && !defined(USE_GLES3) && !ANDROID
         if( glConfig.directStateAccess )
@@ -367,7 +450,7 @@ void idImage::Bind() {
                     target = GL_TEXTURE_2D_ARRAY;
                     break;
                 case TT_2D_MULTISAMPLE:
-                    target = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
+                    target = R_MultisampleTextureTarget();
                     break;
             }
             // the unit is only selected for a bind, code that works on the bound
@@ -402,7 +485,7 @@ void idImage::CopyFramebufferLegacy(int x, int y, int imageWidth, int imageHeigh
             target = GL_TEXTURE_2D_ARRAY;
             break;
         case TT_2D_MULTISAMPLE:
-            target = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
+            target = R_MultisampleTextureTarget();
             break;
         default:
             return;
@@ -415,9 +498,10 @@ void idImage::CopyFramebufferLegacy(int x, int y, int imageWidth, int imageHeigh
                         (opts.format != desiredFormat);
 
     if (needRecreate) {
-        if (texnum == TEXTURE_NOT_LOADED) {
-            glGenTextures(1, (GLuint *) &texnum);
-        }
+        // AllocImage gives immutable storage (glTexStorage) that glCopyTexImage2D can't redefine:
+        // a new texture name. The copy targets are no framebuffer attachments.
+        PurgeImage();
+        glGenTextures(1, (GLuint *) &texnum);
         opts.width = imageWidth;
         opts.height = imageHeight;
         opts.format = desiredFormat;
@@ -630,10 +714,12 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
             const size_t dxtHeight = ((static_cast<size_t>(height) + 3) / 4) * 4;
             bool cacheHit = false;
             uint64_t hash = 0;
+            // what AllocImage gave the texture, see R_Etc2FormatForDxt
+            const GLenum etc2Format = static_cast<GLenum>(internalFormat);
 
             if (g_enableTextureCache) {
                 hash = ComputeTextureHash(static_cast<const uint8_t *>(pic), compressedSize, width,
-                                          height, GL_COMPRESSED_RGBA8_ETC2_EAC);
+                                          height, etc2Format);
                 std::byte *cachedEtc2 = nullptr;
                 size_t cachedSize = 0;
 
@@ -645,7 +731,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                             imgName.c_str(),
                             static_cast<const uint8_t *>(pic), compressedSize,
                             width, height,
-                            GL_COMPRESSED_RGBA8_ETC2_EAC,
+                            etc2Format,
                             gpuMipLevel,
                             s_etc2CacheBuffer, &cachedSize
                     );
@@ -654,7 +740,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                         cachedEtc2 = reinterpret_cast<std::byte *>(s_etc2CacheBuffer.data());
                         idTextureCache::Instance().SaveToRamCache(hash, cachedEtc2, cachedSize,
                                                                   width, height,
-                                                                  GL_COMPRESSED_RGBA8_ETC2_EAC);
+                                                                  etc2Format);
                     }
                 }
 
@@ -665,7 +751,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 
                     glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
                                               width, height,
-                                              GL_COMPRESSED_RGBA8_ETC2_EAC,
+                                              etc2Format,
                                               static_cast<GLsizei>(cachedSize),
                                               cachedEtc2);
                 }
@@ -694,51 +780,42 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                 }
 
                 const size_t pixelCount = dxtWidth * dxtHeight;
-#if defined(__aarch64__) || defined(_M_ARM64)
-                size_t i = 0;
-                for (; i <= pixelCount - 16; i += 16) {
-                    uint8x16x4_t pixels = vld4q_u8(&dpic[i * 4]);
+                SwapRB_NEON(dpic, pixelCount);
 
-                    uint8x16_t temp = pixels.val[0];
-                    pixels.val[0] = pixels.val[2];
-                    pixels.val[2] = temp;
-
-                    vst4q_u8(&dpic[i * 4], pixels);
-                }
-
-                for (; i < pixelCount; i++) {
-                    std::swap(dpic[i * 4], dpic[i * 4 + 2]);
-                }
-#else
-                for (size_t i = 0; i < pixelCount; i++)
-                {
-                    std::swap(dpic[i * 4], dpic[i * 4 + 2]);
-                }
-#endif
                 const size_t blocks = (dxtWidth / 4) * (dxtHeight / 4);
-                const size_t etc2CompressedSize = blocks * 16;
+                const size_t etc2CompressedSize = blocks * R_Etc2BlockBytes(etc2Format);
                 if (s_etc2Buffer.size() < etc2CompressedSize) {
                     s_etc2Buffer.resize(etc2CompressedSize);
                 }
                 uint8_t *etc2Data = s_etc2Buffer.data();
 
-                CompressEtc2Rgba(
-                        reinterpret_cast<const uint32_t *>(dpic),
-                        reinterpret_cast<uint64_t *>(etc2Data),
-                        blocks,
-                        width,
-                        true
-                );
+                if (etc2Format == GL_COMPRESSED_RGB8_ETC2) {
+                    CompressEtc2Rgb(
+                            reinterpret_cast<const uint32_t *>(dpic),
+                            reinterpret_cast<uint64_t *>(etc2Data),
+                            blocks,
+                            width,
+                            true
+                    );
+                } else {
+                    CompressEtc2Rgba(
+                            reinterpret_cast<const uint32_t *>(dpic),
+                            reinterpret_cast<uint64_t *>(etc2Data),
+                            blocks,
+                            width,
+                            true
+                    );
+                }
 
                 if (g_enableTextureCache) {
                     idTextureCache::Instance().SaveToRamCache(hash, etc2Data, etc2CompressedSize,
                                                               width, height,
-                                                              GL_COMPRESSED_RGBA8_ETC2_EAC);
+                                                              etc2Format);
                     idTextureCache::Instance().SaveToCacheAsync(
                             imgName.c_str(),
                             static_cast<const uint8_t *>(pic), compressedSize,
                             width, height,
-                            GL_COMPRESSED_RGBA8_ETC2_EAC,
+                            etc2Format,
                             gpuMipLevel,
                             etc2Data, etc2CompressedSize
                     );
@@ -746,7 +823,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 
                 glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
                                           width, height,
-                                          GL_COMPRESSED_RGBA8_ETC2_EAC,
+                                          etc2Format,
                                           static_cast<GLsizei>(etc2CompressedSize),
                                           etc2Data);
             }
@@ -826,18 +903,16 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
             }
             uint8_t *dpic = s_decodeBuffer.data();
 
-
-            memset(dpic, 0, decodeSize);
-
-
             ConvertRawToRgba(pic, dpic, dataFormat, dataType, width, height, pixelPitch);
-
 
             const size_t pixelCount = etc2Width * etc2Height;
             if (usage == TD_SPECULAR) {
                 ZeroAlphaChannel(dpic, static_cast<size_t>(width) * height);
             }
 
+            // every byte of the decode buffer is written here, no memset first
+            R_PadRgbaToBlocks(dpic, width, height, static_cast<int>(etc2Width),
+                              static_cast<int>(etc2Height));
 
             SwapRB_NEON(dpic, pixelCount);
 
@@ -869,8 +944,10 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
         }
 
 
+        // the level has its logical size now (glTexStorage), the data still whole blocks: GLES 3
+        // takes a size that is no multiple of 4 when the update reaches the edge of the level
         glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
-                                  static_cast<GLsizei>(etc2Width), static_cast<GLsizei>(etc2Height),
+                                  width, height,
                                   internalFormat,
                                   static_cast<GLsizei>(etc2CompressedSize),
                                   etc2Data);
@@ -943,7 +1020,14 @@ void idImage::SetTexParametersLegacy() {
             target = GL_TEXTURE_2D_ARRAY;
             break;
         case TT_2D_MULTISAMPLE:
+#if defined(ANDROID)
+            // a plain 2D texture that is sampled after the resolve, see R_MultisampleTextureTarget:
+            // without the filter of its image it would wait for mip levels it never gets
+            target = GL_TEXTURE_2D;
+            break;
+#else
             return;
+#endif
         default:
             idLib::FatalError("%s: bad texture type %d", GetName(), opts.textureType);
             return;
@@ -1476,7 +1560,7 @@ void idImage::AllocImage() {
             internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) ) ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 #else
             internalFormat = !glConfig.textureCompressionAvailable
-                             ? GL_COMPRESSED_RGBA8_ETC2_EAC
+                             ? R_Etc2FormatForDxt(opts.format, usage, opts.colorFormat)
                              : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 #endif
             dataFormat = GL_RGBA;
@@ -1580,8 +1664,8 @@ void idImage::AllocImage() {
             numSides = ( usage == TD_SHADOW_ATLAS ) ? 1 : 6;
             break;
         case TT_2D_MULTISAMPLE:
-            target = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
-            uploadTarget = glConfig.hasMSAAEXT ? GL_TEXTURE_2D : GL_TEXTURE_2D_MULTISAMPLE;
+            target = R_MultisampleTextureTarget();
+            uploadTarget = R_MultisampleTextureTarget();
             numSides = 1;
             break;
 
@@ -1632,6 +1716,31 @@ void idImage::AllocImage() {
         glGenTextures(1, (GLuint *) &texnum);
         assert(texnum != TEXTURE_NOT_LOADED);
         R_DirectBindTexture(target, texnum);
+#if defined(ANDROID)
+        if (R_IsTexStorageFormat(internalFormat)) {
+            // Immutable storage, GLES 3.0: every level at once and no data. The levels used to be
+            // defined one by one, the compressed ones with a level sized buffer of zeros or garbage
+            // that the driver copied in before SubImageUpload brought the real data. ANGLE took
+            // those as real uploads through its staging buffers; it also gets the final level count
+            // up front and never has to rebuild the Vulkan image when another level appears.
+            if (opts.textureType == TT_2D_ARRAY) {
+                glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, internalFormat, opts.width, opts.height, numSides);
+            } else if (opts.textureType == TT_2D_MULTISAMPLE) {
+                // the single sample storage, EXT_multisampled_render_to_texture keeps the samples on the tile
+                glTexStorage2D(GL_TEXTURE_2D, 1, internalFormat, w, h);
+            } else {
+                if (opts.textureType == TT_CUBIC) {
+                    h = w;
+                }
+                const int mipSkip = MipLevelsToSkip();
+                const int levelW = Max(1, w >> mipSkip);
+                const int levelH = Max(1, h >> mipSkip);
+                const int levels = Max(1, Min(opts.numLevels - mipSkip, R_MaxMipLevels(levelW, levelH)));
+                glTexStorage2D(target, levels, internalFormat, levelW, levelH);
+                glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, levels - 1);
+            }
+        } else
+#endif
         if (opts.textureType == TT_2D_ARRAY) {
 #ifndef ANDROID
             glTexImage3D(uploadTarget, 0, internalFormat, w, h, numSides, 0, dataFormat, GL_UNSIGNED_BYTE, NULL);
@@ -1650,24 +1759,14 @@ void idImage::AllocImage() {
 #ifndef ANDROID
             glTexImage2DMultisample(uploadTarget, opts.samples, internalFormat, w, h, GL_FALSE);
 #else
-            if (glConfig.hasMSAAEXT) {
-                glTexImage2D(uploadTarget, 0, internalFormat, w, h, 0, dataFormat, dataType,
-                             nullptr);
-            } else if (glTexStorage2DMultisample != nullptr) {
-                glTexStorage2DMultisample(
-                        GL_TEXTURE_2D_MULTISAMPLE,
-                        opts.samples,
-                        internalFormat,
-                        w, h,
-                        GL_FALSE
-                );
-            }
+            // the single sample storage, EXT_multisampled_render_to_texture keeps the samples on the tile
+            glTexImage2D(uploadTarget, 0, internalFormat, w, h, 0, dataFormat, dataType, nullptr);
 #endif
         } else {
             if (opts.textureType == TT_CUBIC) {
                 h = w;
             }
-            int mipSkip = getMipmapSkipLevel(opts.numLevels);
+            int mipSkip = MipLevelsToSkip();
             int effectiveNumLevels = opts.numLevels - mipSkip;
             if (effectiveNumLevels < 1) effectiveNumLevels = 1;
 
@@ -1686,27 +1785,6 @@ void idImage::AllocImage() {
                 if (h < 1) h = 1;
 
                 for (int level = 0; level < effectiveNumLevels; level++) {
-#ifdef ANDROID
-                    if (forcedEtc2) {
-                        const size_t etc2W = ((static_cast<size_t>(w) + 3) / 4) * 4;
-                        const size_t etc2H = ((static_cast<size_t>(h) + 3) / 4) * 4;
-                        const size_t etc2Blocks = (etc2W / 4) * (etc2H / 4);
-                        const size_t etc2CompressedSize = etc2Blocks * 16;
-
-                        if (s_textureBuffer.size() < etc2CompressedSize) {
-                            s_textureBuffer.resize(etc2CompressedSize);
-                        }
-                        memset(s_textureBuffer.data(), 0, etc2CompressedSize);
-
-                        glCompressedTexImage2D(uploadTarget + side, level, internalFormat,
-                                               static_cast<GLsizei>(etc2W),
-                                               static_cast<GLsizei>(etc2H),
-                                               0,
-                                               static_cast<GLsizei>(etc2CompressedSize),
-                                               s_textureBuffer.data());
-                    } else
-#endif
-
                     if (IsCompressed()) {
                         {
                             int compressedSize = (((w + 3) / 4) * ((h + 3) / 4) * int64(16) *
@@ -1718,27 +1796,8 @@ void idImage::AllocImage() {
                             if (data != NULL) HeapFree(GetProcessHeap(), 0, data);
 
 #elif ANDROID
-                            if (!glConfig.textureCompressionAvailable) {
-                                const size_t dxtWidth = ((static_cast<size_t>(w) + 3) / 4) * 4;
-                                const size_t dxtHeight = ((static_cast<size_t>(h) + 3) / 4) * 4;
-                                const size_t etc2CompressedSize =
-                                        ((dxtWidth / 4) * (dxtHeight / 4)) * 16;
-                                if (s_textureBuffer.size() < etc2CompressedSize) {
-                                    s_textureBuffer.resize(etc2CompressedSize);
-                                }
-                                byte *data = s_textureBuffer.data();
-                                glCompressedTexImage2D(uploadTarget + side, level,
-                                                       GL_COMPRESSED_RGBA8_ETC2_EAC, w, h, 0,
-                                                       static_cast<GLsizei>(etc2CompressedSize),
-                                                       data);
-                            } else {
-                                if (s_textureBuffer.size() < compressedSize) {
-                                    s_textureBuffer.resize(compressedSize);
-                                }
-                                byte *data = s_textureBuffer.data();
-                                glCompressedTexImage2D(uploadTarget + side, level, internalFormat,
-                                                       w, h, 0, compressedSize, data);
-                            }
+                            // compressed formats always take glTexStorage above
+                            (void)compressedSize;
 #else
                             byte* data = (byte*)Mem_Alloc(compressedSize, TAG_TEMP);
                             glCompressedTexImage2D(uploadTarget + side, level, internalFormat, w, h, 0, compressedSize, data);
@@ -1831,10 +1890,25 @@ void idImage::Resize(int width, int height, bool recalculateLevels) {
     AllocImage();
 }
 
+// resize(0) kept the capacity: a 2048 texture left 16 MB of decode buffer behind for the whole session
+static size_t R_FreeTexturesBuffers() {
+    const size_t freed = s_decodeBuffer.capacity() + s_etc2Buffer.capacity() + s_etc2CacheBuffer.capacity();
+    std::vector<uint8_t>().swap(s_decodeBuffer);
+    std::vector<uint8_t>().swap(s_etc2Buffer);
+    std::vector<uint8_t>().swap(s_etc2CacheBuffer);
+    return freed;
+}
+
 void ClearTexturesBuffers() {
     std::lock_guard<std::mutex> lock(imageMutex);
-    s_decodeBuffer.resize(0);
-    s_etc2Buffer.resize(0);
-    s_textureBuffer.resize(0);
-    s_etc2CacheBuffer.resize(0);
+    R_FreeTexturesBuffers();
+}
+
+// from the out of memory handler: an upload of this thread may hold the lock, it must not wait for it
+bool TryClearTexturesBuffers() {
+    std::unique_lock<std::mutex> lock(imageMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return false;
+    }
+    return R_FreeTexturesBuffers() > 0;
 }

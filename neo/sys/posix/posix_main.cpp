@@ -910,7 +910,7 @@ static int Sys_ReadProcKB( const char* path, const char* key )
 	int value = -1;
 	while( fgets( line, sizeof( line ), f ) != NULL )
 	{
-		if( strncmp( line, key, keyLen ) == 0 )
+		if( idStr::Cmpn( line, key, static_cast<int>( keyLen ) ) == 0 )
 		{
 			value = atoi( line + keyLen );
 			break;

@@ -1006,6 +1006,7 @@ void Sys_Init() {
 #else
 	SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
 #endif
+#endif
 #else
 #ifdef ANDROID
 	SDL_SetHint(SDL_HINT_TV_REMOTE_AS_JOYSTICK, "0");

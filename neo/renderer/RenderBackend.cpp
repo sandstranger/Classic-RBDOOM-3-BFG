@@ -1895,7 +1895,12 @@ void idRenderBackend::WorldMergePass( const emptyCommand_t* cmds )
 		}
 
 		// managed through the copy target, binding it as element buffer would change the VAO
+#if defined( ID_LOW_MEMORY )
+		// a 32 bit process: one buffer that gets the written indexes, not four of up to 16 MB
+		if( !s_worldMergeRing->CreateStreaming( GL_COPY_WRITE_BUFFER, wantedSize, false ) )
+#else
 		if( !s_worldMergeRing->Create( GL_COPY_WRITE_BUFFER, wantedSize, R_HasBufferStorage() ) )
+#endif
 		{
 			delete s_worldMergeRing;
 			s_worldMergeRing = NULL;
@@ -1904,10 +1909,11 @@ void idRenderBackend::WorldMergePass( const emptyCommand_t* cmds )
 		}
 		s_worldMergeRingSize = wantedSize;
 		idLib::Printf( "World surface merging: %d KB of indexes per frame, %s\n", wantedSize / 1024,
-					   s_worldMergeRing->IsPersistent() ? "persistently mapped" : "mapped every frame" );
+					   s_worldMergeRing->IsPersistent() ? "persistently mapped" : ( s_worldMergeRing->IsStreaming() ? "uploaded every frame" : "mapped every frame" ) );
 	}
 
-	const int slot = g_frameFences.CurrentSlot();
+	// the slot of this frame, or of the streaming ring
+	const int slot = s_worldMergeRing->AcquireSlot();
 	uint32* mapped = ( uint32* )s_worldMergeRing->MapForWrite( slot );
 	if( mapped == NULL )
 	{

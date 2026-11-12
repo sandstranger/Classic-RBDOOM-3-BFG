@@ -29,14 +29,33 @@ If you have questions concerning this license or the applicable additional terms
 #ifndef __VERTEXCACHE_H__
 #define __VERTEXCACHE_H__
 
+// On GLES these are what a frame may use: the GL storage is what the frames really write, see
+// idGLBufferRing::CreateStreaming, the rest is address space of a CPU copy or of a persistent map.
 const int VERTCACHE_INDEX_MEMORY_PER_FRAME = 31 * 1024 * 1024;
 const int VERTCACHE_VERTEX_MEMORY_PER_FRAME = 31 * 1024 * 1024;
 const int VERTCACHE_JOINT_MEMORY_PER_FRAME = 256 * 1024;
 
+#if defined( ANDROID )
+// The most a map may use, as before. The GL storage was all of it from the start, 156 MB, while the maps
+// use a fraction (the offset of a handle has 25 bits, past 32 MB they wrap anyway): the static buffers
+// start smaller now and grow by copying when a map needs more, see idVertexCache::GrowStatic.
+const int STATIC_INDEX_MEMORY = 4 * 31 * 1024 * 1024;
+const int STATIC_VERTEX_MEMORY = 32 * 1024 * 1024;
+#if defined( ID_LOW_MEMORY )
+const int STATIC_INDEX_MEMORY_START = 6 * 1024 * 1024;
+const int STATIC_VERTEX_MEMORY_START = 16 * 1024 * 1024;
+#else
+const int STATIC_INDEX_MEMORY_START = 16 * 1024 * 1024;
+const int STATIC_VERTEX_MEMORY_START = 32 * 1024 * 1024;
+#endif
+#else
 // there are a lot more static indexes than vertexes, because interactions are just new
 // index lists that reference existing vertexes
 const int STATIC_INDEX_MEMORY = 4 * 31 * 1024 * 1024;
 const int STATIC_VERTEX_MEMORY = 32 * 1024 * 1024;
+const int STATIC_INDEX_MEMORY_START = STATIC_INDEX_MEMORY;
+const int STATIC_VERTEX_MEMORY_START = STATIC_VERTEX_MEMORY;
+#endif
 
 // vertCacheHandle_t packs size, offset, and frame number into 64 bits
 typedef uint64 vertCacheHandle_t;
@@ -128,6 +147,11 @@ public:
 	
 	// Try to make room for <bytes> bytes
 	vertCacheHandle_t	ActuallyAlloc( geoBufferSet_t& vcs, const void* data, int bytes, cacheType_t type );
+
+#if defined( ANDROID ) && !defined( USE_VULKAN )
+	// larger static storage when the map needs it, the handles stay valid
+	void				GrowStatic( cacheType_t type, int neededBytes );
+#endif
 };
 
 // platform specific code to memcpy into vertex buffers efficiently

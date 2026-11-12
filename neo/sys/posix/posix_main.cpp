@@ -897,19 +897,95 @@ const char* Posix_Cwd()
 Sys_GetMemoryStatus
 =================
 */
-void Sys_GetMemoryStatus( sysMemoryStats_t& stats )
+// a "Key:   1234 kB" line of /proc/meminfo or /proc/self/status, -1 when there is none
+static int Sys_ReadProcKB( const char* path, const char* key )
 {
-	common->Printf( "FIXME: Sys_GetMemoryStatus stub\n" );
+	FILE* f = fopen( path, "r" );
+	if( f == NULL )
+	{
+		return -1;
+	}
+	const size_t keyLen = strlen( key );
+	char line[256];
+	int value = -1;
+	while( fgets( line, sizeof( line ), f ) != NULL )
+	{
+		if( strncmp( line, key, keyLen ) == 0 )
+		{
+			value = atoi( line + keyLen );
+			break;
+		}
+	}
+	fclose( f );
+	return value;
 }
 
+/*
+=================
+Sys_GetCurrentMemoryStatus
+
+The values are in MB like the win32 ones, memoryLoad in percent. The virtual ones are this process's
+address space: what a 32 bit process runs out of first.
+=================
+*/
 void Sys_GetCurrentMemoryStatus( sysMemoryStats_t& stats )
 {
-	common->Printf( "FIXME: Sys_GetCurrentMemoryStatus\n" );
+	memset( &stats, 0, sizeof( stats ) );
+
+	const int totalKB = Sys_ReadProcKB( "/proc/meminfo", "MemTotal:" );
+	int availKB = Sys_ReadProcKB( "/proc/meminfo", "MemAvailable:" );
+	if( availKB < 0 )
+	{
+		availKB = Max( 0, Sys_ReadProcKB( "/proc/meminfo", "MemFree:" ) ) + Max( 0, Sys_ReadProcKB( "/proc/meminfo", "Cached:" ) );
+	}
+	if( totalKB > 0 )
+	{
+		stats.totalPhysical = totalKB / 1024;
+		stats.availPhysical = availKB / 1024;
+		stats.memoryLoad = 100 - ( int )( ( int64 )availKB * 100 / totalKB );
+	}
+	stats.totalPageFile = Max( 0, Sys_ReadProcKB( "/proc/meminfo", "SwapTotal:" ) ) / 1024;
+	stats.availPageFile = Max( 0, Sys_ReadProcKB( "/proc/meminfo", "SwapFree:" ) ) / 1024;
+
+	stats.totalVirtual = ( sizeof( void* ) == 4 ) ? 4096 : ( 1 << 20 );
+	const int vmSizeKB = Sys_ReadProcKB( "/proc/self/status", "VmSize:" );
+	stats.availVirtual = ( vmSizeKB > 0 ) ? Max( 0, stats.totalVirtual - vmSizeKB / 1024 ) : 0;
+	stats.availExtendedVirtual = 0;
+}
+
+void Sys_GetMemoryStatus( sysMemoryStats_t& stats )
+{
+	Sys_GetCurrentMemoryStatus( stats );
 }
 
 void Sys_GetExeLaunchMemoryStatus( sysMemoryStats_t& stats )
 {
-	common->Printf( "FIXME: Sys_GetExeLaunchMemoryStatus\n" );
+	// the first call is close enough to the launch, nothing calls it later than the start up
+	static sysMemoryStats_t launchStats;
+	static bool launchStatsValid = false;
+	if( !launchStatsValid )
+	{
+		Sys_GetCurrentMemoryStatus( launchStats );
+		launchStatsValid = true;
+	}
+	stats = launchStats;
+}
+
+/*
+=================
+Sys_PrintMemoryStatus
+
+The process and the device, for the logs of low memory devices
+=================
+*/
+void Sys_PrintMemoryStatus( const char* when )
+{
+	sysMemoryStats_t stats;
+	Sys_GetCurrentMemoryStatus( stats );
+	const int residentKB = Sys_ReadProcKB( "/proc/self/status", "VmRSS:" );
+	const int vmSizeKB = Sys_ReadProcKB( "/proc/self/status", "VmSize:" );
+	common->Printf( "memory %s: process %d MB resident, %d MB address space; device %d of %d MB available\n",
+					when, residentKB / 1024, vmSizeKB / 1024, stats.availPhysical, stats.totalPhysical );
 }
 
 /*

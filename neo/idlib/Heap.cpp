@@ -41,6 +41,39 @@ If you have questions concerning this license or the applicable additional terms
 
 /*
 ==================
+Mem_SetOutOfMemoryHandler
+
+The engine frees what it can do without (caches, scratch buffers) when an allocation fails, the
+allocation is tried once more after that. See Mem_Alloc16.
+==================
+*/
+static memOutOfMemoryHandler_t	mem_outOfMemoryHandler = NULL;
+
+void Mem_SetOutOfMemoryHandler( memOutOfMemoryHandler_t handler )
+{
+	mem_outOfMemoryHandler = handler;
+}
+
+static void* Mem_TryAlloc16( const size_t paddedSize )
+{
+#ifdef _WIN32
+	// this should work with MSVC and mingw, as long as __MSVCRT_VERSION__ >= 0x0700
+	return _aligned_malloc( paddedSize, 16 );
+#else // not _WIN32
+	// DG: the POSIX solution for linux etc
+	// a failed posix_memalign leaves ret as it was: without the check the caller got garbage
+	void* ret = NULL;
+	if( posix_memalign( &ret, 16, paddedSize ) != 0 )
+	{
+		return NULL;
+	}
+	return ret;
+	// DG end
+#endif // _WIN32
+}
+
+/*
+==================
 Mem_Alloc16
 ==================
 */
@@ -53,16 +86,37 @@ void* Mem_Alloc16( const size_t size, const memTag_t tag )
 		return NULL;
 	}
 	const size_t paddedSize = ( size + 15 ) & ~15;
-#ifdef _WIN32
-	// this should work with MSVC and mingw, as long as __MSVCRT_VERSION__ >= 0x0700
-	return _aligned_malloc( paddedSize, 16 );
-#else // not _WIN32
-	// DG: the POSIX solution for linux etc
-	void* ret;
-	int res = posix_memalign( &ret, 16, paddedSize );
-	return ret;
-	// DG end
-#endif // _WIN32
+	if( paddedSize < size )
+	{
+		idLib::FatalError( "Mem_Alloc16: size overflow, %zu bytes (tag %d)", size, ( int )tag );
+	}
+
+	void* ret = Mem_TryAlloc16( paddedSize );
+	if( ret != NULL )
+	{
+		return ret;
+	}
+
+	// out of memory (or of address space in a 32 bit process): free what the engine can do without and
+	// try again, a NULL would only crash somewhere else
+	static volatile bool inHandler = false;
+	if( mem_outOfMemoryHandler != NULL && !inHandler )
+	{
+		inHandler = true;
+		const bool freed = mem_outOfMemoryHandler( paddedSize );
+		inHandler = false;
+		if( freed )
+		{
+			ret = Mem_TryAlloc16( paddedSize );
+			if( ret != NULL )
+			{
+				return ret;
+			}
+		}
+	}
+
+	idLib::FatalError( "Out of memory: %zu bytes could not be allocated (tag %d)", paddedSize, ( int )tag );
+	return NULL;
 }
 
 /*

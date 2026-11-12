@@ -581,6 +581,8 @@ int64			Sys_GetDriveFreeSpaceInBytes( const char* path );
 // returns memory stats
 void			Sys_GetCurrentMemoryStatus( sysMemoryStats_t& stats );
 void			Sys_GetExeLaunchMemoryStatus( sysMemoryStats_t& stats );
+// posix: what the process uses and the device has left, to the console
+void			Sys_PrintMemoryStatus( const char* when );
 
 // lock and unlock memory
 bool			Sys_LockMemory( void* ptr, int bytes );

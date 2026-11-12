@@ -425,6 +425,9 @@ private:
 
     void		DeriveOpts();
 	void		AllocImage();
+	// the top mip levels the GPU never gets: the launcher's texture shrinking and image_maxTextureSize,
+	// the same for the storage (AllocImage) and the uploads
+	int			MipLevelsToSkip() const;
 	void		SetSamplerState( textureFilter_t tf, textureRepeat_t tr );
 	
 	// parameters that define this image

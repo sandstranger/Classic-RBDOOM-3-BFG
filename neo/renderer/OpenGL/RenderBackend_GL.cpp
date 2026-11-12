@@ -41,12 +41,32 @@ If you have questions concerning this license or the applicable additional terms
 #include "../../framework/Common_local.h"
 
 #if defined(ANDROID) && !defined(USE_VULKAN)
+#include "../TextureCache.h"
+
 extern void RB_InitExposureReadback();
 extern void RB_ShutdownExposureReadback();
 extern void RB_ShutdownWorldMerge();
 static void R_ShutdownInstanceStream();
 static void R_ShutdownLightBatchStream();
 static void R_ShutdownLightBatchIndexStream();
+extern bool TryClearTexturesBuffers();
+
+/*
+==================
+R_FreeMemoryOnOutOfMemory
+
+Mem_Alloc16 calls this when an allocation fails (see Mem_SetOutOfMemoryHandler), on whatever thread
+it runs: what the renderer can do without goes, without waiting for a lock its own thread may hold.
+==================
+*/
+static bool R_FreeMemoryOnOutOfMemory( size_t failedBytes )
+{
+	// no printing here: that may need memory too
+	( void )failedBytes;
+	bool freed = idTextureCache::Instance().TryClearRamCache();
+	freed = TryClearTexturesBuffers() || freed;
+	return freed;
+}
 #endif
 #if ANDROID
 
@@ -680,7 +700,10 @@ and model information functions.
 void idRenderBackend::Init()
 {
 	common->Printf( "----- R_InitOpenGL -----\n" );
-	
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	Mem_SetOutOfMemoryHandler( R_FreeMemoryOnOutOfMemory );
+#endif
+
 	if( tr.IsInitialized() )
 	{
 		common->FatalError( "R_InitOpenGL called while active" );
@@ -795,7 +818,12 @@ void idRenderBackend::Init()
 	
 	// allocate the frame data, which may be more if smp is enabled
 	R_InitFrameData();
+#if defined( ID_LOW_MEMORY )
+	// the commands are small, their data is in the frame memory: a 32 bit process keeps its address space
+	cmdBufferPool.Init(8 * 1024 * 1024);
+#else
 	cmdBufferPool.Init(24 * 1024 * 1024);
+#endif
 	currentCmdBuffer = cmdBufferPool.GetWriteBuffer();
 	frameData->cmdHead = (emptyCommand_t *) currentCmdBuffer->Alloc(sizeof(emptyCommand_t));
 	// Reset our gamma
@@ -809,6 +837,9 @@ void idRenderBackend::Init()
 
 void idRenderBackend::Shutdown()
 {
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	Mem_SetOutOfMemoryHandler( NULL );
+#endif
 	cmdBufferPool.Shutdown();
 #if defined(ANDROID) && !defined(USE_VULKAN)
     if (gpuInstanceBuffer != 0)

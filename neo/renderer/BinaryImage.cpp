@@ -42,9 +42,37 @@ If you have questions concerning this license or the applicable additional terms
 #include "RenderCommon.h"
 #include "DXT/DXTCodec.h"
 #include "Color/ColorSpace.h"
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
 #include <arm_neon.h>
 #include <cstdint>
+#endif
+
+#if defined( ANDROID )
+/*
+========================
+R_Rgb565BigEndianToNative
+
+The RGB565 data of the binary images is big endian (the PC renderer uploads it with
+GL_UNPACK_SWAP_BYTES, which GLES doesn't have): swapped in place it uploads as GL_UNSIGNED_SHORT_5_6_5,
+half the memory of the RGBA8 it was converted to before. NEON vrev16q is ARMv7 and AArch64.
+========================
+*/
+static void R_Rgb565BigEndianToNative( byte* data, int numBytes )
+{
+	int i = 0;
+#if defined( ID_NEON )
+	for( ; i + 16 <= numBytes; i += 16 )
+	{
+		vst1q_u8( data + i, vrev16q_u8( vld1q_u8( data + i ) ) );
+	}
+#endif
+	for( ; i + 1 < numBytes; i += 2 )
+	{
+		const byte b = data[i];
+		data[i] = data[i + 1];
+		data[i + 1] = b;
+	}
+}
 #endif
 
 
@@ -582,7 +610,7 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile* bFile, ID_TIME_T sourceTimeSt
 		// sizes are still retained, so the stored data size may be larger than
 		// just the multiplication of dimensions
 		assert( img.dataSize >= img.width * img.height * BitsForFormat( ( textureFormat_t )fileData.format ) / 8 );
-#if (defined(__APPLE__) && defined(USE_VULKAN)) || defined(ANDROID) //karin: force convert light texture format from RGB565 to RGBA8888
+#if defined(__APPLE__) && defined(USE_VULKAN)
 		int imgfile_dataSize = img.dataSize;
 		// SRS - Allocate 2x memory to prepare for in-place conversion from FMT_RGB565 to FMT_RGBA8
 		if( ( textureFormat_t )fileData.format == FMT_RGB565 )
@@ -648,11 +676,40 @@ bool idBinaryImage::LoadFromGeneratedFile( idFile* bFile, ID_TIME_T sourceTimeSt
 		{
 			return false;
 		}
+#if defined( ANDROID )
+		// RGB565 stays RGB565 on GLES (it was widened to RGBA8 here before), only its byte order changes
+		if( ( textureFormat_t )fileData.format == FMT_RGB565 )
+		{
+			R_Rgb565BigEndianToNative( img.data, img.dataSize );
+		}
+#endif
 #endif
 	}
 	
 	return true;
 }
+
+#if defined( ANDROID )
+/*
+==========================
+idBinaryImage::Rgb565ToNative
+==========================
+*/
+void idBinaryImage::Rgb565ToNative()
+{
+	if( ( textureFormat_t )fileData.format != FMT_RGB565 )
+	{
+		return;
+	}
+	for( int i = 0; i < images.Num(); i++ )
+	{
+		if( images[i].data != NULL )
+		{
+			R_Rgb565BigEndianToNative( images[i].data, images[i].dataSize );
+		}
+	}
+}
+#endif
 
 /*
 ==========================

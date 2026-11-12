@@ -89,7 +89,32 @@ void idGLFrameFenceRing::EndFrame() {
     }
 
     fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    fenceFrames[slot] = frameIndex;
     ++frameIndex;
+}
+
+void idGLFrameFenceRing::WaitForFrame(uint64_t frame) {
+    // a frame that hasn't run yet has nothing on the GPU
+    if (frame >= frameIndex) {
+        return;
+    }
+    // BeginFrame waited for the fence and deleted it before EndFrame reused the slot: that frame is done
+    const int slot = static_cast<int>(frame % SLOT_COUNT);
+    GLsync& fence = fences[slot];
+    if (fence == nullptr || fenceFrames[slot] != frame) {
+        return;
+    }
+
+    GLenum status = glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, WAIT_TIMEOUT_NS);
+    if (status == GL_TIMEOUT_EXPIRED) {
+        status = glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, EMERGENCY_TIMEOUT_NS);
+    }
+    if (status == GL_ALREADY_SIGNALED || status == GL_CONDITION_SATISFIED) {
+        glDeleteSync(fence);
+        fence = nullptr;
+    } else {
+        idLib::Warning("idGLFrameFenceRing: wait for frame %llu failed or timed out", (unsigned long long)frame);
+    }
 }
 
 
@@ -98,6 +123,9 @@ bool idGLBufferRing::Create(GLenum target, GLsizeiptr size, bool persistent) {
     size_ = size;
     persistent_ = false;
     coherent_ = false;
+    streaming_ = false;
+    numSlots_ = SLOT_COUNT;
+    lastSlot_ = -1;
 
     glGenBuffers(SLOT_COUNT, buffers);
 
@@ -162,11 +190,142 @@ void idGLBufferRing::Destroy() {
     }
     glDeleteBuffers(SLOT_COUNT, buffers);
     memset(buffers, 0, sizeof(buffers));
+    memset(mapped, 0, sizeof(mapped));
     persistent_ = false;
     coherent_ = false;
+
+    if (staging_ != nullptr) {
+        Mem_Free16(staging_);
+        staging_ = nullptr;
+    }
+    streaming_ = false;
+    numSlots_ = SLOT_COUNT;
+    lastSlot_ = -1;
+    memset(slotSubmitted_, 0, sizeof(slotSubmitted_));
+    memset(slotDrawFrame_, 0, sizeof(slotDrawFrame_));
+}
+
+/*
+========================
+idGLBufferRing::CreateStreaming
+
+The four slots of Create for every dynamic buffer of the vertex cache, which double buffers them
+already, reserved eight full size copies of each: 31 MB vertexes and 31 MB indexes made almost
+500 MB of GL storage, enough to run a 32 bit process out of memory on its own.
+========================
+*/
+bool idGLBufferRing::CreateStreaming(GLenum target, GLsizeiptr size, bool allowPersistent) {
+    Destroy();
+
+    target_ = target;
+    size_ = size;
+    streaming_ = true;
+
+    // the buffers are created and filled through the copy target, binding an element buffer would change the VAO
+    if (allowPersistent && R_HasBufferStorage()) {
+        numSlots_ = 2;
+        glGenBuffers(numSlots_, buffers);
+
+        const GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT_EXT | GL_MAP_FLUSH_EXPLICIT_BIT_EXT;
+        bool ok = true;
+        for (int i = 0; i < numSlots_ && ok; ++i) {
+            if (buffers[i] == 0) {
+                ok = false;
+                break;
+            }
+            glBindBuffer(GL_COPY_WRITE_BUFFER, buffers[i]);
+            glBufferStorageEXT(GL_COPY_WRITE_BUFFER, size_, nullptr, flags);
+            mapped[i] = glMapBufferRange(GL_COPY_WRITE_BUFFER, 0, size_, flags);
+            ok = (mapped[i] != nullptr);
+        }
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+
+        if (ok) {
+            persistent_ = true;
+            return true;
+        }
+
+        // no persistent mapping after all: the CPU copy below
+        for (int i = 0; i < numSlots_; ++i) {
+            if (mapped[i] != nullptr) {
+                glBindBuffer(GL_COPY_WRITE_BUFFER, buffers[i]);
+                glUnmapBuffer(GL_COPY_WRITE_BUFFER);
+                mapped[i] = nullptr;
+            }
+        }
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+        glDeleteBuffers(SLOT_COUNT, buffers);
+        memset(buffers, 0, sizeof(buffers));
+    }
+
+    numSlots_ = 1;
+    glGenBuffers(1, buffers);
+    if (buffers[0] == 0) {
+        streaming_ = false;
+        return false;
+    }
+    glBindBuffer(GL_COPY_WRITE_BUFFER, buffers[0]);
+    glBufferData(GL_COPY_WRITE_BUFFER, 16, nullptr, GL_STREAM_DRAW);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+
+    // only the pages the frames write become resident
+    staging_ = (byte*)Mem_Alloc16(size_, TAG_RENDER);
+    return true;
+}
+
+int idGLBufferRing::AcquireSlot() {
+    if (!streaming_) {
+        return g_frameFences.CurrentSlot();
+    }
+    if (numSlots_ <= 1) {
+        return 0;
+    }
+
+    const int slot = (lastSlot_ + 1) % numSlots_;
+    if (slotSubmitted_[slot]) {
+        // the GPU may still draw what this slot got two maps ago
+        g_frameFences.WaitForFrame(slotDrawFrame_[slot]);
+        slotSubmitted_[slot] = false;
+    }
+    lastSlot_ = slot;
+    return slot;
+}
+
+void idGLBufferRing::SubmitSlot(int slot, GLsizeiptr writtenBytes) {
+    GLsizeiptr written = writtenBytes;
+    if (written < 0) {
+        written = 0;
+    }
+    if (written > size_) {
+        written = size_;
+    }
+
+    if (persistent_) {
+        FlushRange(slot, 0, written);
+        if (streaming_) {
+            slotDrawFrame_[slot] = g_frameFences.FrameIndex();
+            slotSubmitted_[slot] = true;
+        }
+        return;
+    }
+
+    if (staging_ != nullptr) {
+        // fresh storage of the written size: the driver keeps the old one while earlier frames draw it
+        const GLsizeiptr uploadBytes = (written + 15) & ~(GLsizeiptr)15;
+        glBindBuffer(GL_COPY_WRITE_BUFFER, buffers[0]);
+        glBufferData(GL_COPY_WRITE_BUFFER, uploadBytes > 0 ? uploadBytes : 16, uploadBytes > 0 ? staging_ : nullptr, GL_STREAM_DRAW);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+        return;
+    }
+
+    glBindBuffer(target_, buffers[slot]);
+    glUnmapBuffer(target_);
 }
 
 void* idGLBufferRing::MapForWrite(int slot) {
+    if (staging_ != nullptr) {
+        return staging_;
+    }
     if (persistent_) {
         return mapped[slot];
     }
@@ -177,11 +336,13 @@ void* idGLBufferRing::MapForWrite(int slot) {
 }
 
 void idGLBufferRing::Unmap(int slot) {
+    if (streaming_) {
+        SubmitSlot(slot, size_);
+        return;
+    }
     if (persistent_) {
-        if (!coherent_) {
-
-            glFlushMappedBufferRange(target_, 0, size_);
-        }
+        // the slot's buffer must be bound for the flush, the previous code flushed whatever was bound
+        FlushRange(slot, 0, size_);
         return;
     }
     glBindBuffer(target_, buffers[slot]);
@@ -189,6 +350,10 @@ void idGLBufferRing::Unmap(int slot) {
 }
 
 void idGLBufferRing::Unmap(int slot, GLsizeiptr writtenBytes) {
+    if (streaming_) {
+        SubmitSlot(slot, writtenBytes);
+        return;
+    }
     if (persistent_) {
         FlushRange(slot, 0, writtenBytes);
         return;
@@ -201,8 +366,59 @@ void idGLBufferRing::FlushRange(int slot, GLsizeiptr offset, GLsizeiptr length) 
     if (!persistent_ || coherent_ || length <= 0) {
         return;
     }
-    glBindBuffer(target_, buffers[slot]);
-    glFlushMappedBufferRange(target_, offset, length);
+    // the streaming rings are vertex, index and uniform buffers: the copy target leaves the VAO alone
+    const GLenum flushTarget = streaming_ ? GL_COPY_WRITE_BUFFER : target_;
+    glBindBuffer(flushTarget, buffers[slot]);
+    glFlushMappedBufferRange(flushTarget, offset, length);
+    if (streaming_) {
+        glBindBuffer(flushTarget, 0);
+    }
+}
+
+/*
+========================
+R_DynamicBuffersPersistent
+
+The dynamic vertex cache buffers stay mapped with EXT_buffer_storage, but not in a 32 bit process:
+two full size slots of every buffer cost GL memory and address space it doesn't have.
+========================
+*/
+static bool R_DynamicBuffersPersistent() {
+#if defined(ID_LOW_MEMORY)
+    return false;
+#else
+    return true;
+#endif
+}
+
+/*
+========================
+R_GrowStaticBuffer
+
+Larger storage for a static vertex or index buffer, the first keepBytes copied over: GLES 3.0 has
+glCopyBufferSubData. The copy targets leave the VAO's bindings alone.
+========================
+*/
+static bool R_GrowStaticBuffer(GLuint& apiObject, int newBytes, int keepBytes) {
+    GLuint newBuffer = 0;
+    glGenBuffers(1, &newBuffer);
+    if (newBuffer == 0) {
+        return false;
+    }
+    glBindBuffer(GL_COPY_WRITE_BUFFER, newBuffer);
+    glBufferData(GL_COPY_WRITE_BUFFER, newBytes, NULL, GL_STATIC_DRAW);
+    if (keepBytes > 0 && apiObject != 0) {
+        glBindBuffer(GL_COPY_READ_BUFFER, apiObject);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, keepBytes);
+        glBindBuffer(GL_COPY_READ_BUFFER, 0);
+    }
+    glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+    if (apiObject != 0) {
+        // the GL keeps the storage until the frames that draw from it are done
+        glDeleteBuffers(1, &apiObject);
+    }
+    apiObject = newBuffer;
+    return true;
 }
 
 GLuint idGLBufferRing::Buffer(int slot) const {
@@ -238,10 +454,10 @@ bool idVertexBuffer::AllocBufferObject(const void* data, int allocSize, bufferUs
 #ifdef ANDROID
     if (usage == BU_DYNAMIC) {
         isRingBuffer_ = true;
-        if (!ring_.Create(GL_ARRAY_BUFFER, numBytes, R_HasBufferStorage())) {
+        if (!ring_.CreateStreaming(GL_ARRAY_BUFFER, numBytes, R_DynamicBuffersPersistent())) {
             idLib::FatalError("idVertexBuffer::AllocBufferObject: ring create failed");
         }
-        currentSlot_ = g_frameFences.CurrentSlot();
+        currentSlot_ = 0;
         apiObject = ring_.Buffer(currentSlot_);
     } else {
         isRingBuffer_ = false;
@@ -290,7 +506,16 @@ bool idVertexBuffer::AllocBufferObject(const void* data, int allocSize, bufferUs
 
 void idVertexBuffer::FreeBufferObject() {
     if (IsMapped()) {
-        UnmapBuffer();
+#ifdef ANDROID
+        if (isRingBuffer_) {
+            // the ring is destroyed below, uploading what was written would be wasted
+            buffer = NULL;
+            SetUnmapped();
+        } else
+#endif
+        {
+            UnmapBuffer();
+        }
     }
 
     if (!OwnsBuffer()) {
@@ -356,7 +581,7 @@ void* idVertexBuffer::MapBuffer(bufferMapType_t mapType) {
 
 #ifdef ANDROID
     if (isRingBuffer_ && mapType == BM_WRITE) {
-        currentSlot_ = g_frameFences.CurrentSlot();
+        currentSlot_ = ring_.AcquireSlot();
         apiObject = ring_.Buffer(currentSlot_);
 
         void* base = ring_.MapForWrite(currentSlot_);
@@ -463,6 +688,31 @@ void idVertexBuffer::UnmapBuffer() {
     SetUnmapped();
 }
 
+#ifdef ANDROID
+void idVertexBuffer::UnmapBuffer(int writtenBytes) {
+    if (isRingBuffer_ && IsMapped()) {
+        ring_.Unmap(currentSlot_, writtenBytes);
+        buffer = NULL;
+        SetUnmapped();
+        return;
+    }
+    UnmapBuffer();
+}
+
+bool idVertexBuffer::GrowStatic(int newAllocSize, int keepBytes) {
+    assert(usage == BU_STATIC && !isRingBuffer_ && OwnsBuffer() && !IsMapped());
+    const int newBytes = (newAllocSize + 15) & ~15;
+    if (!R_GrowStaticBuffer(apiObject, newBytes, keepBytes)) {
+        return false;
+    }
+    size = newAllocSize;
+    if (r_showBuffers.GetBool()) {
+        idLib::Printf("vertex buffer grow %p, api %p (%i bytes)\n", this, (void*)(uintptr_t)apiObject, GetSize());
+    }
+    return true;
+}
+#endif
+
 void idVertexBuffer::ClearWithoutFreeing() {
     size = 0;
     offsetInOtherBuffer = OWNS_BUFFER_FLAG;
@@ -491,10 +741,10 @@ bool idIndexBuffer::AllocBufferObject(const void* data, int allocSize, bufferUsa
 #ifdef ANDROID
     if (usage == BU_DYNAMIC) {
         isRingBuffer_ = true;
-        if (!ring_.Create(GL_ELEMENT_ARRAY_BUFFER, numBytes, R_HasBufferStorage())) {
+        if (!ring_.CreateStreaming(GL_ELEMENT_ARRAY_BUFFER, numBytes, R_DynamicBuffersPersistent())) {
             idLib::FatalError("idIndexBuffer::AllocBufferObject: ring create failed");
         }
-        currentSlot_ = g_frameFences.CurrentSlot();
+        currentSlot_ = 0;
         apiObject = ring_.Buffer(currentSlot_);
     } else {
         isRingBuffer_ = false;
@@ -543,7 +793,16 @@ bool idIndexBuffer::AllocBufferObject(const void* data, int allocSize, bufferUsa
 
 void idIndexBuffer::FreeBufferObject() {
     if (IsMapped()) {
-        UnmapBuffer();
+#ifdef ANDROID
+        if (isRingBuffer_) {
+            // the ring is destroyed below, uploading what was written would be wasted
+            buffer = NULL;
+            SetUnmapped();
+        } else
+#endif
+        {
+            UnmapBuffer();
+        }
     }
 
     if (!OwnsBuffer()) {
@@ -609,7 +868,7 @@ void* idIndexBuffer::MapBuffer(bufferMapType_t mapType) {
 
 #ifdef ANDROID
     if (isRingBuffer_ && mapType == BM_WRITE) {
-        currentSlot_ = g_frameFences.CurrentSlot();
+        currentSlot_ = ring_.AcquireSlot();
         apiObject = ring_.Buffer(currentSlot_);
 
         void* base = ring_.MapForWrite(currentSlot_);
@@ -711,6 +970,31 @@ void idIndexBuffer::UnmapBuffer() {
     SetUnmapped();
 }
 
+#ifdef ANDROID
+void idIndexBuffer::UnmapBuffer(int writtenBytes) {
+    if (isRingBuffer_ && IsMapped()) {
+        ring_.Unmap(currentSlot_, writtenBytes);
+        buffer = NULL;
+        SetUnmapped();
+        return;
+    }
+    UnmapBuffer();
+}
+
+bool idIndexBuffer::GrowStatic(int newAllocSize, int keepBytes) {
+    assert(usage == BU_STATIC && !isRingBuffer_ && OwnsBuffer() && !IsMapped());
+    const int newBytes = (newAllocSize + 15) & ~15;
+    if (!R_GrowStaticBuffer(apiObject, newBytes, keepBytes)) {
+        return false;
+    }
+    size = newAllocSize;
+    if (r_showBuffers.GetBool()) {
+        idLib::Printf("index buffer grow %p, api %p (%i bytes)\n", this, (void*)(uintptr_t)apiObject, GetSize());
+    }
+    return true;
+}
+#endif
+
 void idIndexBuffer::ClearWithoutFreeing() {
     size = 0;
     offsetInOtherBuffer = OWNS_BUFFER_FLAG;
@@ -739,10 +1023,10 @@ bool idUniformBuffer::AllocBufferObject(const void* data, int allocSize, bufferU
 #ifdef ANDROID
     if (usage == BU_DYNAMIC) {
         isRingBuffer_ = true;
-        if (!ring_.Create(GL_UNIFORM_BUFFER, numBytes, R_HasBufferStorage())) {
+        if (!ring_.CreateStreaming(GL_UNIFORM_BUFFER, numBytes, R_DynamicBuffersPersistent())) {
             idLib::FatalError("idUniformBuffer::AllocBufferObject: ring create failed");
         }
-        currentSlot_ = g_frameFences.CurrentSlot();
+        currentSlot_ = 0;
         apiObject = ring_.Buffer(currentSlot_);
     } else {
         isRingBuffer_ = false;
@@ -786,7 +1070,16 @@ bool idUniformBuffer::AllocBufferObject(const void* data, int allocSize, bufferU
 
 void idUniformBuffer::FreeBufferObject() {
     if (IsMapped()) {
-        UnmapBuffer();
+#ifdef ANDROID
+        if (isRingBuffer_) {
+            // the ring is destroyed below, uploading what was written would be wasted
+            buffer = NULL;
+            SetUnmapped();
+        } else
+#endif
+        {
+            UnmapBuffer();
+        }
     }
 
     if (!OwnsBuffer()) {
@@ -858,7 +1151,7 @@ void* idUniformBuffer::MapBuffer(bufferMapType_t mapType) {
 
 #ifdef ANDROID
     if (isRingBuffer_) {
-        currentSlot_ = g_frameFences.CurrentSlot();
+        currentSlot_ = ring_.AcquireSlot();
         apiObject = ring_.Buffer(currentSlot_);
 
         void* base = ring_.MapForWrite(currentSlot_);
@@ -941,6 +1234,18 @@ void idUniformBuffer::UnmapBuffer() {
     buffer = NULL;
     SetUnmapped();
 }
+
+#ifdef ANDROID
+void idUniformBuffer::UnmapBuffer(int writtenBytes) {
+    if (isRingBuffer_ && IsMapped()) {
+        ring_.Unmap(currentSlot_, writtenBytes);
+        buffer = NULL;
+        SetUnmapped();
+        return;
+    }
+    UnmapBuffer();
+}
+#endif
 
 void idUniformBuffer::ClearWithoutFreeing() {
     size = 0;

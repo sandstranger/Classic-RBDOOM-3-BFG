@@ -236,8 +236,9 @@ byte* R_MipMapWithAlphaSpecularity( const byte* in, int width, int height )
 	}
 	
 	// convert the incoming texture to centered floating point
+	// on the heap: 16 bytes per pixel are 64 MB for a 2048 texture, far more than any thread's stack
 	c = width * height;
-	fbuf = ( float* )_alloca( c * 4 * sizeof( *fbuf ) );
+	fbuf = ( float* )Mem_Alloc( ( size_t )c * 4 * sizeof( *fbuf ), TAG_TEMP );
 	in_p = in;
 	fbuf_p = fbuf;
 	for( i = 0 ; i < c ; i++, in_p += 4, fbuf_p += 4 )
@@ -305,6 +306,7 @@ byte* R_MipMapWithAlphaSpecularity( const byte* in, int width, int height )
 		}
 	}
 	
+	Mem_Free( fbuf );
 	return out;
 }
 

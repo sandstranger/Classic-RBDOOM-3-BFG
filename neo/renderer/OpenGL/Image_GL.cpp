@@ -37,7 +37,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "../TextureCache.h"
 
 #endif
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
 #include "arm_neon.h"
 #endif
 
@@ -137,11 +137,31 @@ static inline GLenum GetEtc2InternalFormat(bool isSrgb) {
            : GL_COMPRESSED_RGBA8_ETC2_EAC;
 }
 
+/*
+========================
+R_Etc2FormatForDxt
+
+The ETC2 a DXT texture is transcoded to when the GPU has no S3TC. DXT1 carries no alpha the engine
+reads: the specular maps, and the coverage and font images whose alpha is the green channel (the
+CFM_GREEN_ALPHA swizzle). ETC2 RGB8 is 4 bits per pixel like DXT1, RGBA8 EAC doubled them.
+========================
+*/
+static inline GLenum R_Etc2FormatForDxt(textureFormat_t format, textureUsage_t usage, textureColor_t colorFormat) {
+    if (format == FMT_DXT1 && (usage == TD_SPECULAR || colorFormat == CFM_GREEN_ALPHA)) {
+        return GL_COMPRESSED_RGB8_ETC2;
+    }
+    return GL_COMPRESSED_RGBA8_ETC2_EAC;
+}
+
+static inline size_t R_Etc2BlockBytes(GLenum format) {
+    return (format == GL_COMPRESSED_RGB8_ETC2 || format == GL_COMPRESSED_SRGB8_ETC2) ? 8 : 16;
+}
+
 
 static inline void SwapRB_NEON(uint8_t *dpic, size_t pixelCount) {
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined( ID_NEON )
     size_t i = 0;
-    for (; i <= pixelCount - 16; i += 16) {
+    for (; i + 16 <= pixelCount; i += 16) {
         uint8x16x4_t pixels = vld4q_u8(&dpic[i * 4]);
         uint8x16_t temp = pixels.val[0];
         pixels.val[0] = pixels.val[2];
@@ -642,10 +662,12 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
             const size_t dxtHeight = ((static_cast<size_t>(height) + 3) / 4) * 4;
             bool cacheHit = false;
             uint64_t hash = 0;
+            // what AllocImage gave the texture, see R_Etc2FormatForDxt
+            const GLenum etc2Format = static_cast<GLenum>(internalFormat);
 
             if (g_enableTextureCache) {
                 hash = ComputeTextureHash(static_cast<const uint8_t *>(pic), compressedSize, width,
-                                          height, GL_COMPRESSED_RGBA8_ETC2_EAC);
+                                          height, etc2Format);
                 std::byte *cachedEtc2 = nullptr;
                 size_t cachedSize = 0;
 
@@ -657,7 +679,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                             imgName.c_str(),
                             static_cast<const uint8_t *>(pic), compressedSize,
                             width, height,
-                            GL_COMPRESSED_RGBA8_ETC2_EAC,
+                            etc2Format,
                             gpuMipLevel,
                             s_etc2CacheBuffer, &cachedSize
                     );
@@ -666,7 +688,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                         cachedEtc2 = reinterpret_cast<std::byte *>(s_etc2CacheBuffer.data());
                         idTextureCache::Instance().SaveToRamCache(hash, cachedEtc2, cachedSize,
                                                                   width, height,
-                                                                  GL_COMPRESSED_RGBA8_ETC2_EAC);
+                                                                  etc2Format);
                     }
                 }
 
@@ -677,7 +699,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 
                     glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
                                               width, height,
-                                              GL_COMPRESSED_RGBA8_ETC2_EAC,
+                                              etc2Format,
                                               static_cast<GLsizei>(cachedSize),
                                               cachedEtc2);
                 }
@@ -706,51 +728,42 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                 }
 
                 const size_t pixelCount = dxtWidth * dxtHeight;
-#if defined(__aarch64__) || defined(_M_ARM64)
-                size_t i = 0;
-                for (; i <= pixelCount - 16; i += 16) {
-                    uint8x16x4_t pixels = vld4q_u8(&dpic[i * 4]);
+                SwapRB_NEON(dpic, pixelCount);
 
-                    uint8x16_t temp = pixels.val[0];
-                    pixels.val[0] = pixels.val[2];
-                    pixels.val[2] = temp;
-
-                    vst4q_u8(&dpic[i * 4], pixels);
-                }
-
-                for (; i < pixelCount; i++) {
-                    std::swap(dpic[i * 4], dpic[i * 4 + 2]);
-                }
-#else
-                for (size_t i = 0; i < pixelCount; i++)
-                {
-                    std::swap(dpic[i * 4], dpic[i * 4 + 2]);
-                }
-#endif
                 const size_t blocks = (dxtWidth / 4) * (dxtHeight / 4);
-                const size_t etc2CompressedSize = blocks * 16;
+                const size_t etc2CompressedSize = blocks * R_Etc2BlockBytes(etc2Format);
                 if (s_etc2Buffer.size() < etc2CompressedSize) {
                     s_etc2Buffer.resize(etc2CompressedSize);
                 }
                 uint8_t *etc2Data = s_etc2Buffer.data();
 
-                CompressEtc2Rgba(
-                        reinterpret_cast<const uint32_t *>(dpic),
-                        reinterpret_cast<uint64_t *>(etc2Data),
-                        blocks,
-                        width,
-                        true
-                );
+                if (etc2Format == GL_COMPRESSED_RGB8_ETC2) {
+                    CompressEtc2Rgb(
+                            reinterpret_cast<const uint32_t *>(dpic),
+                            reinterpret_cast<uint64_t *>(etc2Data),
+                            blocks,
+                            width,
+                            true
+                    );
+                } else {
+                    CompressEtc2Rgba(
+                            reinterpret_cast<const uint32_t *>(dpic),
+                            reinterpret_cast<uint64_t *>(etc2Data),
+                            blocks,
+                            width,
+                            true
+                    );
+                }
 
                 if (g_enableTextureCache) {
                     idTextureCache::Instance().SaveToRamCache(hash, etc2Data, etc2CompressedSize,
                                                               width, height,
-                                                              GL_COMPRESSED_RGBA8_ETC2_EAC);
+                                                              etc2Format);
                     idTextureCache::Instance().SaveToCacheAsync(
                             imgName.c_str(),
                             static_cast<const uint8_t *>(pic), compressedSize,
                             width, height,
-                            GL_COMPRESSED_RGBA8_ETC2_EAC,
+                            etc2Format,
                             gpuMipLevel,
                             etc2Data, etc2CompressedSize
                     );
@@ -758,7 +771,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
 
                 glCompressedTexSubImage2D(uploadTarget, gpuMipLevel, x, y,
                                           width, height,
-                                          GL_COMPRESSED_RGBA8_ETC2_EAC,
+                                          etc2Format,
                                           static_cast<GLsizei>(etc2CompressedSize),
                                           etc2Data);
             }
@@ -1495,7 +1508,7 @@ void idImage::AllocImage() {
             internalFormat = ( glConfig.sRGBFramebufferAvailable && ( sRGB == 1 || sRGB == 3 ) ) ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 #else
             internalFormat = !glConfig.textureCompressionAvailable
-                             ? GL_COMPRESSED_RGBA8_ETC2_EAC
+                             ? R_Etc2FormatForDxt(opts.format, usage, opts.colorFormat)
                              : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 #endif
             dataFormat = GL_RGBA;
@@ -1676,7 +1689,7 @@ void idImage::AllocImage() {
             if (opts.textureType == TT_CUBIC) {
                 h = w;
             }
-            int mipSkip = getMipmapSkipLevel(opts.numLevels);
+            int mipSkip = MipLevelsToSkip();
             int effectiveNumLevels = opts.numLevels - mipSkip;
             if (effectiveNumLevels < 1) effectiveNumLevels = 1;
 
@@ -1731,13 +1744,13 @@ void idImage::AllocImage() {
                                 const size_t dxtWidth = ((static_cast<size_t>(w) + 3) / 4) * 4;
                                 const size_t dxtHeight = ((static_cast<size_t>(h) + 3) / 4) * 4;
                                 const size_t etc2CompressedSize =
-                                        ((dxtWidth / 4) * (dxtHeight / 4)) * 16;
+                                        ((dxtWidth / 4) * (dxtHeight / 4)) * R_Etc2BlockBytes(internalFormat);
                                 if (s_textureBuffer.size() < etc2CompressedSize) {
                                     s_textureBuffer.resize(etc2CompressedSize);
                                 }
                                 byte *data = s_textureBuffer.data();
                                 glCompressedTexImage2D(uploadTarget + side, level,
-                                                       GL_COMPRESSED_RGBA8_ETC2_EAC, w, h, 0,
+                                                       internalFormat, w, h, 0,
                                                        static_cast<GLsizei>(etc2CompressedSize),
                                                        data);
                             } else {
@@ -1840,10 +1853,26 @@ void idImage::Resize(int width, int height, bool recalculateLevels) {
     AllocImage();
 }
 
+// resize(0) kept the capacity: a 2048 texture left 16 MB of decode buffer behind for the whole session
+static size_t R_FreeTexturesBuffers() {
+    const size_t freed = s_decodeBuffer.capacity() + s_etc2Buffer.capacity() + s_textureBuffer.capacity() + s_etc2CacheBuffer.capacity();
+    std::vector<uint8_t>().swap(s_decodeBuffer);
+    std::vector<uint8_t>().swap(s_etc2Buffer);
+    std::vector<uint8_t>().swap(s_textureBuffer);
+    std::vector<uint8_t>().swap(s_etc2CacheBuffer);
+    return freed;
+}
+
 void ClearTexturesBuffers() {
     std::lock_guard<std::mutex> lock(imageMutex);
-    s_decodeBuffer.resize(0);
-    s_etc2Buffer.resize(0);
-    s_textureBuffer.resize(0);
-    s_etc2CacheBuffer.resize(0);
+    R_FreeTexturesBuffers();
+}
+
+// from the out of memory handler: an upload of this thread may hold the lock, it must not wait for it
+bool TryClearTexturesBuffers() {
+    std::unique_lock<std::mutex> lock(imageMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return false;
+    }
+    return R_FreeTexturesBuffers() > 0;
 }

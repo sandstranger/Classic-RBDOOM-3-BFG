@@ -418,7 +418,12 @@ void idRenderProgManager::LoadGLSLProgram( const int programIndex, const int ver
     if (!shaderCacheWasInit)
     {
         binaryCache.Init();
+#if defined( ID_LOW_MEMORY )
+		// the binaries on disk make the next start fast, the RAM copies only a shader reload
+		binaryCache.SetMaxRAMCacheSize(4 * 1024 * 1024);
+#else
 		binaryCache.SetMaxRAMCacheSize(32 * 1024 * 1024);
+#endif
         shaderCacheWasInit = true;
     }
 

@@ -31,6 +31,18 @@ If you have questions concerning this license or the applicable additional terms
 
 #if defined(USE_INTRINSICS)
 #if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__aarch64__) || defined(_M_ARM64)
+	#if defined( ID_ARMV7 )
+	// ARMv7 NEON has no division and no square root: by default sse2neon gives _mm_div_ps and
+	// _mm_sqrt_ps one Newton step of the estimate, about 3 digits, which the LCP solver, the culling
+	// and the matrix code feel. These take the steps that make them full float precision.
+	// AArch64 has the instructions, they change nothing there.
+	#ifndef SSE2NEON_PRECISE_DIV
+	#define SSE2NEON_PRECISE_DIV 1
+	#endif
+	#ifndef SSE2NEON_PRECISE_SQRT
+	#define SSE2NEON_PRECISE_SQRT 1
+	#endif
+	#endif
     #include "sse2neon.h"
 #else
 	#include <emmintrin.h>

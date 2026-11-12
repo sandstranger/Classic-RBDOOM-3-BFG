@@ -1336,6 +1336,7 @@ bool needToShowScreenControls() {
 
 extern "C" void ClearRamCache();
 extern "C" void clearBlobShaderCache();
+extern bool TryClearTexturesBuffers();
 
 bool AndroidLifeCycleEventFilter(void*, SDL_Event* event){
 	switch (event->type)
@@ -1350,6 +1351,9 @@ bool AndroidLifeCycleEventFilter(void*, SDL_Event* event){
         case SDL_EVENT_LOW_MEMORY:
             ClearRamCache();
             clearBlobShaderCache();
+            // the decode buffers of the texture uploads (up to 16 MB each): this is the UI thread,
+            // an upload that holds them is not waited for
+            TryClearTexturesBuffers();
             break;
 		case SDL_EVENT_WILL_ENTER_BACKGROUND:
 			PauseGame();

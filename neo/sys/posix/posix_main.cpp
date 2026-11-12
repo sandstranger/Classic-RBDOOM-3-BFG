@@ -1000,7 +1000,12 @@ Posix_EarlyInit/Posix_LateInit is better
  */
 void Sys_Init() {
 #ifndef ANDROID
+#ifdef __linux__
+#ifdef USE_OPENXR
+	SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "x11"); //GK: According to documentation there is no support for wayland with OpenGL
+#else
 	SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
+#endif
 #else
 #ifdef ANDROID
 	SDL_SetHint(SDL_HINT_TV_REMOTE_AS_JOYSTICK, "0");

@@ -44,7 +44,7 @@ extern int getMipmapSkipLevel(int numLevels);
 #define IMAGE_MAX_TEXTURE_SIZE_DEFAULT "0"
 #endif
 idCVar image_maxTextureSize( "image_maxTextureSize", IMAGE_MAX_TEXTURE_SIZE_DEFAULT, CVAR_RENDERER | CVAR_INTEGER,
-							 "the largest width or height a mip mapped texture of the game data gets on the GPU, the larger top levels are left out; 0 for no limit. Images loaded after a change get it (reloadImages all)" );
+							 "the largest width or height a diffuse, normal or specular map of a surface gets on the GPU, the larger top levels are left out; 0 for no limit. Menus, GUIs and fonts keep their size. Images loaded after a change get it (reloadImages all)" );
 
 /*
 ================
@@ -52,8 +52,27 @@ idImage::MipLevelsToSkip
 
 The storage (AllocImage) and every upload loop use this, after the options are final: they always
 agree. Render targets and images without mip levels keep their size.
+
+image_maxTextureSize only takes the lit surface maps: the bulk of a level's texture memory, seen
+minified at a distance. The menu and GUI images (SWF atlases, implicit "blend blend" materials:
+TD_DEFAULT), fonts and the rest are shown 1:1 on screen and turned to mush when their top levels
+were left out.
 ================
 */
+static bool R_TextureSizeLimitApplies( textureUsage_t usage )
+{
+	switch( usage )
+	{
+		case TD_DIFFUSE:
+		case TD_BUMP:
+		case TD_SPECULAR:
+		case TD_COVERAGE:
+			return true;
+		default:
+			return false;
+	}
+}
+
 int idImage::MipLevelsToSkip() const
 {
 	if( opts.numLevels <= 1 || opts.isRenderTarget )
@@ -62,7 +81,7 @@ int idImage::MipLevelsToSkip() const
 	}
 	int skip = getMipmapSkipLevel( opts.numLevels );
 	const int maxSize = image_maxTextureSize.GetInteger();
-	if( maxSize > 0 )
+	if( maxSize > 0 && R_TextureSizeLimitApplies( usage ) )
 	{
 		while( skip < opts.numLevels - 1 && Max( opts.width >> skip, opts.height >> skip ) > maxSize )
 		{

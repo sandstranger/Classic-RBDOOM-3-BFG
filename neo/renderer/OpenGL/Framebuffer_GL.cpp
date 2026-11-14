@@ -74,7 +74,13 @@ static idCVar r_useTileBasedOptimizations("r_useTileBasedOptimizations", "1",
 static idCVar r_renderTargetIdleFrames( "r_renderTargetIdleFrames", "600", CVAR_RENDERER | CVAR_INTEGER,
         "frames a per light shadow map array or a shadow atlas keeps its storage after its last use", 1, 100000 );
 
-const int shadowMapResolutions[MAX_SHADOWMAP_RESOLUTIONS] = { 512, 256, 256, 128, 64 };
+// Side resolution of the shadow maps by LOD (vLight->shadowLOD, point and projected lights use 1 and up, LOD 0 is
+// the sun's). Nothing goes below 256: with r_shadowMapLodScale 0.4 the LOD is always 3 or 4, and 128 / 64 texels
+// for a 92 degree cube side made the slope scaled polygon offset of the casters bigger than the distance to the
+// surfaces they shadow on walls and floors seen at a grazing angle from the light: shadows (a table's on the
+// floor) vanished in the wedge of one cube side, and the LOD follows the light's size on screen, so they came and
+// went with the camera angle. LOD 3 and 4 are the same size now: turning the camera no longer changes it.
+const int shadowMapResolutions[MAX_SHADOWMAP_RESOLUTIONS] = { 1024, 512, 512, 256, 256 };
 
 idList<Framebuffer*> Framebuffer::framebuffers;
 RenderTargetPool Framebuffer::renderTargetPool;

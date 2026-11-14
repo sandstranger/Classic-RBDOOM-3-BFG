@@ -533,6 +533,16 @@ void R_SetNewMode( const bool fullInit )
 		if (stereoRender_enable.GetInteger() == STEREO3D_VR) {
 			parms.multiSamples = 0;
 		}
+#if defined(ANDROID)
+		// MSAA on Android is the multisampled window surface. With r_useHDR the 3D view is drawn into the
+		// single-sampled HDR framebuffer (HDR MSAA is compiled out, USE_HDR_MSAA) and tonemapped into the
+		// window: the window's samples would only cover that copy and the 2D, at the cost of a multisampled
+		// image and its resolve every frame. Takes effect with the next window (vid_restart).
+		if (r_useHDR.GetBool() && parms.multiSamples > 0) {
+			idLib::Printf("r_useHDR: no multisampled window, the HDR scene is not multisampled\n");
+			parms.multiSamples = 0;
+		}
+#endif
 
 		if (i == 0)
 		{

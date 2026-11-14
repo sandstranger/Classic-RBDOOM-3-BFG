@@ -1135,9 +1135,9 @@ static bool R_GPUInstanceable( const drawSurf_t* surf, bool allowPerforated = fa
 static bool R_CanBatchGPUInstances( const drawSurf_t* first, const drawSurf_t* candidate,
 		bool requireSameSort = true, bool allowPerforated = false )
 {
-	// The batch builders ask this for every surface up to GPU_INSTANCE_BATCH_SCAN_AHEAD
-	// places ahead, and almost none share the geometry: reject on the drawSurf fields
-	// alone before anything follows the material and space pointers.
+	// The batch builders ask this for the surfaces of a same geometry chain
+	// (R_BuildGPUInstanceChains), the drawSurf fields are checked again all the same
+	// before anything follows the material and space pointers.
 	if( candidate == NULL || first->ambientCache != candidate->ambientCache || first->indexCache != candidate->indexCache
 		|| first->numIndexes != candidate->numIndexes || first->material != candidate->material )
 	{
@@ -1179,21 +1179,111 @@ static void R_FillGPUInstanceData( gpuInstanceData_t& instance, const drawSurf_t
 	R_GlobalPointToLocal( surf->space->modelMatrix, viewOrigin, localViewOrigin.ToVec3() );
 	memcpy( instance.localViewOrigin, localViewOrigin.ToFloatPtr(), sizeof( instance.localViewOrigin ) );
 }
-static const int GPU_INSTANCE_BATCH_SCAN_AHEAD = 512;
-static int R_BuildGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs, int firstIndex, const idVec3& viewOrigin, bool* consumed, gpuInstanceData_t* instances, bool allowPerforated = false, const drawSurf_t** instanceSurfs = NULL )
+/*
+==================
+R_BuildGPUInstanceChains
+
+The surfaces of a draw list that may be drawn as instances of one batch share their vertex and
+index ranges and their material (stencil shadow volumes: their shadow vertex and index ranges).
+chains[i] is the index of the next surface after i with the same ones, -1 after the last.
+
+The batch builders walk these chains instead of testing every later surface of the list: that was
+O(surfaces x 512) compares a pass, on the back end thread, and found nothing for almost every
+surface (world, skinned models and shadow volumes are unique geometry). Walking a chain costs
+only its matches, so a batch takes its instances from the whole list now, not from the next
+512 surfaces: same material surfaces of one pass have no order between them (depth, additive
+light, depth only shadow casters, stencil counts).
+==================
+*/
+static int* gpuInstanceChainTable = NULL;		// back end thread only
+static int gpuInstanceChainTableSize = 0;
+
+static ID_INLINE bool R_SameGPUInstanceGeometry( const drawSurf_t* a, const drawSurf_t* b, bool stencilShadowVolumes )
+{
+	if( stencilShadowVolumes )
+	{
+		return a->shadowCache == b->shadowCache && a->indexCache == b->indexCache && a->numIndexes == b->numIndexes;
+	}
+	return a->ambientCache == b->ambientCache && a->indexCache == b->indexCache && a->numIndexes == b->numIndexes
+		&& a->material == b->material;
+}
+
+static void R_BuildGPUInstanceChains( const drawSurf_t* const* drawSurfs, int numDrawSurfs, int* chains, bool stencilShadowVolumes )
+{
+	if( numDrawSurfs <= 0 )
+	{
+		return;
+	}
+	if( !renderProgManager.GPUInstancingShadersReady() )
+	{
+		memset( chains, 0xff, numDrawSurfs * sizeof( int ) );	// no batches at all
+		return;
+	}
+
+	int tableSize = 64;
+	while( tableSize < numDrawSurfs * 2 )
+	{
+		tableSize <<= 1;
+	}
+	if( tableSize > gpuInstanceChainTableSize )
+	{
+		Mem_Free( gpuInstanceChainTable );
+		gpuInstanceChainTable = ( int* )Mem_Alloc( tableSize * sizeof( int ), TAG_RENDER );
+		gpuInstanceChainTableSize = tableSize;
+	}
+	int* table = gpuInstanceChainTable;
+	memset( table, 0xff, tableSize * sizeof( int ) );
+	const uint64 mask = ( uint64 )( tableSize - 1 );
+
+	// from the end: a surface links to the nearest later one with its geometry, then takes its slot
+	for( int i = numDrawSurfs - 1; i >= 0; --i )
+	{
+		chains[i] = -1;
+		const drawSurf_t* surf = drawSurfs[i];
+		if( surf == NULL )
+		{
+			continue;
+		}
+
+		uint64 hash = ( stencilShadowVolumes ? surf->shadowCache : surf->ambientCache ) * 0x9E3779B97F4A7C15ULL;
+		hash ^= ( surf->indexCache + 0x632BE59BD9B4E019ULL ) + ( hash << 6 ) + ( hash >> 2 );
+		hash ^= ( uint64 )( uint32 )surf->numIndexes * 0xC2B2AE3D27D4EB4FULL;
+		if( !stencilShadowVolumes )
+		{
+			hash ^= ( uint64 )( uintptr_t )surf->material * 0x165667B19E3779F9ULL;
+		}
+		hash ^= hash >> 29;
+
+		for( uint64 slot = hash & mask; ; slot = ( slot + 1 ) & mask )
+		{
+			const int other = table[slot];
+			if( other < 0 )
+			{
+				table[slot] = i;
+				break;
+			}
+			if( R_SameGPUInstanceGeometry( surf, drawSurfs[other], stencilShadowVolumes ) )
+			{
+				chains[i] = other;
+				table[slot] = i;
+				break;
+			}
+		}
+	}
+}
+
+static int R_BuildGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs, int firstIndex, const idVec3& viewOrigin, bool* consumed, const int* chains, gpuInstanceData_t* instances, bool allowPerforated = false, const drawSurf_t** instanceSurfs = NULL )
 {
 	if( glConfig.glVersion < 3.2f || !renderProgManager.GPUInstancingShadersReady() || firstIndex < 0 || firstIndex >= numDrawSurfs ) return 1;
 	const drawSurf_t* first = drawSurfs[firstIndex];
-	if( !R_GPUInstanceable( first, allowPerforated ) ) return 1;
+	if( chains[firstIndex] < 0 || !R_GPUInstanceable( first, allowPerforated ) ) return 1;
 	R_FillGPUInstanceData( instances[0], first, viewOrigin );
 	if( instanceSurfs != NULL ) instanceSurfs[0] = first;
 	int count = 1;
 
-	// Repeated geometry is rarely adjacent in the draw-surface list. Search a
-	// bounded window and only regroup surfaces with matching material/sort state.
-	const int requestedEnd = firstIndex + GPU_INSTANCE_BATCH_SCAN_AHEAD + 1;
-	const int scanEnd = requestedEnd < numDrawSurfs ? requestedEnd : numDrawSurfs;
-	for( int i = firstIndex + 1; i < scanEnd && count < MAX_GPU_INSTANCES_PER_DRAW; ++i )
+	// Repeated geometry is rarely adjacent in the draw-surface list: only the surfaces of the
+	// chain of this one (same geometry and material) can join, the batch checks the rest.
+	for( int i = chains[firstIndex]; i >= 0 && count < MAX_GPU_INSTANCES_PER_DRAW; i = chains[i] )
 	{
 		if( consumed[i] )
 		{
@@ -1243,7 +1333,7 @@ static void R_FillShadowGPUInstanceData( gpuInstanceData_t& instance, const draw
 }
 
 static int R_BuildShadowGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs,
-		int firstIndex, const idVec3& viewOrigin, bool* consumed, gpuInstanceData_t* instances,
+		int firstIndex, const idVec3& viewOrigin, bool* consumed, const int* chains, gpuInstanceData_t* instances,
 		const idRenderMatrix& lightViewRenderMatrix, const idRenderMatrix& lightProjectionRenderMatrix,
 		const viewLight_t* vLight, int side )
 {
@@ -1253,7 +1343,7 @@ static int R_BuildShadowGPUInstanceBatch( const drawSurf_t* const* drawSurfs, in
 	}
 
 	const drawSurf_t* first = drawSurfs[firstIndex];
-	if( !R_GPUInstanceable( first, true ) || first->shadowVolumeState != SHADOWVOLUME_DONE )
+	if( chains[firstIndex] < 0 || !R_GPUInstanceable( first, true ) || first->shadowVolumeState != SHADOWVOLUME_DONE )
 	{
 		return 1;
 	}
@@ -1261,9 +1351,7 @@ static int R_BuildShadowGPUInstanceBatch( const drawSurf_t* const* drawSurfs, in
 	R_FillShadowGPUInstanceData( instances[0], first, viewOrigin,
 			lightViewRenderMatrix, lightProjectionRenderMatrix, vLight, side );
 	int count = 1;
-	const int requestedEnd = firstIndex + GPU_INSTANCE_BATCH_SCAN_AHEAD + 1;
-	const int scanEnd = requestedEnd < numDrawSurfs ? requestedEnd : numDrawSurfs;
-	for( int i = firstIndex + 1; i < scanEnd && count < MAX_GPU_INSTANCES_PER_DRAW; ++i )
+	for( int i = chains[firstIndex]; i >= 0 && count < MAX_GPU_INSTANCES_PER_DRAW; i = chains[i] )
 	{
 		if( consumed[i] )
 		{
@@ -1300,10 +1388,11 @@ static bool R_CanBatchStencilShadowInstances( const drawSurf_t* first, const dra
 
 static int R_BuildStencilShadowGPUInstanceBatch( const drawSurf_t* const* drawSurfs, int numDrawSurfs,
 		int firstIndex, const idVec3& viewOrigin, const idVec3& globalLightOrigin,
-		bool* consumed, gpuInstanceData_t* instances )
+		bool* consumed, const int* chains, gpuInstanceData_t* instances )
 {
 	if( glConfig.glVersion < 3.2f || !renderProgManager.GPUInstancingShadersReady() || firstIndex < 0 || firstIndex >= numDrawSurfs ) return 1;
 	const drawSurf_t* first = drawSurfs[firstIndex];
+	if( chains[firstIndex] < 0 ) return 1;	// no other volume with its shadow geometry: the usual case
 	if( first == NULL || first->space == NULL || first->jointCache != 0 || first->shadowCache == 0
 		|| first->numIndexes <= 0 || first->shadowVolumeState != SHADOWVOLUME_DONE ) return 1;
 	R_FillGPUInstanceData( instances[0], first, viewOrigin );
@@ -1311,9 +1400,7 @@ static int R_BuildStencilShadowGPUInstanceBatch( const drawSurf_t* const* drawSu
 	R_GlobalPointToLocal( first->space->modelMatrix, globalLightOrigin, localLightOrigin.ToVec3() );
 	memcpy( instances[0].localLightOrigin, localLightOrigin.ToFloatPtr(), sizeof( instances[0].localLightOrigin ) );
 	int count = 1;
-	const int requestedEnd = firstIndex + GPU_INSTANCE_BATCH_SCAN_AHEAD + 1;
-	const int scanEnd = requestedEnd < numDrawSurfs ? requestedEnd : numDrawSurfs;
-	for( int i = firstIndex + 1; i < scanEnd && count < MAX_GPU_INSTANCES_PER_DRAW; ++i )
+	for( int i = chains[firstIndex]; i >= 0 && count < MAX_GPU_INSTANCES_PER_DRAW; i = chains[i] )
 	{
 		if( consumed[i] || !R_CanBatchStencilShadowInstances( first, drawSurfs[i] ) ) continue;
 		const drawSurf_t* candidate = drawSurfs[i];
@@ -2056,6 +2143,8 @@ void idRenderBackend::FillDepthBufferGeneric( const drawSurf_t* const* drawSurfs
 #if defined(ANDROID) && !defined(USE_VULKAN)
 	bool* gpuGenericConsumed = (bool*)_alloca( numDrawSurfs * sizeof( bool ) );
 	memset( gpuGenericConsumed, 0, numDrawSurfs * sizeof( bool ) );
+	int* gpuGenericChains = (int*)_alloca( ( numDrawSurfs > 0 ? numDrawSurfs : 1 ) * sizeof( int ) );
+	R_BuildGPUInstanceChains( drawSurfs, numDrawSurfs, gpuGenericChains, false );
 	int gpuGenericBatchCount = 0;
 	int gpuGenericDrawCallsSaved = 0;
 #endif
@@ -2103,7 +2192,7 @@ void idRenderBackend::FillDepthBufferGeneric( const drawSurf_t* const* drawSurfs
 		if( glConfig.glVersion >= 3.2f && shader->Coverage() == MC_PERFORATED )
 		{
 			gpuGenericInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i,
-					viewDef->renderView.vieworg, gpuGenericConsumed, gpuGenericInstances, true );
+					viewDef->renderView.vieworg, gpuGenericConsumed, gpuGenericChains, gpuGenericInstances, true );
 			if( gpuGenericInstanceCount > 1 )
 			{
 				gpuGenericInstanceData = gpuGenericInstances;
@@ -2357,6 +2446,8 @@ void idRenderBackend::FillDepthBufferFast( drawSurf_t** drawSurfs, int numDrawSu
 #if defined(ANDROID) && !defined(USE_VULKAN)
 	bool* gpuInstanceConsumed = (bool*)_alloca( numDrawSurfs * sizeof(bool) );
 	memset( gpuInstanceConsumed, 0, numDrawSurfs * sizeof(bool) );
+	int* gpuInstanceChains = (int*)_alloca( ( numDrawSurfs > 0 ? numDrawSurfs : 1 ) * sizeof( int ) );
+	R_BuildGPUInstanceChains( (const drawSurf_t* const*)drawSurfs, numDrawSurfs, gpuInstanceChains, false );
 	int gpuInstanceBatchCount = 0;
 	int gpuInstanceDrawCallsSaved = 0;
 #endif
@@ -2445,7 +2536,7 @@ void idRenderBackend::FillDepthBufferFast( drawSurf_t** drawSurfs, int numDrawSu
 		int gpuInstanceCount = 1;
 		if( glConfig.glVersion >= 3.2f )
 		{
-			gpuInstanceCount = R_BuildGPUInstanceBatch( (const drawSurf_t* const*)drawSurfs, numDrawSurfs, surfNum, viewDef->renderView.vieworg, gpuInstanceConsumed, gpuInstances );
+			gpuInstanceCount = R_BuildGPUInstanceBatch( (const drawSurf_t* const*)drawSurfs, numDrawSurfs, surfNum, viewDef->renderView.vieworg, gpuInstanceConsumed, gpuInstanceChains, gpuInstances );
 			if( gpuInstanceCount > 1 )
 			{
 				gpuInstanceData = gpuInstances;
@@ -2799,6 +2890,8 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 	{
 		gpuInteractionSurfs[i] = allSurfaces[i];
 	}
+	int* gpuInteractionChains = (int*)_alloca( MAX_INTERACTIONS_PER_LIGHT * sizeof( int ) );
+	R_BuildGPUInstanceChains( gpuInteractionSurfs, gpuInteractionSurfaceCount, gpuInteractionChains, false );
 	int gpuInteractionBatchCount = 0;
 	int gpuInteractionDrawCallsSaved = 0;
 #endif
@@ -3042,7 +3135,7 @@ void idRenderBackend::RenderInteractions( const drawSurf_t* surfList, const view
 			{
 				gpuInteractionInstanceCount = R_BuildGPUInstanceBatch( gpuInteractionSurfs,
 						gpuInteractionSurfaceCount, sortedSurfNum, viewDef->renderView.vieworg,
-						gpuInteractionConsumed, gpuInteractionInstances, true, gpuInteractionInstanceSurfs );
+						gpuInteractionConsumed, gpuInteractionChains, gpuInteractionInstances, true, gpuInteractionInstanceSurfs );
 				if( gpuInteractionInstanceCount > 1 )
 				{
 					gpuShadowInteractionInstanced = useShadowMapInteraction;
@@ -3503,6 +3596,8 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 #if defined(ANDROID) && !defined(USE_VULKAN)
 	bool* gpuInstanceConsumed = (bool*)_alloca( numDrawSurfs * sizeof(bool) );
 	memset( gpuInstanceConsumed, 0, numDrawSurfs * sizeof(bool) );
+	int* gpuInstanceChains = (int*)_alloca( ( numDrawSurfs > 0 ? numDrawSurfs : 1 ) * sizeof( int ) );
+	R_BuildGPUInstanceChains( drawSurfs, numDrawSurfs, gpuInstanceChains, false );
 	int gpuInstanceBatchCount = 0;
 	int gpuInstanceDrawCallsSaved = 0;
 
@@ -3630,7 +3725,7 @@ void idRenderBackend::AmbientPass( const drawSurf_t* const* drawSurfs, int numDr
 		gpuInstanceData_t gpuInstances[MAX_GPU_INSTANCES_PER_DRAW];
 		if( glConfig.glVersion >= 3.2f )
 		{
-			gpuInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i, viewDef->renderView.vieworg, gpuInstanceConsumed, gpuInstances, surfaceMaterial->Coverage() == MC_PERFORATED );
+			gpuInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i, viewDef->renderView.vieworg, gpuInstanceConsumed, gpuInstanceChains, gpuInstances, surfaceMaterial->Coverage() == MC_PERFORATED );
 			if( gpuInstanceCount > 1 )
 			{
 				gpuInstanceData = gpuInstances;
@@ -4075,6 +4170,8 @@ void idRenderBackend::StencilShadowPass( const drawSurf_t* drawSurfs, const view
 	int stencilShadowArrayIndex = 0;
 	for( const drawSurf_t* scan = drawSurfs; scan != NULL; scan = scan->nextOnLight ) stencilShadowSurfs[stencilShadowArrayIndex++] = scan;
 	memset( stencilShadowConsumed, 0, stencilShadowAllocCount * sizeof( bool ) );
+	int* stencilShadowChains = (int*)_alloca( stencilShadowAllocCount * sizeof( int ) );
+	R_BuildGPUInstanceChains( stencilShadowSurfs, numStencilShadowSurfs, stencilShadowChains, true );
 	int stencilShadowBatchCount = 0;
 	int stencilShadowDrawCallsSaved = 0;
 	for( int stencilShadowIndex = 0; stencilShadowIndex < numStencilShadowSurfs; ++stencilShadowIndex )
@@ -4119,7 +4216,7 @@ void idRenderBackend::StencilShadowPass( const drawSurf_t* drawSurfs, const view
 		{
 			stencilShadowInstanceCount = R_BuildStencilShadowGPUInstanceBatch( stencilShadowSurfs,
 					numStencilShadowSurfs, stencilShadowIndex, viewDef->renderView.vieworg,
-					vLight->globalLightOrigin, stencilShadowConsumed, stencilShadowInstances );
+					vLight->globalLightOrigin, stencilShadowConsumed, stencilShadowChains, stencilShadowInstances );
 			if( stencilShadowInstanceCount > 1 )
 			{
 				stencilShadowInstanceData = stencilShadowInstances;
@@ -4936,6 +5033,8 @@ void idRenderBackend::DrawShadowMapCasters( const drawSurf_t* drawSurfs, const v
 		}
 	}
 	memset( gpuShadowConsumed, 0, numShadowDrawSurfs * sizeof( bool ) );
+	int* gpuShadowChains = (int*)_alloca( numShadowDrawSurfs * sizeof( int ) );
+	R_BuildGPUInstanceChains( shadowDrawSurfs, numShadowDrawSurfs, gpuShadowChains, false );
 	int gpuShadowBatchCount = 0;
 	int gpuShadowDrawCallsSaved = 0;
 	for( int shadowIndex = 0; shadowIndex < numShadowDrawSurfs; ++shadowIndex )
@@ -4983,7 +5082,7 @@ void idRenderBackend::DrawShadowMapCasters( const drawSurf_t* drawSurfs, const v
 		if( glConfig.glVersion >= 3.2f )
 		{
 			gpuShadowInstanceCount = R_BuildShadowGPUInstanceBatch( shadowDrawSurfs, numShadowDrawSurfs,
-					shadowIndex, viewDef->renderView.vieworg, gpuShadowConsumed, gpuShadowInstances,
+					shadowIndex, viewDef->renderView.vieworg, gpuShadowConsumed, gpuShadowChains, gpuShadowInstances,
 					lightViewRenderMatrix, lightProjectionRenderMatrix, vLight, side );
 			if( gpuShadowInstanceCount > 1 )
 			{
@@ -7969,6 +8068,8 @@ int idRenderBackend::DrawShaderPasses( const drawSurf_t* const* const drawSurfs,
 #if defined(ANDROID) && !defined(USE_VULKAN)
 	bool* gpuShaderPassConsumed = (bool*)_alloca( numDrawSurfs * sizeof( bool ) );
 	memset( gpuShaderPassConsumed, 0, numDrawSurfs * sizeof( bool ) );
+	int* gpuShaderPassChains = (int*)_alloca( ( numDrawSurfs > 0 ? numDrawSurfs : 1 ) * sizeof( int ) );
+	R_BuildGPUInstanceChains( drawSurfs, numDrawSurfs, gpuShaderPassChains, false );
 	int gpuShaderPassBatchCount = 0;
 	int gpuShaderPassDrawCallsSaved = 0;
 #endif
@@ -8039,7 +8140,7 @@ int idRenderBackend::DrawShaderPasses( const drawSurf_t* const* const drawSurfs,
 			&& R_GPUShaderPassMaterialInstanceable( shader ) )
 		{
 			gpuShaderPassInstanceCount = R_BuildGPUInstanceBatch( drawSurfs, numDrawSurfs, i,
-					viewDef->renderView.vieworg, gpuShaderPassConsumed, gpuShaderPassInstances,
+					viewDef->renderView.vieworg, gpuShaderPassConsumed, gpuShaderPassChains, gpuShaderPassInstances,
 					shader->Coverage() == MC_PERFORATED );
 			if( gpuShaderPassInstanceCount > 1 )
 			{
@@ -8457,6 +8558,8 @@ void idRenderBackend::T_BlendLight( const drawSurf_t* drawSurfs, const viewLight
 		blendBatchSurfs[blendArrayIndex++] = scan;
 	}
 	memset( blendConsumed, 0, blendAllocCount * sizeof( bool ) );
+	int* blendChains = (int*)_alloca( blendAllocCount * sizeof( int ) );
+	R_BuildGPUInstanceChains( blendBatchSurfs, numBlendSurfs, blendChains, false );
 	int blendBatchCount = 0;
 	int blendDrawCallsSaved = 0;
 	for( int blendIndex = 0; blendIndex < numBlendSurfs; ++blendIndex )
@@ -8497,7 +8600,7 @@ void idRenderBackend::T_BlendLight( const drawSurf_t* drawSurfs, const viewLight
 		if( glConfig.glVersion >= 3.2f && !drawSurf->jointCache )
 		{
 			blendInstanceCount = R_BuildGPUInstanceBatch( blendBatchSurfs, numBlendSurfs, blendIndex,
-					viewDef->renderView.vieworg, blendConsumed, blendInstances, true, blendInstanceSurfs );
+					viewDef->renderView.vieworg, blendConsumed, blendChains, blendInstances, true, blendInstanceSurfs );
 			if( blendInstanceCount > 1 )
 			{
 				for( int instanceIndex = 0; instanceIndex < blendInstanceCount; ++instanceIndex )
@@ -8675,6 +8778,8 @@ void idRenderBackend::T_BasicFog( const drawSurf_t* drawSurfs, const idPlane fog
 		fogBatchSurfs[fogArrayIndex++] = scan;
 	}
 	memset( fogConsumed, 0, fogAllocCount * sizeof( bool ) );
+	int* fogChains = (int*)_alloca( fogAllocCount * sizeof( int ) );
+	R_BuildGPUInstanceChains( fogBatchSurfs, numFogSurfs, fogChains, false );
 	int fogBatchCount = 0;
 	int fogDrawCallsSaved = 0;
 	for( int fogIndex = 0; fogIndex < numFogSurfs; ++fogIndex )
@@ -8715,7 +8820,7 @@ void idRenderBackend::T_BasicFog( const drawSurf_t* drawSurfs, const idPlane fog
 		if( inverseBaseLightProject == NULL && glConfig.glVersion >= 3.2f && !drawSurf->jointCache )
 		{
 			fogInstanceCount = R_BuildGPUInstanceBatch( fogBatchSurfs, numFogSurfs, fogIndex,
-					viewDef->renderView.vieworg, fogConsumed, fogInstances, true, fogInstanceSurfs );
+					viewDef->renderView.vieworg, fogConsumed, fogChains, fogInstances, true, fogInstanceSurfs );
 			if( fogInstanceCount > 1 )
 			{
 				for( int instanceIndex = 0; instanceIndex < fogInstanceCount; ++instanceIndex )
@@ -10541,6 +10646,8 @@ void idRenderBackend::MotionBlur()
 		motionBlurBatchSurfs[i] = selected && candidate->material->Coverage() != MC_TRANSLUCENT
 			? candidate : NULL;
 	}
+	int* motionBlurChains = (int*)_alloca( ( numMotionBlurSurfs > 0 ? numMotionBlurSurfs : 1 ) * sizeof( int ) );
+	R_BuildGPUInstanceChains( motionBlurBatchSurfs, numMotionBlurSurfs, motionBlurChains, false );
 #endif
 	for( int surfNum = 0; surfNum < viewDef->numDrawSurfs; surfNum++ )
 	{
@@ -10572,7 +10679,7 @@ void idRenderBackend::MotionBlur()
 		if( glConfig.glVersion >= 3.2f )
 		{
 			const int instanceCount = R_BuildGPUInstanceBatch( motionBlurBatchSurfs, numMotionBlurSurfs,
-					surfNum, viewDef->renderView.vieworg, motionBlurConsumed, motionBlurInstances );
+					surfNum, viewDef->renderView.vieworg, motionBlurConsumed, motionBlurChains, motionBlurInstances );
 			if( instanceCount > 1 )
 			{
 				motionBlurInstanceCount = instanceCount;

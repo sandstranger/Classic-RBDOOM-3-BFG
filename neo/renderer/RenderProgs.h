@@ -347,6 +347,35 @@ public:
 	{
 		BindShader_Builtin( BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED );
 	};
+
+	// Alpha-tested texture_color draws (depth prepass, shadow maps): the only ones whose clip() can discard.
+	// On GLES the plain texture_color programs are converted without that discard (ConvertCG2GLSL), so a
+	// tile-based GPU keeps early depth/stencil and hidden surface removal for every other draw of them;
+	// these variants keep it. Elsewhere they are the plain programs.
+	void	BindShader_TextureVertexColorAlphaTest()
+	{
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BindShader_Builtin( BUILTIN_TEXTURE_VERTEXCOLOR_ALPHATEST );
+#else
+		BindShader_Builtin( BUILTIN_TEXTURE_VERTEXCOLOR );
+#endif
+	};
+
+#if defined(ANDROID) && !defined(USE_VULKAN)
+	void	BindShader_TextureVertexColorInstancedAlphaTest()
+	{
+		BindShader_Builtin( BUILTIN_TEXTURE_VERTEXCOLOR_INSTANCED_ALPHATEST );
+	};
+#endif
+
+	void	BindShader_TextureVertexColorSkinnedAlphaTest()
+	{
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BindShader_Builtin( BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED_ALPHATEST );
+#else
+		BindShader_Builtin( BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED );
+#endif
+	};
 	
 	void	BindShader_TextureTexGenVertexColor()
 	{
@@ -776,7 +805,7 @@ private:
 	void		LoadShader( int index, rpStage_t stage );
 	
 	idStr		StripDeadCode( const idStr& in, const char* name, const idStrList& compileMacros, bool builtin );
-	idStr		ConvertCG2GLSL( const idStr& in, const char* name, rpStage_t stage, idStr& layout, bool vkGLSL, bool hasGPUSkinning );
+	idStr		ConvertCG2GLSL( const idStr& in, const char* name, rpStage_t stage, idStr& layout, bool vkGLSL, bool hasGPUSkinning, int shaderFeatures = 0 );
 	
 	enum
 	{
@@ -801,6 +830,11 @@ private:
 #endif
 		BUILTIN_TEXTURE_VERTEXCOLOR_SRGB,
 		BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED,
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		BUILTIN_TEXTURE_VERTEXCOLOR_ALPHATEST,
+		BUILTIN_TEXTURE_VERTEXCOLOR_INSTANCED_ALPHATEST,
+		BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED_ALPHATEST,
+#endif
 		BUILTIN_TEXTURE_TEXGEN_VERTEXCOLOR,
 		BUILTIN_INTERACTION,
 #if defined(ANDROID) && !defined(USE_VULKAN)
@@ -915,6 +949,7 @@ private:
 		HDR_DEBUG,
 		USE_SRGB,
 		USE_GPU_INSTANCING,
+		USE_ALPHA_TEST,		// texture_color: its clip() is the alpha test (GLES: the only variant that discards)
 		
 		MAX_SHADER_MACRO_NAMES,
 	};

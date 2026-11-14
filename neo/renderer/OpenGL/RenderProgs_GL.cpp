@@ -189,7 +189,9 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 		void* cachedGLSL = NULL;
 		if( fileSystem->ReadFile( outFileGLSL.c_str(), &cachedGLSL ) > 0 && cachedGLSL != NULL )
 		{
-			missingTbrMobileShaderPath = strstr( ( const char* )cachedGLSL, "TBR_MOBILE_SHADER_PATH" ) == NULL;
+			// fragment programs: also those converted before texture_color's alpha test variants (no discard otherwise)
+			missingTbrMobileShaderPath = strstr( ( const char* )cachedGLSL,
+				shader.stage == SHADER_STAGE_FRAGMENT ? "TBDR_ALPHA_TEST_VARIANTS" : "TBR_MOBILE_SHADER_PATH" ) == NULL;
 		}
 		if( cachedGLSL != NULL )
 		{
@@ -280,7 +282,7 @@ void idRenderProgManager::LoadShader( shader_t& shader )
 
 		idStr hlslCode( hlslFileBuffer );
 		idStr programHLSL = StripDeadCode( hlslCode, inFile, compileMacros, shader.builtin );
-		programGLSL = ConvertCG2GLSL( programHLSL, inFile.c_str(), shader.stage, programUniforms, false, hasGPUSkinning );
+		programGLSL = ConvertCG2GLSL( programHLSL, inFile.c_str(), shader.stage, programUniforms, false, hasGPUSkinning, shader.shaderFeatures );
         fileSystem->WriteFile( outFileHLSL, programHLSL.c_str(), programHLSL.Length(), "fs_savepath" );
 		fileSystem->WriteFile( outFileGLSL, programGLSL.c_str(), programGLSL.Length(), "fs_savepath" );
 		fileSystem->WriteFile( outFileUniforms, programUniforms.c_str(), programUniforms.Length(), "fs_savepath" );

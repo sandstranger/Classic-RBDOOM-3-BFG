@@ -2206,21 +2206,22 @@ void idRenderBackend::FillDepthBufferGeneric( const drawSurf_t* const* drawSurfs
 				idVec4 alphaTestValue( regs[ pStage->alphaTestRegister ] );
 				SetFragmentParm( RENDERPARM_ALPHA_TEST, alphaTestValue.ToFloatPtr() );
 				
+				// the alpha test variants: the plain texture_color programs have no discard on GLES
 				if( drawSurf->jointCache )
 				{
-					renderProgManager.BindShader_TextureVertexColorSkinned();
+					renderProgManager.BindShader_TextureVertexColorSkinnedAlphaTest();
 				}
 				else
 				{
 #if defined(ANDROID) && !defined(USE_VULKAN)
 					if( gpuGenericInstanceCount > 1 )
 					{
-						renderProgManager.BindShader_TextureVertexColorInstanced();
+						renderProgManager.BindShader_TextureVertexColorInstancedAlphaTest();
 					}
 					else
 #endif
 					{
-						renderProgManager.BindShader_TextureVertexColor();
+						renderProgManager.BindShader_TextureVertexColorAlphaTest();
 					}
 				}
 				
@@ -5097,21 +5098,22 @@ void idRenderBackend::DrawShadowMapCasters( const drawSurf_t* drawSurfs, const v
 				idVec4 alphaTestValue( regs[ pStage->alphaTestRegister ] );
 				SetFragmentParm( RENDERPARM_ALPHA_TEST, alphaTestValue.ToFloatPtr() );
 				
+				// the alpha test variants: the plain texture_color programs have no discard on GLES
 				if( drawSurf->jointCache )
 				{
-					renderProgManager.BindShader_TextureVertexColorSkinned();
+					renderProgManager.BindShader_TextureVertexColorSkinnedAlphaTest();
 				}
 				else
 				{
 #if defined(ANDROID) && !defined(USE_VULKAN)
 					if( gpuShadowInstanceCount > 1 )
 					{
-						renderProgManager.BindShader_TextureVertexColorInstanced();
+						renderProgManager.BindShader_TextureVertexColorInstancedAlphaTest();
 					}
 					else
 #endif
 					{
-						renderProgManager.BindShader_TextureVertexColor();
+						renderProgManager.BindShader_TextureVertexColorAlphaTest();
 					}
 				}
 				

@@ -147,6 +147,12 @@ void idRenderProgManager::Init()
 #endif
 		{ BUILTIN_TEXTURE_VERTEXCOLOR_SRGB, "texture_color.vfp", "_SRGB", IDBIT( USE_SRGB ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		{ BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED, "texture_color_skinned.vfp", "", 0, true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#if defined(ANDROID) && !defined(USE_VULKAN)
+		// alpha-tested draws only: the plain ones above lose their discard on GLES (see ConvertCG2GLSL)
+		{ BUILTIN_TEXTURE_VERTEXCOLOR_ALPHATEST, "texture_color.vfp", "_alphatest", IDBIT( USE_ALPHA_TEST ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_TEXTURE_VERTEXCOLOR_INSTANCED_ALPHATEST, "texture_color.vfp", "_instanced_alphatest", IDBIT( USE_GPU_INSTANCING ) | IDBIT( USE_ALPHA_TEST ), false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+		{ BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED_ALPHATEST, "texture_color_skinned.vfp", "_alphatest", IDBIT( USE_ALPHA_TEST ), true, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
+#endif
 		{ BUILTIN_TEXTURE_TEXGEN_VERTEXCOLOR, "texture_color_texgen.vfp", "",  0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },
 		// RB begin
 		{ BUILTIN_INTERACTION, "interaction.vfp", "", 0, false, SHADER_STAGE_DEFAULT, LAYOUT_DRAW_VERT },

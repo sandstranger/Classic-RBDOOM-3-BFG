@@ -325,7 +325,8 @@ const char* idRenderProgManager::GLSLMacroNames[MAX_SHADER_MACRO_NAMES] =
                 "BRIGHTPASS",
                 "HDR_DEBUG",
                 "USE_SRGB",
-                "USE_GPU_INSTANCING"
+                "USE_GPU_INSTANCING",
+                "USE_ALPHA_TEST"
         };
 
 
@@ -852,6 +853,23 @@ const char* vertexInsert_GLSL_ES_3_00 =
                 "\n"
         };
 
+// HLSL clip() on GLES. A program with discard keeps a tile-based GPU from resolving depth/stencil early and
+// from removing hidden surfaces (Mali forward pixel kill, Adreno LRZ, PowerVR HSR) for the whole draw, whether
+// the discard ever runs or not. texture_color's clip() is its alpha test and rpAlphaTest is 0 for all but the
+// alpha-tested depth and shadow draws: its programs get GLSL_ES_CLIP_NONE unless built with USE_ALPHA_TEST.
+#define GLSL_ES_CLIP \
+	"void clip( float v ) { if ( v < 0.0 ) { discard; } }\n" \
+	"void clip( vec2 v ) { if ( any( lessThan( v, vec2( 0.0 ) ) ) ) { discard; } }\n" \
+	"void clip( vec3 v ) { if ( any( lessThan( v, vec3( 0.0 ) ) ) ) { discard; } }\n" \
+	"void clip( vec4 v ) { if ( any( lessThan( v, vec4( 0.0 ) ) ) ) { discard; } }\n"
+#define GLSL_ES_CLIP_NONE \
+	"void clip( float v ) {}\n" \
+	"void clip( vec2 v ) {}\n" \
+	"void clip( vec3 v ) {}\n" \
+	"void clip( vec4 v ) {}\n"
+// fragment programs converted before the alpha test variants are regenerated: RenderProgs_GL.cpp looks for this
+#define GLSL_ES_FRAGMENT_MARKER "TBDR_ALPHA_TEST_VARIANTS"
+
 // lit surface programs get the second tex2D(), see R_GLSLUsesTextureLodBias()
 #define GLSL_ES_TEX2D				"vec4 tex2D( sampler2D sampler, vec2 texcoord ) { return texture( sampler, texcoord.xy ); }\n"
 #define GLSL_ES_TEX2D_LOD_BIAS		"uniform float " TEXTURE_LOD_BIAS_UNIFORM_NAME ";\n" \
@@ -862,6 +880,7 @@ const char* fragmentInsert_GLSL_ES_3_00 =
                 "#version 300 es\n"
                 "#define PC\n"
                 "// TBR_MOBILE_SHADER_PATH\n"
+                "// " GLSL_ES_FRAGMENT_MARKER "\n"
                 "precision highp float;\n"
                 "precision mediump sampler2D;\n"
                 "precision mediump sampler2DShadow;\n"
@@ -871,10 +890,7 @@ const char* fragmentInsert_GLSL_ES_3_00 =
                 "precision mediump samplerCubeShadow;\n"
                 "precision mediump sampler3D;\n"
                 "\n"
-                "void clip( float v ) { if ( v < 0.0 ) { discard; } }\n"
-                "void clip( vec2 v ) { if ( any( lessThan( v, vec2( 0.0 ) ) ) ) { discard; } }\n"
-                "void clip( vec3 v ) { if ( any( lessThan( v, vec3( 0.0 ) ) ) ) { discard; } }\n"
-                "void clip( vec4 v ) { if ( any( lessThan( v, vec4( 0.0 ) ) ) ) { discard; } }\n"
+                GLSL_ES_CLIP
                 "\n"
                 "float saturate( float v ) { return clamp( v, 0.0, 1.0 ); }\n"
                 "vec2 saturate( vec2 v ) { return clamp( v, 0.0, 1.0 ); }\n"
@@ -939,6 +955,17 @@ material textures (tex2D) of the lit surface programs. Particles, gui, post proc
 plain lookup: biased particle sprites come out as dark blobs.
 ========================
 */
+bool R_GLSLClipIsAlphaTest( const char* hlslFileName, rpStage_t stage )
+{
+    if( stage != SHADER_STAGE_FRAGMENT )
+    {
+        return false;
+    }
+    idStr name( hlslFileName );
+    name.StripPath();
+    return name.Icmpn( "texture_color", 13 ) == 0;
+}
+
 bool R_GLSLUsesTextureLodBias( const char* hlslFileName, rpStage_t stage )
 {
     if( glConfig.driverType != GLDRV_OPENGL_MESA || stage != SHADER_STAGE_FRAGMENT )
@@ -1431,7 +1458,7 @@ static idStr ArmOptimizeShaderSafe( const idStr& glsl )
 ConvertCG2GLSL
 ========================
 */
-idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rpStage_t stage, idStr& layout, bool vkGLSL, bool hasGPUSkinning )
+idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rpStage_t stage, idStr& layout, bool vkGLSL, bool hasGPUSkinning, int shaderFeatures )
 {
     idStr program;
     program.ReAllocate( in.Length() * 2, false );
@@ -1997,6 +2024,10 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
                 if( textureLodBias )
                 {
                     p.Replace( GLSL_ES_TEX2D, GLSL_ES_TEX2D_LOD_BIAS );
+                }
+                if( R_GLSLClipIsAlphaTest( name, stage ) && !( shaderFeatures & IDBIT( USE_ALPHA_TEST ) ) )
+                {
+                    p.Replace( GLSL_ES_CLIP, GLSL_ES_CLIP_NONE );	// no alpha test, no discard
                 }
                 p.Insert(filenameHint, p.Find('\n') + 1);
                 out.Append(p);

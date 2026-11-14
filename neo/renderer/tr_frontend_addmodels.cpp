@@ -34,7 +34,7 @@ If you have questions concerning this license or the applicable additional terms
 #include "Model_local.h"
 
 idCVar r_skipStaticShadows( "r_skipStaticShadows", "0", CVAR_RENDERER | CVAR_BOOL, "skip static shadows" );
-idCVar r_skipDynamicShadows( "r_skipDynamicShadows", "0", CVAR_RENDERER | CVAR_BOOL, "skip dynamic shadows" );
+idCVar r_skipDynamicShadows( "r_skipDynamicShadows", "0", CVAR_RENDERER | CVAR_BOOL, "skip the shadow volumes of animated models (skeletal meshes, particles and other per frame geometry)" );
 idCVar r_useParallelAddModels( "r_useParallelAddModels", "1", CVAR_RENDERER | CVAR_BOOL, "add all models in parallel with jobs" );
 idCVar r_useParallelAddShadows( "r_useParallelAddShadows", "1", CVAR_RENDERER | CVAR_INTEGER, "0 = off, 1 = threaded", 0, 1 );
 idCVar r_useShadowPreciseInsideTest( "r_useShadowPreciseInsideTest", "1", CVAR_RENDERER | CVAR_BOOL, "use a precise and more expensive test to determine whether the view is inside a shadow volume" );
@@ -411,6 +411,35 @@ static int R_PointLightShadowCulledSides( const idBounds& localBounds, const flo
 		}
 	}
 	return culledSides;
+}
+
+/*
+===================
+R_SkipDynamicShadowVolume
+
+r_skipDynamicShadows skips the shadow volumes of animated models only.
+
+A dynamic interaction is not the same as an animated caster: GenerateAllInteractions makes the static
+interactions (precomputed shadow volumes) when a level is loaded, and an entity or a light that changes
+afterwards loses them for good - an opened door, a pushed object, an entity whose render parms were
+updated, a light whose shape or material changed (that one also drops its dmap prelight shadows of the
+world, lightHasMoved). Their surfaces get dynamic interactions, their shadows dynamic shadow volumes;
+skipping those let the light through the doors and walls and dropped the shadows of static furniture
+until a saved game was loaded (which makes the static interactions again).
+===================
+*/
+static bool R_SkipDynamicShadowVolume( const idRenderEntityLocal* entityDef, const srfTriangles_t* tri )
+{
+	if( !r_skipDynamicShadows.GetBool() )
+	{
+		return false;
+	}
+	// static geometry with a dynamic interaction: a static shadow for the player, skipped with them
+	if( entityDef->parms.hModel->IsDynamicModel() == DM_STATIC && tri->staticModelWithJoints == NULL )
+	{
+		return r_skipStaticShadows.GetBool();
+	}
+	return true;
 }
 
 /*
@@ -967,7 +996,7 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 							// optionally cull the triangles to the light volume
 							// motorsep 11-09-2014; added && shader->SurfaceCastsShadow() per Lordhavoc's recommendation; should skip shadows calculation for surfaces with noShadows material flag
 							// when using shadow volumes
-							if( r_cullDynamicLightTriangles.GetBool() && !r_skipDynamicShadows.GetBool() && !r_useShadowMapping.GetBool() && shader->SurfaceCastsShadow() )
+							if( r_cullDynamicLightTriangles.GetBool() && !R_SkipDynamicShadowVolume( entityDef, tri ) && !r_useShadowMapping.GetBool() && shader->SurfaceCastsShadow() )
 							{
 								vertCacheHandle_t lightIndexCache = vertexCache.AllocIndex( NULL, lightDrawSurf->numIndexes );
 								if( vertexCache.CacheIsCurrent( lightIndexCache ) )
@@ -1346,7 +1375,7 @@ void R_AddSingleModel( viewEntity_t* vEntity )
 				shadowDrawSurf->shadowVolumeState = SHADOWVOLUME_DONE;	// assume the shadow volume is done in case the index cache allocation failed
 				
 				// if the index cache was successfully allocated then setup the parms to create a shadow volume in parallel
-				if( vertexCache.CacheIsCurrent( shadowDrawSurf->indexCache ) && !r_skipDynamicShadows.GetBool() && !r_useShadowMapping.GetBool() )
+				if( vertexCache.CacheIsCurrent( shadowDrawSurf->indexCache ) && !R_SkipDynamicShadowVolume( entityDef, tri ) && !r_useShadowMapping.GetBool() )
 				{
 					// if the parms were not already allocated for culling interaction triangles to the light frustum
 					if( dynamicShadowParms == NULL )

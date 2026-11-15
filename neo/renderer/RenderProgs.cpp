@@ -326,6 +326,9 @@ void idRenderProgManager::Init()
 #if defined(ANDROID) && !defined(USE_VULKAN)
 		renderProgs[builtinShaders[BUILTIN_FORWARD_LIGHTS_SKINNED]].usesJoints = true;
 		renderProgs[builtinShaders[BUILTIN_FORWARD_LIGHTS_SHADOWS_SKINNED]].usesJoints = true;
+		// without it DrawElementsWithCounters drops every skinned draw of the program: the alpha tested
+		// surfaces of characters (helmet visors, masks) were missing from the depth prepass and shadow maps
+		renderProgs[builtinShaders[BUILTIN_TEXTURE_VERTEXCOLOR_SKINNED_ALPHATEST]].usesJoints = true;
 #endif
 	}
 	

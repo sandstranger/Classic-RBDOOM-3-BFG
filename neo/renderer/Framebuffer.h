@@ -282,9 +282,10 @@ public:
     void AttachImage3D(const idImage* image);
     void AttachImageDepth(int target, const idImage* image);
     void AttachImageDepthLayer(const idImage* image, int layer);
-    // color 0 and the depth stencil, with 'samples' samples resolved on the tile (EXT_multisampled_render_to_texture,
-    // the depth stencil needs EXT_multisampled_render_to_texture2) or single sampled with 0
-    void AttachImagesMultisample(const idImage* color, const idImage* depthStencil, int samples);
+    // with 'samples' samples: color 0 rendered through EXT_multisampled_render_to_texture (resolved on the tile into
+    // 'color') and a multisampled depth stencil renderbuffer of this framebuffer of width x height ('depthStencil' is
+    // not attached). With 0: both textures single sampled.
+    void AttachImagesMultisample(const idImage* color, const idImage* depthStencil, int samples, int width_, int height_);
 
 
     void Check();
@@ -341,6 +342,7 @@ private:
 
     bool msaaSamples = false;
     int attachedSamples = 0;
+    GLuint msaaDepthStencil = 0;	// the multisampled depth stencil renderbuffer of AttachImagesMultisample
 };
 
 

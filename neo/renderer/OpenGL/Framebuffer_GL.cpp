@@ -64,15 +64,18 @@ the resolution never leaves storage behind and never allocates during normal fra
 _bloomRender0/1 and _ao0/1, _currentNormals and _smaaEdges are never in use at the same time and
 share their textures through the alias keys of the RenderTargetPool, see renderTargetAlias_t.
 
-MSAA of the HDR scene: with the samples of r_antiAliasing, hdrFBO attaches its textures through
-EXT_multisampled_render_to_texture (the depth stencil through EXT_multisampled_render_to_texture2).
-The samples only exist in tile memory, the tiles are resolved into the single sample textures when
-they are written out, and a render pass resumed after that starts from the resolved values. Nothing
-is allocated for the samples, the scene textures stay single sampled. The copies and blits of the
-scene color read the textures through hdrResolveFBO (Framebuffer::BeginSceneRead), so they never read
-a multisampled framebuffer. Every break of the render pass of a view resolves its samples: the depth
-test of later passes then sees one depth per pixel at the edges (a light outside the shadow atlas,
-the normals of SSAO / SSGI), the copy of _currentRender only comes before the post process surfaces.
+MSAA of the HDR scene: with the samples of r_antiAliasing, hdrFBO attaches _currentRenderHDR through
+EXT_multisampled_render_to_texture and a multisampled depth stencil renderbuffer of its own
+(RenderbufferStorageMultisampleEXT). The color samples only exist in tile memory and are resolved into
+the single sample texture when the tiles are written out; a render pass resumed after a break (a shadow
+map outside the atlas, the copy of _currentRender) starts from the resolved color, which the additive
+passes after it add to as they would to the samples. The depth stencil is not a texture because
+EXT_multisampled_render_to_texture2 discards a multisampled depth stencil texture at every resolve,
+while a renderbuffer keeps its samples: the EQUAL depth test of the interactions and the stencil shadows
+after a break still see every sample. It is only written out when a pass breaks, the end of a view
+invalidates it. _currentDepth gets no storage then, so SSAO and SSGI, which read it, turn MSAA of the
+scene off. The copies and blits of the scene color read the texture through hdrResolveFBO
+(Framebuffer::BeginSceneRead), so they never read a multisampled framebuffer.
 
 ================================================================================================
 */
@@ -97,7 +100,7 @@ extern idCVar r_shadowAtlasSize;
 extern idCVar r_shadowCacheSize;
 
 static idCVar r_hdrMultisample( "r_hdrMultisample", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE,
-		"with r_useHDR, render the scene with the MSAA samples of r_antiAliasing, resolved on the tile (EXT_multisampled_render_to_texture2)" );
+		"with r_useHDR, render the scene with the MSAA samples of r_antiAliasing, the color resolved on the tile (EXT_multisampled_render_to_texture2; not with r_useSSAO / r_useSSGI)" );
 #endif
 
 // frames since start up, for the ages of the pool entries and of the optional targets
@@ -742,21 +745,33 @@ static bool s_sceneMultisampleFailed = false;
 ==================
 R_SceneMultisamples
 
-The samples of the HDR scene, 0 for none: those of r_antiAliasing (the window's), when the samples
-of the color and of the depth stencil can stay on the tile.
+The samples of the HDR scene, 0 for none: those of r_antiAliasing (the window's). 'whyNot' tells
+why there are none although MSAA is on.
 ==================
 */
-static int R_SceneMultisamples()
+static int R_SceneMultisamples( const char** whyNot )
 {
+	*whyNot = NULL;
 	if( !r_useHDR.GetBool() || !r_hdrMultisample.GetBool() || glConfig.multisamples <= 1 || s_sceneMultisampleFailed )
 	{
 		return 0;
 	}
 
-	// the depth stencil is a texture too (SSAO, the normals pass): EXT_multisampled_render_to_texture
-	// alone only renders color 0 multisampled into a texture
-	if( !glConfig.hasMSAAEXT || !GLAD_GL_EXT_multisampled_render_to_texture2 )
+	// SSAO and SSGI read the scene depth from _currentDepth and the normals pass tests against it, while
+	// the depth stencil of a multisampled scene is a renderbuffer that is never written out. A blit of its
+	// samples into the texture would read the buffer mid-scene, which EXT_multisampled_render_to_texture2
+	// warns may downsample it before the following draws.
+	if( r_useSSAO.GetBool() || r_useSSGI.GetBool() )
 	{
+		*whyNot = "r_useSSAO / r_useSSGI read the scene depth from a texture";
+		return 0;
+	}
+
+	// only EXT_multisampled_render_to_texture2 has a depth stencil renderbuffer keep its samples across
+	// the breaks of the render pass of a view, with the first extension alone that is up to the driver
+	if( !glConfig.hasMSAAEXT || glRenderbufferStorageMultisampleEXT == nullptr || !GLAD_GL_EXT_multisampled_render_to_texture2 )
+	{
+		*whyNot = "the driver has no GL_EXT_multisampled_render_to_texture2";
 		return 0;
 	}
 
@@ -780,14 +795,19 @@ bool Framebuffer::EnsureSceneTargets()
 	idImage* depth = globalImages->currentDepthImage;
 	color->Resize( w, h );
 	depth->Resize( w, h );
-	if( !color->EnsureAllocated() || !depth->EnsureAllocated() )
+
+	// a multisampled scene has its depth stencil in a renderbuffer of hdrFBO: the depth texture
+	// only gets storage for a single sampled one
+	const char* whyNot;
+	int samples = R_SceneMultisamples( &whyNot );
+	if( !color->EnsureAllocated() || ( samples == 0 && !depth->EnsureAllocated() ) )
 	{
 		return false;
 	}
 
-	const int samples = R_SceneMultisamples();
 	Framebuffer* fbo = globalFramebuffers.hdrFBO;
-	if( fbo->GetColorAttachment( 0 ) != color->texnum || fbo->GetDepthAttachment() != depth->texnum || fbo->GetWidth() != w || fbo->GetHeight() != h
+	const bool depthAttached = ( samples > 0 ) || ( fbo->GetDepthAttachment() == depth->texnum );
+	if( fbo->GetColorAttachment( 0 ) != color->texnum || !depthAttached || fbo->GetWidth() != w || fbo->GetHeight() != h
 		|| fbo->GetSamples() != samples )
 	{
 		idScopedFramebufferBind bind( fbo );
@@ -798,29 +818,41 @@ bool Framebuffer::EnsureSceneTargets()
 		{
 		}
 
-		fbo->AttachImagesMultisample( color, depth, samples );
+		fbo->AttachImagesMultisample( color, depth, samples, w, h );
 		fbo->Resize( w, h );
 
 		if( samples > 0 )
 		{
 			// a driver that refuses the multisampled depth stencil leaves the framebuffer without depth,
 			// which is complete all the same: the depth attachment is checked too
+			GLint depthType = GL_NONE;
 			GLint depthName = 0;
 			const GLenum error = glGetError();
 			const GLenum status = glCheckFramebufferStatus( GL_FRAMEBUFFER );
+			glGetFramebufferAttachmentParameteriv( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &depthType );
 			glGetFramebufferAttachmentParameteriv( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &depthName );
 
-			if( error != GL_NO_ERROR || status != GL_FRAMEBUFFER_COMPLETE || ( GLuint )depthName != depth->texnum )
+			if( error != GL_NO_ERROR || status != GL_FRAMEBUFFER_COMPLETE || depthType != GL_RENDERBUFFER || ( GLuint )depthName != fbo->msaaDepthStencil
+				|| fbo->msaaDepthStencil == 0 )
 			{
 				common->Warning( "r_hdrMultisample: the HDR scene can't be rendered with %dx MSAA (error 0x%x, status 0x%x), it stays single sampled",
 								 samples, error, status );
 				s_sceneMultisampleFailed = true;
-				fbo->AttachImagesMultisample( color, depth, 0 );
+				samples = 0;
+				if( !depth->EnsureAllocated() )
+				{
+					return false;
+				}
+				fbo->AttachImagesMultisample( color, depth, 0, w, h );
 			}
 			else
 			{
-				common->Printf( "HDR scene: %dx MSAA resolved on the tile\n", samples );
+				common->Printf( "HDR scene: %dx MSAA, the color resolved on the tile, the depth stencil in a multisampled renderbuffer\n", samples );
 			}
+		}
+		else if( whyNot != NULL )
+		{
+			common->Printf( "HDR scene: no MSAA, %s\n", whyNot );
 		}
 		fbo->Check();
 	}
@@ -1743,7 +1775,7 @@ void Framebuffer::PrintRenderTargets( bool verbose )
 		const Framebuffer* fbo = framebuffers[i];
 		common->Printf( "  %-16s %5d x %-5d attachments %d (color0 tex %u, depth tex %u)%s\n", fbo->GetName(), fbo->GetWidth(), fbo->GetHeight(),
 						fbo->GetNumAttachments(), fbo->GetColorAttachment( 0 ), fbo->GetDepthAttachment(),
-						( fbo->GetSamples() > 0 ) ? va( " %dx MSAA on the tile", fbo->GetSamples() ) : "" );
+						( fbo->GetSamples() > 0 ) ? va( " %dx MSAA (color on the tile, depth stencil renderbuffer)", fbo->GetSamples() ) : "" );
 	}
 
 	if( verbose )
@@ -2206,19 +2238,40 @@ void Framebuffer::AttachImageDepthLayer(const idImage* image, int layer)
     TrackDepthAttachment(image->texnum, GL_DEPTH_ATTACHMENT);
 }
 
-void Framebuffer::AttachImagesMultisample(const idImage* color, const idImage* depthStencil, int samples)
+void Framebuffer::AttachImagesMultisample(const idImage* color, const idImage* depthStencil, int samples, int width_, int height_)
 {
-    // the textures keep their single sample storage either way: the samples only exist on the tile
-    if (samples > 0 && glConfig.hasMSAAEXT)
+    if (samples > 0 && glConfig.hasMSAAEXT && glRenderbufferStorageMultisampleEXT != nullptr)
     {
+        // The color keeps its single sample storage, its samples only exist on the tile and are resolved into it.
+        // The depth stencil is a renderbuffer: EXT_multisampled_render_to_texture2 discards a multisampled depth
+        // stencil texture at every resolve (any break of the render pass: a shadow map outside the atlas, the copy
+        // of _currentRender), while a depth stencil renderbuffer keeps its samples, so the depth tests (EQUAL of the
+        // interactions) and the stencil shadows after a break still see every sample.
+        if (msaaDepthStencil == 0)
+        {
+            glGenRenderbuffers(1, &msaaDepthStencil);
+        }
+        glBindRenderbuffer(GL_RENDERBUFFER, msaaDepthStencil);
+        glRenderbufferStorageMultisampleEXT(GL_RENDERBUFFER, samples, GL_DEPTH24_STENCIL8, width_, height_);
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
         glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color->texnum, 0, samples);
-        glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, depthStencil->texnum, 0, samples);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, msaaDepthStencil);
+        TrackDepthAttachment(0, 0);
     }
     else
     {
         samples = 0;
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color->texnum, 0);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, depthStencil->texnum, 0);
+        TrackDepthAttachment(depthStencil->texnum, GL_DEPTH_STENCIL_ATTACHMENT);
+
+        // the texture took its place
+        if (msaaDepthStencil != 0)
+        {
+            glDeleteRenderbuffers(1, &msaaDepthStencil);
+            msaaDepthStencil = 0;
+        }
     }
 #if ANDROID
     if (colorTextures[0] != 0 && colorTextures[0] != color->texnum)
@@ -2226,14 +2279,13 @@ void Framebuffer::AttachImagesMultisample(const idImage* color, const idImage* d
         R_DirectDeleteTextures(1, &colorTextures[0]);
         colorTextures[0] = 0;
     }
-    if (depthTexture != 0 && depthTexture != depthStencil->texnum)
+    if (depthTexture != 0 && (samples > 0 || depthTexture != depthStencil->texnum))
     {
         R_DirectDeleteTextures(1, &depthTexture);
         depthTexture = 0;
     }
 #endif
     TrackColorAttachment(0, color->texnum);
-    TrackDepthAttachment(depthStencil->texnum, GL_DEPTH_STENCIL_ATTACHMENT);
     attachedSamples = samples;
     msaaSamples = (samples > 0);
 }
@@ -2256,6 +2308,13 @@ void Framebuffer::DetachAll()
 	{
 		glFramebufferTexture2D( GL_FRAMEBUFFER, attachedDepthPoint != 0 ? attachedDepthPoint : GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0 );
 		TrackDepthAttachment( 0, 0 );
+	}
+	if( msaaDepthStencil != 0 )
+	{
+		// its storage goes with it
+		glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, 0 );
+		glDeleteRenderbuffers( 1, &msaaDepthStencil );
+		msaaDepthStencil = 0;
 	}
 	attachedSamples = 0;
 	msaaSamples = false;
@@ -2363,6 +2422,7 @@ void Framebuffer::PurgeFramebuffer()
     if(depthTexture){R_DirectDeleteTextures(1,&depthTexture);depthTexture=0;}
     if(depthBuffer){glDeleteRenderbuffers(1,&depthBuffer);depthBuffer=0;}
     if(stencilBuffer){glDeleteRenderbuffers(1,&stencilBuffer);stencilBuffer=0;}
+    if(msaaDepthStencil){glDeleteRenderbuffers(1,&msaaDepthStencil);msaaDepthStencil=0;}
 }
 
 #endif

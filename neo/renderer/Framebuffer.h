@@ -248,6 +248,13 @@ public:
     // once per frame after the back end: frees the targets of features that are off
     static void UpdateOptionalTargets();
 
+    // MSAA of the HDR scene (Android): hdrFBO renders through EXT_multisampled_render_to_texture, its samples
+    // stay in tile memory and are resolved into the single sample textures when the tiles are written out.
+    // Reads of the scene go through hdrResolveFBO, the same color texture attached single sampled.
+    static uint32_t GetSceneReadFramebuffer();		// for a blit from the scene color
+    static bool BeginSceneRead();					// hdrFBO is bound and multisampled: hdrResolveFBO becomes the read framebuffer
+    static void EndSceneRead();						// hdrFBO is the read framebuffer again
+
     // listFramebuffers
     static void PrintRenderTargets( bool verbose );
 
@@ -275,6 +282,9 @@ public:
     void AttachImage3D(const idImage* image);
     void AttachImageDepth(int target, const idImage* image);
     void AttachImageDepthLayer(const idImage* image, int layer);
+    // color 0 and the depth stencil, with 'samples' samples resolved on the tile (EXT_multisampled_render_to_texture,
+    // the depth stencil needs EXT_multisampled_render_to_texture2) or single sampled with 0
+    void AttachImagesMultisample(const idImage* color, const idImage* depthStencil, int samples);
 
 
     void Check();
@@ -287,6 +297,7 @@ public:
     int GetWidth() const { return width; }
     int GetHeight() const { return height; }
     bool IsMultiSampled() const { return msaaSamples; }
+    int GetSamples() const { return attachedSamples; }		// of the attachments rendered with EXT_multisampled_render_to_texture
 
     void Resize(int width_, int height_)
     {
@@ -329,6 +340,7 @@ private:
     int height = 0;
 
     bool msaaSamples = false;
+    int attachedSamples = 0;
 };
 
 
@@ -341,6 +353,7 @@ struct globalFramebuffers_t
     Framebuffer* shadowAtlasFBO;
     Framebuffer* shadowCacheFBO;		// the static casters of stationary lights, see ShadowAtlasPass
     Framebuffer* hdrFBO;
+    Framebuffer* hdrResolveFBO;		// the color of hdrFBO single sampled, for reads when hdrFBO is multisampled (Android)
 #if defined(USE_HDR_MSAA)
     Framebuffer* hdrNonMSAAFBO;
 #endif

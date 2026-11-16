@@ -572,7 +572,13 @@ void idImage::CopyFramebuffer(int x, int y, int imageWidth, int imageHeight, boo
         CopyFramebufferDSA(x, y, imageWidth, imageHeight, forceLDR);
     }
 #else
+    // the multisampled HDR scene is read single sampled, see Framebuffer::BeginSceneRead
+    const bool sceneRead = Framebuffer::BeginSceneRead();
     CopyFramebufferLegacy(x, y, imageWidth, imageHeight, forceLDR);
+    if (sceneRead)
+    {
+        Framebuffer::EndSceneRead();
+    }
 #endif
     tr.backend.pc.c_copyFrameBuffer++;
 }

@@ -50,6 +50,7 @@ the resolution never leaves storage behind and never allocates during normal fra
 
 	feature						targets											lifetime
 	HDR							_currentRenderHDR, _currentDepth -> hdrFBO		the 3D views of a frame
+	HDR							_currentRenderHDR -> hdrResolveFBO				reads of the scene color (MSAA)
 	HDR exposure				_currentRenderHDR64 -> hdr64FBO					blit, read back by a PBO
 	HDR bloom					_bloomRender0/1 -> bloomRenderFBO				Bloom -> BloomComposite of a view
 	SSAO / SSGI filtering		_ao0/1 -> ambientOcclusionFBO, quarter size		SSAO of a view
@@ -62,6 +63,16 @@ the resolution never leaves storage behind and never allocates during normal fra
 
 _bloomRender0/1 and _ao0/1, _currentNormals and _smaaEdges are never in use at the same time and
 share their textures through the alias keys of the RenderTargetPool, see renderTargetAlias_t.
+
+MSAA of the HDR scene: with the samples of r_antiAliasing, hdrFBO attaches its textures through
+EXT_multisampled_render_to_texture (the depth stencil through EXT_multisampled_render_to_texture2).
+The samples only exist in tile memory, the tiles are resolved into the single sample textures when
+they are written out, and a render pass resumed after that starts from the resolved values. Nothing
+is allocated for the samples, the scene textures stay single sampled. The copies and blits of the
+scene color read the textures through hdrResolveFBO (Framebuffer::BeginSceneRead), so they never read
+a multisampled framebuffer. Every break of the render pass of a view resolves its samples: the depth
+test of later passes then sees one depth per pixel at the edges (a light outside the shadow atlas,
+the normals of SSAO / SSGI), the copy of _currentRender only comes before the post process surfaces.
 
 ================================================================================================
 */
@@ -84,6 +95,9 @@ globalFramebuffers_t globalFramebuffers;
 #if defined(ANDROID)
 extern idCVar r_shadowAtlasSize;
 extern idCVar r_shadowCacheSize;
+
+static idCVar r_hdrMultisample( "r_hdrMultisample", "1", CVAR_RENDERER | CVAR_BOOL | CVAR_ARCHIVE,
+		"with r_useHDR, render the scene with the MSAA samples of r_antiAliasing, resolved on the tile (EXT_multisampled_render_to_texture2)" );
 #endif
 
 // frames since start up, for the ages of the pool entries and of the optional targets
@@ -661,6 +675,7 @@ static void R_ReleaseTargetGroup( optionalTargetGroup_t group )
 	{
 		case RTG_SCENE:
 			R_DetachFramebuffer( globalFramebuffers.hdrFBO );
+			R_DetachFramebuffer( globalFramebuffers.hdrResolveFBO );
 			R_DetachFramebuffer( globalFramebuffers.geometryBufferFBO );
 			R_ReleaseImage( globalImages->currentRenderHDRImage );
 			R_ReleaseImage( globalImages->currentDepthImage );
@@ -720,6 +735,42 @@ static void R_ReleaseTargetGroup( optionalTargetGroup_t group )
 	}
 }
 
+// the MSAA samples of hdrFBO could not be used by the driver, the scene stays single sampled
+static bool s_sceneMultisampleFailed = false;
+
+/*
+==================
+R_SceneMultisamples
+
+The samples of the HDR scene, 0 for none: those of r_antiAliasing (the window's), when the samples
+of the color and of the depth stencil can stay on the tile.
+==================
+*/
+static int R_SceneMultisamples()
+{
+	if( !r_useHDR.GetBool() || !r_hdrMultisample.GetBool() || glConfig.multisamples <= 1 || s_sceneMultisampleFailed )
+	{
+		return 0;
+	}
+
+	// the depth stencil is a texture too (SSAO, the normals pass): EXT_multisampled_render_to_texture
+	// alone only renders color 0 multisampled into a texture
+	if( !glConfig.hasMSAAEXT || !GLAD_GL_EXT_multisampled_render_to_texture2 )
+	{
+		return 0;
+	}
+
+	static GLint maxSamples = -1;
+	if( maxSamples < 0 )
+	{
+		maxSamples = 0;
+		glGetIntegerv( GL_MAX_SAMPLES_EXT, &maxSamples );
+	}
+
+	const int samples = Min( glConfig.multisamples, ( int )maxSamples );
+	return ( samples > 1 ) ? samples : 0;
+}
+
 bool Framebuffer::EnsureSceneTargets()
 {
 	int w, h;
@@ -734,15 +785,49 @@ bool Framebuffer::EnsureSceneTargets()
 		return false;
 	}
 
+	const int samples = R_SceneMultisamples();
 	Framebuffer* fbo = globalFramebuffers.hdrFBO;
-	if( fbo->GetColorAttachment( 0 ) != color->texnum || fbo->GetDepthAttachment() != depth->texnum || fbo->GetWidth() != w || fbo->GetHeight() != h )
+	if( fbo->GetColorAttachment( 0 ) != color->texnum || fbo->GetDepthAttachment() != depth->texnum || fbo->GetWidth() != w || fbo->GetHeight() != h
+		|| fbo->GetSamples() != samples )
 	{
 		idScopedFramebufferBind bind( fbo );
-		fbo->AttachImage2D( GL_TEXTURE_2D, color, 0 );
-		fbo->AttachImageDepth( GL_TEXTURE_2D, depth );
+
+		// any error left by something else, so the check below only sees the attachments
+		// (bounded: a lost context may keep reporting itself)
+		for( int i = 0; i < 16 && glGetError() != GL_NO_ERROR; i++ )
+		{
+		}
+
+		fbo->AttachImagesMultisample( color, depth, samples );
 		fbo->Resize( w, h );
+
+		if( samples > 0 )
+		{
+			// a driver that refuses the multisampled depth stencil leaves the framebuffer without depth,
+			// which is complete all the same: the depth attachment is checked too
+			GLint depthName = 0;
+			const GLenum error = glGetError();
+			const GLenum status = glCheckFramebufferStatus( GL_FRAMEBUFFER );
+			glGetFramebufferAttachmentParameteriv( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &depthName );
+
+			if( error != GL_NO_ERROR || status != GL_FRAMEBUFFER_COMPLETE || ( GLuint )depthName != depth->texnum )
+			{
+				common->Warning( "r_hdrMultisample: the HDR scene can't be rendered with %dx MSAA (error 0x%x, status 0x%x), it stays single sampled",
+								 samples, error, status );
+				s_sceneMultisampleFailed = true;
+				fbo->AttachImagesMultisample( color, depth, 0 );
+			}
+			else
+			{
+				common->Printf( "HDR scene: %dx MSAA resolved on the tile\n", samples );
+			}
+		}
 		fbo->Check();
 	}
+
+	// the copies and blits of the scene color read it single sampled, see BeginSceneRead
+	R_AttachColor( globalFramebuffers.hdrResolveFBO, color, w, h );
+
 	R_MarkTargetGroup( RTG_SCENE );
 	return true;
 }
@@ -1035,6 +1120,7 @@ void Framebuffer::Init()
 	glReadBuffer( GL_NONE );
 
 	globalFramebuffers.hdrFBO = new Framebuffer( "_hdr", screenWidth, screenHeight );
+	globalFramebuffers.hdrResolveFBO = new Framebuffer( "_hdrResolve", screenWidth, screenHeight );
 	globalFramebuffers.hdr64FBO = new Framebuffer( "_hdr64", 64, 64 );
 
 	for( int i = 0; i < MAX_BLOOM_BUFFERS; i++ )
@@ -1655,8 +1741,9 @@ void Framebuffer::PrintRenderTargets( bool verbose )
 	for( int i = 0; i < framebuffers.Num(); i++ )
 	{
 		const Framebuffer* fbo = framebuffers[i];
-		common->Printf( "  %-16s %5d x %-5d attachments %d (color0 tex %u, depth tex %u)\n", fbo->GetName(), fbo->GetWidth(), fbo->GetHeight(),
-						fbo->GetNumAttachments(), fbo->GetColorAttachment( 0 ), fbo->GetDepthAttachment() );
+		common->Printf( "  %-16s %5d x %-5d attachments %d (color0 tex %u, depth tex %u)%s\n", fbo->GetName(), fbo->GetWidth(), fbo->GetHeight(),
+						fbo->GetNumAttachments(), fbo->GetColorAttachment( 0 ), fbo->GetDepthAttachment(),
+						( fbo->GetSamples() > 0 ) ? va( " %dx MSAA on the tile", fbo->GetSamples() ) : "" );
 	}
 
 	if( verbose )
@@ -1822,6 +1909,50 @@ void Framebuffer::InvalidateDefaultFramebufferForOverwrite()
 bool Framebuffer::IsDefaultFramebufferActive()
 {
     return (currentBoundFramebuffer == nullptr);
+}
+
+/*
+==================
+Framebuffer::GetSceneReadFramebuffer / BeginSceneRead / EndSceneRead
+
+A framebuffer with EXT_multisampled_render_to_texture attachments counts as multisampled, and GLES 3.0
+refuses copies and scaled blits from a multisampled read framebuffer. The scene color is read through
+hdrResolveFBO instead: reading its texture makes the driver resolve the samples of hdrFBO first, and
+hdrFBO stays the draw framebuffer, so nothing else changes.
+==================
+*/
+uint32_t Framebuffer::GetSceneReadFramebuffer()
+{
+	const Framebuffer* hdr = globalFramebuffers.hdrFBO;
+	const Framebuffer* resolve = globalFramebuffers.hdrResolveFBO;
+	if( hdr != nullptr && hdr->attachedSamples > 0 && resolve != nullptr && resolve->GetColorAttachment( 0 ) == hdr->GetColorAttachment( 0 ) )
+	{
+		return resolve->GetFramebuffer();
+	}
+	return ( hdr != nullptr ) ? hdr->GetFramebuffer() : 0;
+}
+
+bool Framebuffer::BeginSceneRead()
+{
+	const Framebuffer* hdr = globalFramebuffers.hdrFBO;
+	if( hdr == nullptr || !hdr->IsBound() || hdr->attachedSamples <= 0 )
+	{
+		return false;
+	}
+
+	const uint32_t readFramebuffer = GetSceneReadFramebuffer();
+	if( readFramebuffer == hdr->GetFramebuffer() )
+	{
+		return false;
+	}
+	glBindFramebuffer( GL_READ_FRAMEBUFFER, readFramebuffer );
+	return true;
+}
+
+void Framebuffer::EndSceneRead()
+{
+	// Bind keeps track of one framebuffer for drawing and reading
+	glBindFramebuffer( GL_READ_FRAMEBUFFER, globalFramebuffers.hdrFBO->GetFramebuffer() );
 }
 
 void Framebuffer::AddColorBuffer(int format, int index, int multiSamples)
@@ -2007,10 +2138,12 @@ void Framebuffer::AttachImage2D(int target, const idImage* image, int index, int
     {
         glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0 + index,GL_TEXTURE_2D,image->texnum,
                                              mipmapLod,image->opts.samples);
+        attachedSamples = image->opts.samples;
     }
     else
     {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + index, target, image->texnum, mipmapLod);
+        attachedSamples = 0;
     }
 #if ANDROID
     if (colorTextures[index] != 0 && colorTextures[index] != image->texnum)
@@ -2049,10 +2182,12 @@ void Framebuffer::AttachImageDepth(int target, const idImage* image)
     {
         glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER,GL_DEPTH_STENCIL_ATTACHMENT,GL_TEXTURE_2D,image->texnum,0,
                                              image->opts.samples);
+        attachedSamples = image->opts.samples;
     } else
     {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, target, image->texnum,
                                0);
+        attachedSamples = 0;
     }
 #if ANDROID
     // a texture AddDepthBuffer made is superseded by the idImage depth attachment
@@ -2069,6 +2204,38 @@ void Framebuffer::AttachImageDepthLayer(const idImage* image, int layer)
 {
     glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, image->texnum, 0, layer);
     TrackDepthAttachment(image->texnum, GL_DEPTH_ATTACHMENT);
+}
+
+void Framebuffer::AttachImagesMultisample(const idImage* color, const idImage* depthStencil, int samples)
+{
+    // the textures keep their single sample storage either way: the samples only exist on the tile
+    if (samples > 0 && glConfig.hasMSAAEXT)
+    {
+        glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color->texnum, 0, samples);
+        glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, depthStencil->texnum, 0, samples);
+    }
+    else
+    {
+        samples = 0;
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color->texnum, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, depthStencil->texnum, 0);
+    }
+#if ANDROID
+    if (colorTextures[0] != 0 && colorTextures[0] != color->texnum)
+    {
+        R_DirectDeleteTextures(1, &colorTextures[0]);
+        colorTextures[0] = 0;
+    }
+    if (depthTexture != 0 && depthTexture != depthStencil->texnum)
+    {
+        R_DirectDeleteTextures(1, &depthTexture);
+        depthTexture = 0;
+    }
+#endif
+    TrackColorAttachment(0, color->texnum);
+    TrackDepthAttachment(depthStencil->texnum, GL_DEPTH_STENCIL_ATTACHMENT);
+    attachedSamples = samples;
+    msaaSamples = (samples > 0);
 }
 
 void Framebuffer::DetachAll()
@@ -2090,6 +2257,8 @@ void Framebuffer::DetachAll()
 		glFramebufferTexture2D( GL_FRAMEBUFFER, attachedDepthPoint != 0 ? attachedDepthPoint : GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0 );
 		TrackDepthAttachment( 0, 0 );
 	}
+	attachedSamples = 0;
+	msaaSamples = false;
 
 	if( !wasBound )
 	{
@@ -2189,6 +2358,8 @@ void Framebuffer::PurgeFramebuffer()
     }
     attachedDepth=0;
     attachedDepthRetained=false;
+    attachedSamples=0;
+    msaaSamples=false;
     if(depthTexture){R_DirectDeleteTextures(1,&depthTexture);depthTexture=0;}
     if(depthBuffer){glDeleteRenderbuffers(1,&depthBuffer);depthBuffer=0;}
     if(stencilBuffer){glDeleteRenderbuffers(1,&stencilBuffer);stencilBuffer=0;}

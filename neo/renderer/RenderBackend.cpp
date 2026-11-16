@@ -10558,7 +10558,8 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 			else
 #endif
 			{
-				glBindFramebuffer(GL_READ_FRAMEBUFFER_EXT, globalFramebuffers.hdrFBO->GetFramebuffer());
+				// the scene color single sampled when hdrFBO is multisampled: a scaled blit can't read a multisampled framebuffer
+				glBindFramebuffer(GL_READ_FRAMEBUFFER_EXT, Framebuffer::GetSceneReadFramebuffer());
 				glBindFramebuffer(GL_DRAW_FRAMEBUFFER_EXT, globalFramebuffers.hdr64FBO->GetFramebuffer());
 				const GLenum hdr64ColorAttachment[] = { GL_COLOR_ATTACHMENT0 };
 				Framebuffer::InvalidateDrawFramebufferAttachments( hdr64ColorAttachment, 1 );

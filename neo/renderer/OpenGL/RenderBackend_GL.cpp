@@ -445,6 +445,7 @@ static void R_CheckPortableExtensions()
 
 	// optional extensions on top of GLES 3.0, every one of them has a core GLES 3.0 fallback
 	R_PrintExtensionStatus( glConfig.hasMSAAEXT, "GL_EXT_multisampled_render_to_texture" );
+	R_PrintExtensionStatus( glConfig.hasMSAAEXT && GLAD_GL_EXT_multisampled_render_to_texture2 != 0, "GL_EXT_multisampled_render_to_texture2" );
 	R_PrintExtensionStatus( GLAD_GL_EXT_buffer_storage != 0, "GL_EXT_buffer_storage" );
 	R_PrintExtensionStatus( GLAD_GL_EXT_discard_framebuffer != 0, "GL_EXT_discard_framebuffer" );
 #endif

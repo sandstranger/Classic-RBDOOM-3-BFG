@@ -113,7 +113,7 @@ Sys_GetProcessorId
 */
 cpuid_t Sys_GetProcessorId()
 {
-	return CPUID_GENERIC;
+	return cpuid;
 }
 
 /*
@@ -123,7 +123,7 @@ Sys_GetProcessorString
 */
 const char* Sys_GetProcessorString()
 {
-	return "generic";
+	return sys_cpustring.c_str();
 }
 
 /*
@@ -150,7 +150,6 @@ double Sys_ClockTicksPerSecond()
 		common->Printf( "couldn't read /proc/cpuinfo\n" );
 		ret = MeasureClockTicks();
 		init = true;
-		common->Printf( "measured CPU frequency: %g MHz\n", ret / 1000000.0 );
 		return ret;
 	}
 	len = read( fd, buf, 4096 );
@@ -172,10 +171,8 @@ double Sys_ClockTicksPerSecond()
 				common->Printf( "failed parsing /proc/cpuinfo\n" );
 				ret = MeasureClockTicks();
 				init = true;
-				common->Printf( "measured CPU frequency: %g MHz\n", ret / 1000000.0 );
 				return ret;
 			}
-			common->Printf( "/proc/cpuinfo CPU frequency: %g MHz\n", ret );
 			ret *= 1000000;
 			init = true;
 			return ret;
@@ -185,7 +182,6 @@ double Sys_ClockTicksPerSecond()
 	common->Printf( "failed parsing /proc/cpuinfo\n" );
 	ret = MeasureClockTicks();
 	init = true;
-	common->Printf( "measured CPU frequency: %g MHz\n", ret / 1000000.0 );
 	return ret;
 }
 
@@ -305,9 +301,6 @@ void Sys_CPUCount( int& numLogicalCPUCores, int& numPhysicalCPUCores, int& numCP
 		s_numPhysicalCPUCores = sysconf(_SC_NPROCESSORS_CONF); // _SC_NPROCESSORS_ONLN may not be reliable on Android
 		s_numLogicalCPUCores = s_numPhysicalCPUCores; // hack for CPU without Hyper-Threading (HT) technology
 	}
-	
-	common->Printf( "/proc/cpuinfo CPU processors: %d\n", s_numPhysicalCPUCores );
-	common->Printf( "/proc/cpuinfo CPU logical cores: %d\n", s_numLogicalCPUCores );
 	
 	numPhysicalCPUCores = s_numPhysicalCPUCores;
 	numLogicalCPUCores = s_numLogicalCPUCores;

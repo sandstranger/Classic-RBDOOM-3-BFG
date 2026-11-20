@@ -1993,7 +1993,7 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
             default:
             {
 #ifndef USE_VULKAN
-                int glslVersion = glConfig.glVersion * 100;
+                int glslVersion = glConfig.glVersion >= 3.3f ? glConfig.glVersion * 100 : 150;
                 int major = (glslVersion / 100) * 100;
                 int minor = round((glslVersion - major) / 10.0f) * 10;
                 glslVersion = major + minor;
@@ -2037,7 +2037,7 @@ idStr idRenderProgManager::ConvertCG2GLSL( const idStr& in, const char* name, rp
             default:
             {
 #ifndef USE_VULKAN
-                int glslVersion = glConfig.glVersion * 100;
+                int glslVersion = glConfig.glVersion >= 3.3f ? glConfig.glVersion * 100 : 150;
                 int major = (glslVersion / 100) * 100;
                 int minor = round((glslVersion - major) / 10.0f) * 10;
                 glslVersion = major + minor;

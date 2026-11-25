@@ -326,11 +326,21 @@ idFileSystemLocal	fileSystemLocal;
 idFileSystem* 		fileSystem = &fileSystemLocal;
 
 #ifdef ANDROID
+#include <mutex>
+
+// Set by the launcher through JNA, on the java side's thread: guarded, read as a copy (AndroidBaseGameDir)
+static std::mutex baseGameDirMutex;
 static std::string baseGameDir;
+
+static std::string AndroidBaseGameDir() {
+	std::lock_guard<std::mutex> lock(baseGameDirMutex);
+	return baseGameDir;
+}
 
 extern "C"{
 __attribute__((used)) __attribute__((visibility("default")))
 void setBaseGameDir (const char *pathToGameDir){
+	std::lock_guard<std::mutex> lock(baseGameDirMutex);
 	baseGameDir = pathToGameDir != NULL ? pathToGameDir : "";
 }
 }
@@ -478,7 +488,7 @@ idFileSystemLocal::OpenOSFile
 */
 idFileHandle idFileSystemLocal::OpenOSFile( const char* fileName, fsMode_t mode )
 {
-	idFileHandle fp;
+	idFileHandle fp = NULL;	// (a mode other than the three below read it uninitialised)
 	
 	// RB begin
 #if defined(_WIN32)
@@ -1810,7 +1820,8 @@ static std::string BuildOSPathAsString(const char* base, const char* game, const
 }
 
 static std::string BuildOSPathAsString(const char* base, const char* relativePath){
-	return BuildOSPathAsString(base, baseGameDir.c_str(),relativePath);
+	const std::string game = AndroidBaseGameDir();
+	return BuildOSPathAsString(base, game.c_str(), relativePath);
 }
 
 const char* idFileSystemLocal::BuildOSPath(const char* base, const char* game, const char* relativePath)
@@ -1951,11 +1962,14 @@ const char* idFileSystemLocal::RelativePathToOSPath( const char* relativePath, c
 	{
 		path = fs_savepath.GetString();
 	}
+#ifdef ANDROID
+	const std::string androidGameDir = AndroidBaseGameDir();
+#endif
 	if (gamedir == NULL) {
 #ifndef ANDROID
 		gamedir = gameFolder;
 #else
-		gamedir = baseGameDir.c_str();
+		gamedir = androidGameDir.c_str();
 #endif
 	}
 	return BuildOSPath( path, gamedir, relativePath );
@@ -3064,7 +3078,7 @@ void idFileSystemLocal::AddGameDirectory( const char* path, const char* dir )
 		gameFolder = dir;
 	}
 #else
-	gameFolder = baseGameDir.c_str();
+	gameFolder = AndroidBaseGameDir().c_str();
 #endif
 
 	//

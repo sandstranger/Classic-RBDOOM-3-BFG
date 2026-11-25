@@ -73,7 +73,7 @@ ID_INLINE int idRandom::GetSeed() const
 
 ID_INLINE int idRandom::RandomInt()
 {
-	seed = 69069 * seed + 1;
+	seed = ( int )( 69069u * ( unsigned int )seed + 1u );	// (in signed ints it overflowed: undefined)
 	return ( seed & idRandom::MAX_RAND );
 }
 
@@ -155,7 +155,8 @@ ID_INLINE int idRandom2::RandomInt( int max )
 	{
 		return 0;		// avoid divide by zero error
 	}
-	return ( RandomInt() >> ( 16 - idMath::BitsForInteger( max ) ) ) % max;
+	const int shift = 16 - idMath::BitsForInteger( max );	// (negative for a max of 17 bits or more: undefined)
+	return ( RandomInt() >> ( shift > 0 ? shift : 0 ) ) % max;
 }
 
 ID_INLINE float idRandom2::RandomFloat()

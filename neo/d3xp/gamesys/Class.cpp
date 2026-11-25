@@ -485,17 +485,22 @@ void idClass::Shutdown()
 idClass::new
 ================
 */
+// The size is kept in front of the object, in a header as big as the allocator's alignment (16). It was kept in an int:
+// every object was 4 bytes off that alignment, misaligned for its pointers and 8 byte members (undefined behaviour; on
+// arm a load or store with an alignment hint, an atomic or exclusive access, faults on it).
+static const size_t IDCLASS_HEADER_SIZE = 16;
+
 void* idClass::operator new( size_t s )
 {
-	int* p;
+	byte* p;
 	
-	s += sizeof( int );
-	p = ( int* )Mem_Alloc( s, TAG_IDCLASS );
-	*p = s;
-	memused += s;
+	s += IDCLASS_HEADER_SIZE;
+	p = ( byte* )Mem_Alloc( s, TAG_IDCLASS );
+	*( int* )p = ( int )s;
+	memused += ( int )s;
 	numobjects++;
 	
-	return p + 1;
+	return p + IDCLASS_HEADER_SIZE;
 }
 
 /*
@@ -505,12 +510,12 @@ idClass::delete
 */
 void idClass::operator delete( void* ptr )
 {
-	int* p;
+	byte* p;
 	
 	if( ptr )
 	{
-		p = ( ( int* )ptr ) - 1;
-		memused -= *p;
+		p = ( ( byte* )ptr ) - IDCLASS_HEADER_SIZE;	// (see operator new)
+		memused -= *( int* )p;
 		numobjects--;
 		Mem_Free( p );
 	}

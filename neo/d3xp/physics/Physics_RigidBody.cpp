@@ -501,6 +501,7 @@ idPhysics_RigidBody::idPhysics_RigidBody()
 	integrator = new( TAG_PHYSICS ) idODE_Euler( sizeof( rigidBodyIState_t ) / sizeof( float ), RigidBodyDerivatives, this );
 	
 	dropToFloor = false;
+	testSolid = false;	// (it was never initialised: a savegame wrote an indeterminate bool)
 	noImpact = false;
 	noContact = false;
 	

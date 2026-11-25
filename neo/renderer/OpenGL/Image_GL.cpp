@@ -32,6 +32,7 @@ If you have questions concerning this license or the applicable additional terms
 #if ANDROID
 
 #include "ProcessRGB.hpp"
+#include <atomic>
 #include <string>
 #include <cstring>
 #include "../TextureCache.h"
@@ -62,8 +63,11 @@ Contains the Image implementation for OpenGL.
 #if ANDROID
 
 #define MIPMAPS_SKIP_LEVEL                1
-static bool g_enableTexturesShrinking = false;
-bool g_enableTextureCache = false;
+// Set by the launcher through JNA (enableTexturesShrinking, setTextureCacheData), on the java side's thread: atomic, and the
+// cache's folder under a mutex
+static std::atomic<bool> g_enableTexturesShrinking(false);
+std::atomic<bool> g_enableTextureCache(false);
+static std::mutex g_textureCacheDirMutex;
 static std::string g_pathToTextureCacheDir;
 static std::vector<uint8_t> s_decodeBuffer;
 static std::vector<uint8_t> s_etc2Buffer;
@@ -90,19 +94,38 @@ static inline GLenum R_MultisampleTextureTarget()
 
 extern "C" {
 __attribute__((used)) __attribute__((visibility("default")))
-void enableTexturesShrinking(const bool enableTexturesShrinking) {
-    g_enableTexturesShrinking = enableTexturesShrinking;
+void enableTexturesShrinking(const int enableTexturesShrinking) {   // (an int: JNA passes a java 'boolean' as a 32 bit int)
+    g_enableTexturesShrinking = (enableTexturesShrinking != 0);
 }
 
+// The cache is started where it is first used, on the renderer's thread (R_TextureCacheEnabled). It was started here, on the
+// java side's thread: its folder (a std::string) assigned while the renderer's thread could read it, its index filled and its
+// writer thread started from there. (A std::string of a null String is undefined: null is taken as "".)
 __attribute__((used)) __attribute__((visibility("default")))
-void setTextureCacheData(const bool enableTextureCache, const char *pathToTextureCacheDir) {
-    g_enableTextureCache = enableTextureCache;
-    g_pathToTextureCacheDir = pathToTextureCacheDir;
-    if (enableTextureCache) {
-        idTextureCache::Instance().Init(g_pathToTextureCacheDir.c_str(),
-                                        15ULL * 1024 * 1024 * 1024);
+void setTextureCacheData(const int enableTextureCache, const char *pathToTextureCacheDir) {   // (an int: JNA passes a java 'boolean' as a 32 bit int)
+    {
+        std::lock_guard<std::mutex> lock(g_textureCacheDirMutex);
+        g_pathToTextureCacheDir = (pathToTextureCacheDir != nullptr) ? pathToTextureCacheDir : "";
     }
+    g_enableTextureCache.store(enableTextureCache != 0, std::memory_order_release);
 }
+}
+
+//! Whether the etc2 texture cache is on: started the first time
+static bool R_TextureCacheEnabled() {
+    if (!g_enableTextureCache.load(std::memory_order_acquire)) {
+        return false;
+    }
+    static std::once_flag started;
+    std::call_once(started, []() {
+        std::string cacheDir;
+        {
+            std::lock_guard<std::mutex> lock(g_textureCacheDirMutex);
+            cacheDir = g_pathToTextureCacheDir;
+        }
+        idTextureCache::Instance().Init(cacheDir.c_str(), 15ULL * 1024 * 1024 * 1024);
+    });
+    return true;
 }
 
 static inline bool IsForcedEtc2Format(textureFormat_t fmt, textureUsage_t usage,
@@ -723,7 +746,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
             // what AllocImage gave the texture, see R_Etc2FormatForDxt
             const GLenum etc2Format = static_cast<GLenum>(internalFormat);
 
-            if (g_enableTextureCache) {
+            if (R_TextureCacheEnabled()) {
                 hash = ComputeTextureHash(static_cast<const uint8_t *>(pic), compressedSize, width,
                                           height, etc2Format);
                 std::byte *cachedEtc2 = nullptr;
@@ -813,7 +836,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                     );
                 }
 
-                if (g_enableTextureCache) {
+                if (R_TextureCacheEnabled()) {
                     idTextureCache::Instance().SaveToRamCache(hash, etc2Data, etc2CompressedSize,
                                                               width, height,
                                                               etc2Format);
@@ -870,7 +893,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                 break;
         }
 
-        if (g_enableTextureCache) {
+        if (R_TextureCacheEnabled()) {
             hash = ComputeTextureHash(static_cast<const uint8_t *>(pic), rawSourceSize, width,
                                       height, internalFormat);
             std::byte *cachedEtc2 = nullptr;
@@ -935,7 +958,7 @@ void idImage::SubImageUpload(int mipLevel, int mipLevelToSkip, int x, int y, int
                     true
             );
 
-            if (g_enableTextureCache) {
+            if (R_TextureCacheEnabled()) {
                 idTextureCache::Instance().SaveToRamCache(hash, etc2Data, etc2CompressedSize,
                                                           width, height, internalFormat);
                 idTextureCache::Instance().SaveToCacheAsync(

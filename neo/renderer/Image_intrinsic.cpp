@@ -348,7 +348,9 @@ void R_FogImage( idImage* image )
 							  + ( y - FOG_SIZE / 2 ) * ( y - FOG_SIZE / 2 ) );
 			d /= FOG_SIZE / 2 - 1;
 			
-			b = ( byte )( d * 255 );
+			// (a float out of a byte's range converted to a byte is undefined: d goes past 1 in the corners. The low 8
+			// bits as before, through an int)
+			b = ( int )( d * 255 ) & 255;
 			if( b <= 0 )
 			{
 				b = 0;

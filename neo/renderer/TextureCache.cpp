@@ -13,7 +13,7 @@
 
 static const char CACHE_MAGIC[4] = {'T', 'C', '0', '1'};
 static const uint32_t CACHE_VERSION = 1;
-extern bool g_enableTextureCache;
+extern std::atomic<bool> g_enableTextureCache;  // (Image_GL.cpp)
 
 class BufferPool {
 public:
@@ -160,7 +160,7 @@ idTextureCache::~idTextureCache() {
     }
 }
 
-void idTextureCache::Init(const char* cacheDir, size_t maxSizeBytes) {
+void idTextureCache::Init(const char* cacheDir, uint64_t maxSizeBytes) {
     std::lock_guard<std::mutex> lock(m_indexMutex);
     if (m_initialized) return;
 
@@ -204,7 +204,7 @@ void idTextureCache::Init(const char* cacheDir, size_t maxSizeBytes) {
     pthread_setschedparam(m_workerThread.native_handle(), SCHED_NORMAL, &param);
 
     common->Printf("TextureCache initialized: %zu entries, %zu MB used\n",
-                   m_entries.size(), m_currentSizeBytes / (1024 * 1024));
+                   m_entries.size(), (size_t)(m_currentSizeBytes / (1024 * 1024)));
 }
 
 void idTextureCache::Shutdown() {

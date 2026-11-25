@@ -43,7 +43,7 @@ struct CacheEntry {
     uint64_t hash;
     std::string filename;
     uint64_t lastAccessTime;
-    size_t size;
+    uint64_t size;
 };
 
 struct CacheWriteJob {
@@ -63,7 +63,8 @@ class idTextureCache {
 public:
     static idTextureCache& Instance();
 
-    void Init(const char* cacheDir, size_t maxSizeBytes = 512ULL * 1024ULL * 1024ULL);
+    // (the disk cache's sizes are 64 bit: size_t is 32 bits on armv7, a limit of 4 GB or more did not fit)
+    void Init(const char* cacheDir, uint64_t maxSizeBytes = 512ULL * 1024ULL * 1024ULL);
     void Shutdown();
 
     bool TryGetCachedETC2(const char* textureName,
@@ -105,8 +106,8 @@ private:
     void EvictIfNeeded();
 
     std::string m_cacheDir;
-    size_t m_maxSizeBytes = 0;
-    size_t m_currentSizeBytes = 0;
+    uint64_t m_maxSizeBytes = 0;
+    uint64_t m_currentSizeBytes = 0;
     std::unordered_map<std::string, CacheEntry> m_entries;
     std::mutex m_indexMutex;
     bool m_initialized = false;

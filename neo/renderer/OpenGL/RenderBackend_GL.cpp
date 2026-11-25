@@ -113,15 +113,16 @@ static GLsync	renderSync[2];
 // the byte offset of the first vertex the attribute pointers start at, see SetVertexAttribs
 static uintptr_t currentVertOffset = ~( uintptr_t )0;
 #endif
-static bool gEnableGLSynchronization = false;
+// (both set by the launcher through JNA, on the java side's thread: atomic)
+static std::atomic<bool> gEnableGLSynchronization(false);
 
 #if ANDROID
-static bool g_enableDXTSupport = false;
+static std::atomic<bool> g_enableDXTSupport(false);
 
 extern "C"{
 __attribute__((used)) __attribute__((visibility("default")))
-void setHardwareDXTSupport(const bool enableDXTSupport) {
-	g_enableDXTSupport = enableDXTSupport;
+void setHardwareDXTSupport(const int enableDXTSupport) {  // (an int: JNA passes a java 'boolean' as a 32 bit int)
+	g_enableDXTSupport = (enableDXTSupport != 0);
 }
 
 // kept for the launcher, which still passes the version of the device: the renderer is GLES 3.0
@@ -132,8 +133,8 @@ void setGLESVersion(const int targetGLESVersion) {
 }
 
 __attribute__((used)) __attribute__((visibility("default")))
-void updateGLSynchronizationState(const bool enableGLSynchronization) {
-	gEnableGLSynchronization = enableGLSynchronization;
+void updateGLSynchronizationState(const int enableGLSynchronization) {
+	gEnableGLSynchronization = (enableGLSynchronization != 0);
 }
 }
 

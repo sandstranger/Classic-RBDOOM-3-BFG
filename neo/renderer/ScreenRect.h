@@ -65,6 +65,10 @@ public:
 	}
 	int			GetArea() const
 	{
+		if( IsEmpty() )
+		{
+			return 0;	// (a cleared rect is backwards, +-32000: (-63999)^2 overflowed an int, undefined)
+		}
 		return ( x2 - x1 + 1 ) * ( y2 - y1 + 1 );
 	}
 	

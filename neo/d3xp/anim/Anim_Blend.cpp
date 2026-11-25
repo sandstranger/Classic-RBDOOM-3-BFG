@@ -79,7 +79,10 @@ idAnim::idAnim( const idDeclModelDef* modelDef, const idAnim* anim )
 	}
 	
 	frameLookup.SetNum( anim->frameLookup.Num() );
-	memcpy( frameLookup.Ptr(), anim->frameLookup.Ptr(), frameLookup.MemoryUsed() );
+	if( frameLookup.Num() > 0 )	// (null pointers when empty: memcpy of those is undefined, even for 0 bytes)
+	{
+		memcpy( frameLookup.Ptr(), anim->frameLookup.Ptr(), frameLookup.MemoryUsed() );
+	}
 	
 	frameCommands.SetNum( anim->frameCommands.Num() );
 	for( i = 0; i < frameCommands.Num(); i++ )

@@ -2327,6 +2327,8 @@ float idRenderWorldLocal::DrawTextLength( const char* text, float scale, int len
 {
 #ifndef ANDROID
 	return RB_DrawTextLength( text, scale, len );
+#else
+	return 0.0f;	// (it returned nothing on android: undefined behaviour, a trap in an LTO build)
 #endif
 }
 

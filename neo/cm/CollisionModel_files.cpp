@@ -437,8 +437,8 @@ void idCollisionModelManagerLocal::ParsePolygons( idLexer* src, cm_model_t* mode
 	
 	if( src->CheckTokenType( TT_NUMBER, 0, &token ) )
 	{
-		model->polygonBlock = ( cm_polygonBlock_t* ) Mem_ClearedAlloc( sizeof( cm_polygonBlock_t ) + token.GetIntValue(), TAG_COLLISION );
-		model->polygonBlock->bytesRemaining = token.GetIntValue();
+		model->polygonBlock = ( cm_polygonBlock_t* ) Mem_ClearedAlloc( sizeof( cm_polygonBlock_t ) + CM_PolygonBlockBytes( token.GetIntValue() ), TAG_COLLISION );
+		model->polygonBlock->bytesRemaining = CM_PolygonBlockBytes( token.GetIntValue() );
 		model->polygonBlock->next = ( ( byte* ) model->polygonBlock ) + sizeof( cm_polygonBlock_t );
 	}
 	

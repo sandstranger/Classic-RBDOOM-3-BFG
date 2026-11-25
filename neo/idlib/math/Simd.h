@@ -91,6 +91,7 @@ public:
 	{
 		cpuid = CPUID_NONE;
 	}
+	virtual ~idSIMDProcessor() {}	// (deleted through this base: undefined without it)
 	
 	cpuid_t							cpuid;
 	

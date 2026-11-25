@@ -50,6 +50,7 @@ If you have questions concerning this license or the applicable additional terms
 #endif
 #include "../common/localuser.h"
 #include "../../framework/Common.h"
+#include <atomic>
 #include <mutex>
 
 static const int MAX_JOYSTICKS = 4; //GK: This thing still works only on PC right? Apparently no
@@ -456,6 +457,10 @@ static int32 uniChar = 0;
 
 #if ANDROID
 extern void SetMute(bool mute);
+
+// needToInvokeMouseButtonsEvents() for the java side, worked out on the game's thread every frame (SDL_Poll): the java
+// side's thread asked the game itself (Shell_IsActive, IsPDAOpen) while the game's thread changed it
+static std::atomic<int> g_javaMouseButtons(0);
 #endif
 
 static void ResumeGame(){
@@ -473,10 +478,8 @@ static void ResumeGame(){
 
 	// DG: un-pause the game when focus is gained, that also re-grabs the input
 	//     disabling the cursor is now done once in GLimp_Init() because it should always be disabled
-#if ANDROID
-    SetMute(false);
-#else
-	soundSystem->SetMute(false);
+#ifndef ANDROID
+	soundSystem->SetMute(false);	// (android's: the lifecycle event watch, see AndroidLifeCycleEventFilter)
 #endif
     cvarSystem->SetCVarBool("com_pausePlatform", false);
 	cvarSystem->SetCVarBool("com_pause", false);
@@ -486,9 +489,7 @@ static void PauseGame(){
 	if (cvarSystem == nullptr || soundSystem == nullptr){
 		return;
 	}
-#if ANDROID
-    SetMute(true);
-#else
+#ifndef ANDROID
 	soundSystem->SetMute(true);
 #endif
 	cvarSystem->SetCVarBool("com_pausePlatform", true);
@@ -498,6 +499,10 @@ static void PauseGame(){
 void SDL_Poll()
 {
 	sysEvent_t res = { };
+
+#if ANDROID
+	g_javaMouseButtons = (game != nullptr && (game->Shell_IsActive() || game->IsPDAOpen())) ? 1 : 0;
+#endif
 	
 	SDL_Event ev;
 	int key;
@@ -864,6 +869,22 @@ void SDL_Poll()
 		case SDL_EVENT_GAMEPAD_REMAPPED:
 		case SDL_EVENT_KEYMAP_CHANGED:
 			continue;
+#else
+		// The lifecycle event watch (AndroidLifeCycleEventFilter) sees these first, on the java side's thread: what is the
+		// game's is done here, on its thread
+		case SDL_EVENT_JOYSTICK_ADDED:
+		case SDL_EVENT_JOYSTICK_REMOVED:
+		case SDL_EVENT_GAMEPAD_ADDED:
+		case SDL_EVENT_GAMEPAD_REMAPPED:
+		case SDL_EVENT_GAMEPAD_REMOVED:
+			ReconnectGamepads();
+			break;
+		case SDL_EVENT_WILL_ENTER_BACKGROUND:
+			PauseGame();
+			break;
+		case SDL_EVENT_DID_ENTER_FOREGROUND:
+			ResumeGame();
+			break;
 #endif
 		case SDL_EVENT_QUIT:
 			PushConsoleEvent( "quit" );
@@ -1323,14 +1344,16 @@ __attribute__((used)) __attribute__((visibility("default")))
 void onNativePause() {
 }
 
+// The queries return an int: JNA reads a java 'boolean' result as a 32 bit int, and of a returned C++ 'bool' only the
+// low byte is defined on arm64 (AAPCS64 leaves the rest of the register unspecified).
 __attribute__((used)) __attribute__((visibility("default")))
-bool needToInvokeMouseButtonsEvents(){
-	return game!= nullptr && (game->Shell_IsActive() || game->IsPDAOpen());
+int needToInvokeMouseButtonsEvents(){
+	return g_javaMouseButtons;
 }
 
 __attribute__((used)) __attribute__((visibility("default")))
-bool needToShowScreenControls() {
-    return !needToInvokeMouseButtonsEvents();
+int needToShowScreenControls() {
+    return !g_javaMouseButtons;
 }
 }
 
@@ -1338,16 +1361,13 @@ extern "C" void ClearRamCache();
 extern "C" void clearBlobShaderCache();
 extern bool TryClearTexturesBuffers();
 
+// SDL calls this on the java side's thread, as the events are pushed: only what is thread safe is done here - the sound
+// paused and resumed through OpenAL Soft, the caches emptied through their locks (a low memory warning comes while the
+// game's thread is blocked in the background). The gamepads were reopened here too (gcontroller and reverseControllerMap,
+// which the game's thread uses as it reads them), and the game paused through cvars: SDL_Poll does that, on the game's thread.
 bool AndroidLifeCycleEventFilter(void*, SDL_Event* event){
 	switch (event->type)
 	{
-		case SDL_EVENT_JOYSTICK_ADDED:
-		case SDL_EVENT_JOYSTICK_REMOVED:
-		case SDL_EVENT_GAMEPAD_ADDED:
-		case SDL_EVENT_GAMEPAD_REMAPPED:
-		case SDL_EVENT_GAMEPAD_REMOVED:
-			ReconnectGamepads();
-			break;
         case SDL_EVENT_LOW_MEMORY:
             ClearRamCache();
             clearBlobShaderCache();
@@ -1356,11 +1376,11 @@ bool AndroidLifeCycleEventFilter(void*, SDL_Event* event){
             TryClearTexturesBuffers();
             break;
 		case SDL_EVENT_WILL_ENTER_BACKGROUND:
-			PauseGame();
+			SetMute(true);
             ClearRamCache();
 			break;
 		case SDL_EVENT_DID_ENTER_FOREGROUND:
-			ResumeGame();
+			SetMute(false);
 			break;
 	}
 	return true;

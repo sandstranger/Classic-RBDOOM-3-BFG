@@ -212,8 +212,10 @@ void idVertexCache::FreeStaticData()
 idVertexCache::ActuallyAlloc
 ==============
 */
-vertCacheHandle_t idVertexCache::ActuallyAlloc( geoBufferSet_t& vcs, const void* data, int bytes, cacheType_t type )
+vertCacheHandle_t idVertexCache::ActuallyAlloc( geoBufferSet_t& vcs, const void* data, int bytes, cacheType_t type, int dataBytes )
 {
+	const int copyBytes = ( dataBytes >= 0 ) ? dataBytes : bytes;	// (see the declaration)
+
 	if( bytes == 0 )
 	{
 		return ( vertCacheHandle_t )0;
@@ -246,7 +248,7 @@ vertCacheHandle_t idVertexCache::ActuallyAlloc( geoBufferSet_t& vcs, const void*
 				{
 					MapGeoBufferSet( vcs );
 				}
-				vcs.indexBuffer.Update( data, bytes, offset );
+				vcs.indexBuffer.Update( data, copyBytes, offset );
 			}
 			
 			break;
@@ -267,7 +269,7 @@ vertCacheHandle_t idVertexCache::ActuallyAlloc( geoBufferSet_t& vcs, const void*
 				{
 					MapGeoBufferSet( vcs );
 				}
-				vcs.vertexBuffer.Update( data, bytes, offset );
+				vcs.vertexBuffer.Update( data, copyBytes, offset );
 			}
 			
 			break;
@@ -288,7 +290,7 @@ vertCacheHandle_t idVertexCache::ActuallyAlloc( geoBufferSet_t& vcs, const void*
 				{
 					MapGeoBufferSet( vcs );
 				}
-				vcs.jointBuffer.Update( data, bytes, offset );
+				vcs.jointBuffer.Update( data, copyBytes, offset );
 			}
 			
 			break;
@@ -316,7 +318,7 @@ idVertexCache::AllocVertex
 */
 vertCacheHandle_t idVertexCache::AllocVertex( const void* data, int num, size_t size /*= sizeof( idDrawVert ) */ )
 {
-	return ActuallyAlloc( frameData[ listNum ], data, ALIGN( num * size, VERTEX_CACHE_ALIGN ), CACHE_VERTEX );
+	return ActuallyAlloc( frameData[ listNum ], data, ALIGN( num * size, VERTEX_CACHE_ALIGN ), CACHE_VERTEX, ( int )( num * size ) );
 }
 
 /*
@@ -326,7 +328,7 @@ idVertexCache::AllocIndex
 */
 vertCacheHandle_t idVertexCache::AllocIndex( const void* data, int num, size_t size /*= sizeof( triIndex_t ) */ )
 {
-	return ActuallyAlloc( frameData[ listNum ], data, ALIGN( num * size, INDEX_CACHE_ALIGN ), CACHE_INDEX );
+	return ActuallyAlloc( frameData[ listNum ], data, ALIGN( num * size, INDEX_CACHE_ALIGN ), CACHE_INDEX, ( int )( num * size ) );
 }
 
 /*
@@ -336,7 +338,7 @@ idVertexCache::AllocJoint
 */
 vertCacheHandle_t idVertexCache::AllocJoint( const void* data, int num, size_t size /*= sizeof( idJointMat ) */ )
 {
-	return ActuallyAlloc( frameData[ listNum ], data, ALIGN( num * size, uniformBufferOffsetAlignment ), CACHE_JOINT );
+	return ActuallyAlloc( frameData[ listNum ], data, ALIGN( num * size, uniformBufferOffsetAlignment ), CACHE_JOINT, ( int )( num * size ) );
 }
 
 /*

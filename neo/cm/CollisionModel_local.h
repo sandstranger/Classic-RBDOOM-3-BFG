@@ -120,6 +120,15 @@ typedef struct cm_polygon_s
 	int						edges[1];			// variable sized, indexes into cm_edge_t list
 } cm_polygon_t;
 
+// The polygons are packed in a block, each as big as its edges need (a multiple of 4 bytes). Each one is put at its
+// type's alignment now (AllocPolygon), the padding taken from the block: packed as they were, every other polygon was
+// misaligned on 64 bit (undefined behaviour). The block has room for the padding: polygonMemory, which the collision
+// files give, counts the polygons' sizes only. (On armv7 cm_polygon_t's alignment is 4: no padding there.)
+ID_INLINE int CM_PolygonBlockBytes( int polygonMemory )
+{
+	return polygonMemory + ( polygonMemory / ( int )sizeof( cm_polygon_t ) + 1 ) * ( ( int )alignof( cm_polygon_t ) - 1 );
+}
+
 typedef struct cm_polygonRef_s
 {
 	cm_polygon_t* 			p;					// pointer to polygon

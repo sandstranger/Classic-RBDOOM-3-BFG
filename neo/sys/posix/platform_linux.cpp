@@ -738,10 +738,19 @@ int Sys_Mbstrtowcstr(wchar_t* Dest, const char* Source, size_t size) {
 	return mbstowcs(Dest, Source, size);
 }
 
+#if ANDROID
+//! The gamepad database's path the launcher gave (setPathToSDLControllerDB, on the java side's thread): a copy
+std::string Sys_AndroidSDLControllerDBPath() {
+	std::lock_guard<std::mutex> lock(g_androidStartupMutex);
+	return g_pathToSDLControllerDB;
+}
+
 extern "C"{
+// The queries return an int: JNA reads a java 'boolean' result as a 32 bit int, and of a returned C++ 'bool' only the
+// low byte is defined on arm64 (AAPCS64 leaves the rest of the register unspecified).
 __attribute__((used)) __attribute__((visibility("default")))
-bool needToReInitGameControllers (){
-	return false;
+int needToReInitGameControllers (){
+	return 0;
 }
 
 __attribute__((used)) __attribute__((visibility("default")))
@@ -766,12 +775,15 @@ void setPathsToResources (const char *pathToHomeFolder, const char *pathToResour
 
 __attribute__((used)) __attribute__((visibility("default")))
 void setPathToSDLControllerDB (const char *pathToSDLControllerDB){
-	g_pathToSDLControllerDB = pathToSDLControllerDB;
+	// (the game's thread reads it, see Sys_AndroidSDLControllerDBPath; a std::string of a null String is undefined)
+	std::lock_guard<std::mutex> lock(g_androidStartupMutex);
+	g_pathToSDLControllerDB = pathToSDLControllerDB != NULL ? pathToSDLControllerDB : "";
 }
 
 __attribute__((used)) __attribute__((visibility("default")))
-void setUseGLES2_0State(const bool useGLES2_0) {
+void setUseGLES2_0State(const int useGLES2_0) {   // (an int: JNA passes a java 'boolean' as a 32 bit int)
 }
 }
+#endif
 
 //GK: End

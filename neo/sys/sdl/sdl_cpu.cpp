@@ -134,7 +134,11 @@ public:
 		char* line = NULL;
 		while(getline(&line, &size, fd) > 0) {
 			char* propertyName =  strtok(line, ":");
-			char* propertyValue = strtok(NULL, ":") + 1;
+			char* propertyValue = strtok(NULL, ":");
+			if (propertyName == NULL || propertyValue == NULL) {
+				continue;	// (a line without ':', the blank ones between processors: null + 1 was undefined)
+			}
+			propertyValue++;
 			if (strstr(propertyName, "processor")) {
 				processor = atoi(propertyValue);
 			}

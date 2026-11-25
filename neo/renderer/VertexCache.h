@@ -146,7 +146,9 @@ public:
 	int				mostUsedJoint;
 	
 	// Try to make room for <bytes> bytes
-	vertCacheHandle_t	ActuallyAlloc( geoBufferSet_t& vcs, const void* data, int bytes, cacheType_t type );
+	// dataBytes: how much of data is copied (-1: bytes). The allocations are rounded up to the cache's alignment, the
+	// data is not: copying the rounded size read past its end
+	vertCacheHandle_t	ActuallyAlloc( geoBufferSet_t& vcs, const void* data, int bytes, cacheType_t type, int dataBytes = -1 );
 
 #if defined( ANDROID ) && !defined( USE_VULKAN )
 	// larger static storage when the map needs it, the handles stay valid

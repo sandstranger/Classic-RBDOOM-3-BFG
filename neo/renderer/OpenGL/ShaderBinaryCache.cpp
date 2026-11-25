@@ -34,7 +34,14 @@ public:
         binarySupported = true;
         idLib::Printf("idShaderBinaryCache: %d program binary formats supported.\n", numBinaryFormats);
 
-        cacheFolder = std::string(SDL_GetAndroidCachePath()) + "/id_tech_4_5_shaders_cache/";
+        const char* const androidCachePath = SDL_GetAndroidCachePath();
+        if (androidCachePath == nullptr) {
+            // (SDL returns null when it fails: a std::string of null is undefined)
+            idLib::Printf("idShaderBinaryCache: no cache folder: %s\n", SDL_GetError());
+            binarySupported = false;
+            return;
+        }
+        cacheFolder = std::string(androidCachePath) + "/id_tech_4_5_shaders_cache/";
         fileSystem->CreateOSPath(cacheFolder.c_str());
 
         stopThread = false;

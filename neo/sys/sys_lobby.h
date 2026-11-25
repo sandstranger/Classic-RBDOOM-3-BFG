@@ -947,6 +947,7 @@ idSessionCallbacks
 class idSessionCallbacks
 {
 public:
+	virtual ~idSessionCallbacks() {}	// (deleted through this base: undefined without it)
 	virtual idLobby& 				GetPartyLobby() = 0;
 	virtual idLobby& 				GetGameLobby() = 0;
 	virtual idLobby& 				GetActingGameStateLobby() = 0;

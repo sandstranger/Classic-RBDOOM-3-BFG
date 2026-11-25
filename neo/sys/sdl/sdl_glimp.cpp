@@ -74,12 +74,16 @@ static SDL_GLContext context = NULL;
 SDL_Window* window = NULL;
 
 #ifdef ANDROID
+#include <mutex>
+// (set by the launcher through JNA on the java side's thread, read on the game's)
+static std::mutex supportedRefreshRatesMutex;
 static std::vector<int> supportedRefreshRates;
 
 extern "C"{
 __attribute__((used)) __attribute__((visibility("default")))
 void setRefreshRates(const int* targetRefreshRates, int size) {
-	for (int i = 0; i < size; i++)
+	std::lock_guard<std::mutex> lock(supportedRefreshRatesMutex);
+	for (int i = 0; targetRefreshRates != nullptr && i < size; i++)
 	{
 		supportedRefreshRates.push_back(targetRefreshRates[i]);
 	}
@@ -961,6 +965,7 @@ bool R_GetRefreshListForDisplay(const unsigned requestedDisplayNum, idList<int>&
 	return true;
 	// DG end
 #else
+	std::lock_guard<std::mutex> lock(supportedRefreshRatesMutex);
 	for (const int refreshRate : supportedRefreshRates) {
 		refreshList.AddUnique(refreshRate);
 	}

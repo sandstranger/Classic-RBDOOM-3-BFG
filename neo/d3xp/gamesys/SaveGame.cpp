@@ -1602,6 +1602,7 @@ void idRestoreGame::ReadRenderLight( renderLight_t& renderLight )
 	ReadInt( renderLight.suppressLightInViewID );
 	ReadInt( renderLight.allowLightInViewID );
 	ReadBool( renderLight.noShadows );
+	renderLight.forceShadows = false;	// (not saved: it was left indeterminate. The savegame format is kept)
 	ReadBool( renderLight.noSpecular );
 	ReadBool( renderLight.pointLight );
 	ReadBool( renderLight.parallel );

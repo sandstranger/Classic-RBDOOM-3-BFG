@@ -29,6 +29,7 @@ If you have questions concerning this license or the applicable additional terms
 */
 
 #include "OpenGL/ShaderBinaryCache.h"
+#include <atomic>
 
 #ifndef __RENDERPROGS_H__
 #define __RENDERPROGS_H__
@@ -771,7 +772,7 @@ public:
 	static const int	MAX_GLSL_USER_PARMS = 8;
 	const char*	GetGLSLParmName( int rp ) const;
     idShaderBinaryCache binaryCache;
-    bool shaderCacheWasInit = false;
+    std::atomic<bool> shaderCacheWasInit{false};  // (clearBlobShaderCache reads it on the java side's thread)
 
 	void		SetUniformValue( const renderParm_t rp, const float* value );
 	void		CommitUniforms( uint64 stateBits );

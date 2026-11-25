@@ -428,7 +428,7 @@ idDxtEncoder::EmitUShort
 */
 ID_INLINE void idDxtEncoder::EmitUShort( unsigned short s )
 {
-	*( ( unsigned short* )outData ) = s;
+	memcpy( outData, &s, sizeof( s ) );	// (outData is byte aligned: a store through an unsigned short* was undefined)
 	outData += 2;
 }
 
@@ -439,7 +439,7 @@ idDxtEncoder::EmitUInt
 */
 ID_INLINE void idDxtEncoder::EmitUInt( unsigned int i )
 {
-	*( ( unsigned int* )outData ) = i;
+	memcpy( outData, &i, sizeof( i ) );		// (outData is byte aligned: misaligned stores fault on armv7 when paired)
 	outData += 4;
 }
 

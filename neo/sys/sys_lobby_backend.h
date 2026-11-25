@@ -193,6 +193,7 @@ This class interfaces with the various back ends for the different platforms
 class idLobbyBackend
 {
 public:
+	virtual ~idLobbyBackend() {}	// (deleted through this base: undefined without it)
 	enum lobbyBackendState_t
 	{
 		STATE_INVALID			= 0,

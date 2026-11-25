@@ -139,7 +139,7 @@ enum dynamicModel_t
 	DM_CONTINUOUS	// must be recreated for every single view (time dependent things like particles)
 };
 
-enum jointHandle_t
+enum jointHandle_t : int	// (int: it holds joint numbers, outside the range of an enum whose only enumerator is -1)
 {
 	INVALID_JOINT				= -1
 };

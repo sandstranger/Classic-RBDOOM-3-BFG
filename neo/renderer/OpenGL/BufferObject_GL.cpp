@@ -553,7 +553,7 @@ void idVertexBuffer::Update(const void* data, int updateSize, int offset) const 
         idLib::FatalError("idVertexBuffer::Update: size overrun, %i > %i\n", updateSize, GetSize());
     }
 
-    int numBytes = (updateSize + 15) & ~15;
+    int numBytes = updateSize;  // (it was rounded up to 16: the copy read past the end of data)
 
     if (usage == BU_DYNAMIC) {
         CopyBuffer((byte*)buffer + offset, (const byte*)data, numBytes);
@@ -840,7 +840,7 @@ void idIndexBuffer::Update(const void* data, int updateSize, int offset) const {
         idLib::FatalError("idIndexBuffer::Update: size overrun, %i > %i\n", updateSize, GetSize());
     }
 
-    int numBytes = (updateSize + 15) & ~15;
+    int numBytes = updateSize;  // (it was rounded up to 16: the copy read past the end of data)
 
     if (usage == BU_DYNAMIC) {
         CopyBuffer((byte*)buffer + offset, (const byte*)data, numBytes);
@@ -1121,7 +1121,7 @@ void idUniformBuffer::Update(const void* data, int updateSize, int offset) const
         idLib::FatalError("idUniformBuffer::Update: size overrun, %i > %i\n", updateSize, GetSize());
     }
 
-    int numBytes = (updateSize + 15) & ~15;
+    int numBytes = updateSize;  // (it was rounded up to 16: the copy read past the end of data)
 
     if (usage == BU_DYNAMIC) {
         CopyBuffer((byte*)buffer + offset, (const byte*)data, numBytes);

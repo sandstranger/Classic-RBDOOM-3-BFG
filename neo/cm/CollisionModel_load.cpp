@@ -748,13 +748,19 @@ cm_polygon_t* idCollisionModelManagerLocal::AllocPolygon( cm_model_t* model, int
 	size = sizeof( cm_polygon_t ) + ( numEdges - 1 ) * sizeof( poly->edges[0] );
 	model->numPolygons++;
 	model->polygonMemory += size;
-	if( model->polygonBlock && model->polygonBlock->bytesRemaining >= size )
+	poly = NULL;
+	if( model->polygonBlock )
 	{
-		poly = ( cm_polygon_t* ) model->polygonBlock->next;
-		model->polygonBlock->next += size;
-		model->polygonBlock->bytesRemaining -= size;
+		// (put at cm_polygon_t's alignment, see CM_PolygonBlockBytes)
+		const int pad = ( int )( ( 0 - ( uintptr_t )model->polygonBlock->next ) & ( alignof( cm_polygon_t ) - 1 ) );
+		if( model->polygonBlock->bytesRemaining >= size + pad )
+		{
+			poly = ( cm_polygon_t* )( model->polygonBlock->next + pad );
+			model->polygonBlock->next += size + pad;
+			model->polygonBlock->bytesRemaining -= size + pad;
+		}
 	}
-	else
+	if( poly == NULL )
 	{
 		poly = ( cm_polygon_t* ) Mem_ClearedAlloc( size, TAG_COLLISION );
 	}
@@ -3543,8 +3549,8 @@ cm_model_t* idCollisionModelManagerLocal::LoadBinaryModelFromFile( idFile* file,
 	}
 	
 	file->ReadBig( model->polygonMemory );
-	model->polygonBlock = ( cm_polygonBlock_t* ) Mem_ClearedAlloc( sizeof( cm_polygonBlock_t ) + model->polygonMemory, TAG_COLLISION );
-	model->polygonBlock->bytesRemaining = model->polygonMemory;
+	model->polygonBlock = ( cm_polygonBlock_t* ) Mem_ClearedAlloc( sizeof( cm_polygonBlock_t ) + CM_PolygonBlockBytes( model->polygonMemory ), TAG_COLLISION );
+	model->polygonBlock->bytesRemaining = CM_PolygonBlockBytes( model->polygonMemory );
 	model->polygonBlock->next = ( ( byte* ) model->polygonBlock ) + sizeof( cm_polygonBlock_t );
 	
 	file->ReadBig( model->brushMemory );

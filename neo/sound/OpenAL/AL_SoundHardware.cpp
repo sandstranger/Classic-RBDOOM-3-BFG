@@ -45,9 +45,14 @@ extern idCVar s_showPerfData;
 extern idCVar s_volume_dB;
 
 #if ANDROID
-ALCdevice*			device;
+#include <atomic>
+
+// The device for SetMute, which the lifecycle event watch calls on the java side's thread: atomic, cleared before the device
+// is closed (OpenAL Soft checks a device it is given against its open ones)
+static std::atomic<ALCdevice*> g_androidALDevice(nullptr);
 
 void SetMute(bool mute){
+	ALCdevice* const device = g_androidALDevice.load();
 	if (device == nullptr){
 		return;
 	}
@@ -258,7 +263,7 @@ void idSoundHardware_OpenAL::Init()
 		return;
 	}
 #if ANDROID
-	device = openalDevice;
+	g_androidALDevice = openalDevice;
 #endif
 	//GK: Set this for EFX support
 	ALCint att[4] = {0};
@@ -418,11 +423,11 @@ void idSoundHardware_OpenAL::Shutdown()
 	alcDestroyContext( openalContext );
 	openalContext = NULL;
 	
+#if ANDROID
+	g_androidALDevice = nullptr;
+#endif
 	alcCloseDevice( openalDevice );
 	openalDevice = NULL;
-#if ANDROID
-    device = nullptr;
-#endif
 }
 
 void idSoundHardware_OpenAL::ShutdownReverbSystem()

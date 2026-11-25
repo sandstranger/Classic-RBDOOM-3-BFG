@@ -1492,7 +1492,10 @@ void R_LinkDrawSurfToView( drawSurf_t* drawSurf, viewDef_t* viewDef )
 			viewDef->maxDrawSurfs *= 2;
 		}
 		viewDef->drawSurfs = ( drawSurf_t** )R_FrameAlloc( viewDef->maxDrawSurfs * sizeof( viewDef->drawSurfs[0] ), FRAME_ALLOC_DRAW_SURFACE_POINTER );
-		memcpy( viewDef->drawSurfs, old, count );
+		if( count > 0 )	// (old is null the first time: memcpy of a null pointer is undefined, even for 0 bytes)
+		{
+			memcpy( viewDef->drawSurfs, old, count );
+		}
 	}
 	
 	viewDef->drawSurfs[viewDef->numDrawSurfs] = drawSurf;

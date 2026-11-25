@@ -430,7 +430,10 @@ void R_ResizeStaticTriSurfIndexes( srfTriangles_t* tri, int numIndexes )
 {
 	triIndex_t* newIndexes = ( triIndex_t* )Mem_Alloc16( numIndexes * sizeof( triIndex_t ), TAG_TRI_INDEXES );
 	const int copy = std::min( numIndexes, tri->numIndexes );
-	memcpy( newIndexes, tri->indexes, copy * sizeof( triIndex_t ) );
+	if( copy > 0 )	// (tri->indexes is null when there are none: memcpy of it is undefined)
+	{
+		memcpy( newIndexes, tri->indexes, copy * sizeof( triIndex_t ) );
+	}
 	Mem_Free( tri->indexes );
 	tri->indexes = newIndexes;
 }

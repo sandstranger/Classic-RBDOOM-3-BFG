@@ -140,7 +140,10 @@ idSIMD_Generic::Memcpy
 */
 void VPCALL idSIMD_Generic::Memcpy( void* dst, const void* src, const int count )
 {
-	memcpy( dst, src, count );
+	if( count > 0 )	// (dst/src may be null for 0 bytes: memcpy of a null pointer is undefined)
+	{
+		memcpy( dst, src, count );
+	}
 }
 
 /*
@@ -150,7 +153,10 @@ idSIMD_Generic::Memset
 */
 void VPCALL idSIMD_Generic::Memset( void* dst, const int val, const int count )
 {
-	memset( dst, val, count );
+	if( count > 0 )	// (see Memcpy)
+	{
+		memset( dst, val, count );
+	}
 }
 
 /*

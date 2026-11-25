@@ -786,7 +786,10 @@ int idFile_Memory::Read( void* buffer, int len )
 	{
 		len = filePtr + fileSize - curPtr;
 	}
-	memcpy( buffer, curPtr, len );
+	if( len > 0 )	// (buffer may be null for 0 bytes: memcpy of a null pointer is undefined)
+	{
+		memcpy( buffer, curPtr, len );
+	}
 	curPtr += len;
 	return len;
 }
@@ -840,7 +843,7 @@ int idFile_Memory::Write( const void* buffer, int len )
 		return 0;
 	}
 	
-	int alloc = curPtr + len + 1 - filePtr - allocated; // need room for len+1
+	int alloc = ( int )( curPtr - filePtr ) + len + 1 - allocated; // need room for len+1 (offsets: both are null in an empty file)
 	if( alloc > 0 )
 	{
 		if( maxSize != 0 )

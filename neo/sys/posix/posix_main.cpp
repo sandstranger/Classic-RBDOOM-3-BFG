@@ -101,7 +101,7 @@ static char exit_spawn[ 1024 ];
 #if ANDROID
 extern string g_pathToHomeFolder;
 extern string g_pathToResourcesFolder;
-extern string g_pathToSDLControllerDB;
+std::string Sys_AndroidSDLControllerDBPath();
 #endif
 
 /*
@@ -1077,10 +1077,11 @@ void Sys_Init() {
 #ifdef ANDROID
 	extern bool AndroidLifeCycleEventFilter(void*, SDL_Event* event);
 	SDL_AddEventWatch(AndroidLifeCycleEventFilter, nullptr);
-    if (SDL_AddGamepadMappingsFromFile(g_pathToSDLControllerDB.c_str()) < 0) {
+    const std::string pathToSDLControllerDB = Sys_AndroidSDLControllerDBPath();
+    if (SDL_AddGamepadMappingsFromFile(pathToSDLControllerDB.c_str()) < 0) {
         SDL_Log("Couldn't load mappings: %s\n", SDL_GetError());
     } else{
-        SDL_Log("Custom controller db was loaded from: %s", g_pathToSDLControllerDB.c_str());
+        SDL_Log("Custom controller db was loaded from: %s", pathToSDLControllerDB.c_str());
     }
 #endif
  }
@@ -1888,7 +1889,7 @@ void Sys_DebugPrintf( const char* fmt, ... )
 	va_end( argptr );
 	msg[sizeof( msg ) - 1] = '\0';
 	
-	__android_log_print( ANDROID_LOG_DEBUG, "DBFA_Debug", msg );
+	__android_log_print( ANDROID_LOG_DEBUG, "DBFA_Debug", "%s", msg );	// (msg is no format: a '%' in it read arguments never passed)
 #else
 	va_list argptr;
 	
@@ -1922,7 +1923,7 @@ void Sys_Printf( const char* fmt, ... )
 	va_end( argptr );
 	msg[sizeof( msg ) - 1] = '\0';
 	
-	__android_log_print( ANDROID_LOG_DEBUG, "DBFA", msg );
+	__android_log_print( ANDROID_LOG_DEBUG, "DBFA", "%s", msg );
 #else
 	va_list argptr;
 	

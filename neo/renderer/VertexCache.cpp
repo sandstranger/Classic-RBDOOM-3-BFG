@@ -451,6 +451,10 @@ idVertexCache::CacheIsCurrent
 */
 bool idVertexCache::CacheIsCurrent( const vertCacheHandle_t handle )
 {
+	if( handle == 0 )
+	{
+		return false;	// (no allocation: never current, see vertCacheHandle_t)
+	}
 	const int isStatic = handle & VERTCACHE_STATIC;
 	if( isStatic )
 	{
@@ -480,7 +484,7 @@ bool idVertexCache::GetVertexBuffer( vertCacheHandle_t handle, idVertexBuffer* v
 		vb->Reference( staticData.vertexBuffer, offset, size );
 		return true;
 	}
-	if( frameNum != ( ( currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )
+	if( handle == 0 || frameNum != ( ( currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )	// (0: no allocation)
 	{
 		return false;
 	}
@@ -504,7 +508,7 @@ bool idVertexCache::GetIndexBuffer( vertCacheHandle_t handle, idIndexBuffer* ib 
 		ib->Reference( staticData.indexBuffer, offset, size );
 		return true;
 	}
-	if( frameNum != ( ( currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )
+	if( handle == 0 || frameNum != ( ( currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )	// (0: no allocation)
 	{
 		return false;
 	}
@@ -528,7 +532,7 @@ bool idVertexCache::GetJointBuffer( vertCacheHandle_t handle, idUniformBuffer* j
 		jb->Reference( staticData.jointBuffer, jointOffset, numBytes );
 		return true;
 	}
-	if( frameNum != ( ( currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )
+	if( handle == 0 || frameNum != ( ( currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )	// (0: no allocation)
 	{
 		return false;
 	}
@@ -573,25 +577,14 @@ void idVertexCache::BeginBackEnd()
 	// prepare the next frame for writing to by the CPU
 	currentFrame++;
 	listNum = currentFrame % NUM_FRAME_DATA;
-	if ( ( currentFrame & VERTCACHE_FRAME_MASK ) == 0 && currentFrame > 0 )
-    {
-        for ( int i = 0; i < NUM_FRAME_DATA; i++ )
-        {
-            ClearGeoBufferSet( frameData[i] );
-        }
-        MapGeoBufferSet( frameData[ listNum ] );
-    }
-    else
-    {
-        const int startMap = Sys_Milliseconds();
-        MapGeoBufferSet( frameData[ listNum ] );
-        const int endMap = Sys_Milliseconds();
-        if ( endMap - startMap > 1 )
-        {
-            idLib::PrintfIf( r_showVertexCacheTimings.GetBool(), "idVertexCache::map took %i msec\n", endMap - startMap );
-        }
-    }
+	const int startMap = Sys_Milliseconds();
+	MapGeoBufferSet( frameData[ listNum ] );
+	const int endMap = Sys_Milliseconds();
+	if( endMap - startMap > 1 )
+	{
+		idLib::PrintfIf( r_showVertexCacheTimings.GetBool(), "idVertexCache::map took %i msec\n", endMap - startMap );
+	}
 
-    ClearGeoBufferSet( frameData[ listNum ] );
+	ClearGeoBufferSet( frameData[ listNum ] );
 }
 

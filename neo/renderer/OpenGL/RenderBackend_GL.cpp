@@ -1277,7 +1277,7 @@ static bool R_GetDrawBuffers( vertCacheHandle_t vbHandle, vertCacheHandle_t ibHa
 	else
 	{
 		const uint64 frameNum = ( int )( vbHandle >> VERTCACHE_FRAME_SHIFT ) & VERTCACHE_FRAME_MASK;
-		if( frameNum != ( ( vertexCache.currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )
+		if( vbHandle == 0 || frameNum != ( ( vertexCache.currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )	// (0: no allocation)
 		{
 			idLib::Warning( "%s, vertexBuffer == NULL", caller );
 			return false;
@@ -1292,7 +1292,7 @@ static bool R_GetDrawBuffers( vertCacheHandle_t vbHandle, vertCacheHandle_t ibHa
 	else
 	{
 		const uint64 frameNum = ( int )( ibHandle >> VERTCACHE_FRAME_SHIFT ) & VERTCACHE_FRAME_MASK;
-		if( frameNum != ( ( vertexCache.currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )
+		if( ibHandle == 0 || frameNum != ( ( vertexCache.currentFrame - 1 ) & VERTCACHE_FRAME_MASK ) )
 		{
 			idLib::Warning( "%s, indexBuffer == NULL", caller );
 			return false;

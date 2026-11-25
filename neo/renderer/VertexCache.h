@@ -36,11 +36,11 @@ const int VERTCACHE_VERTEX_MEMORY_PER_FRAME = 31 * 1024 * 1024;
 const int VERTCACHE_JOINT_MEMORY_PER_FRAME = 256 * 1024;
 
 #if defined( ANDROID )
-// The most a map may use, as before. The GL storage was all of it from the start, 156 MB, while the maps
-// use a fraction (the offset of a handle has 25 bits, past 32 MB they wrap anyway): the static buffers
-// start smaller now and grow by copying when a map needs more, see idVertexCache::GrowStatic.
+// The most a map may use, as before. The GL storage was all of it from the start, 248 MB, while the maps
+// use a fraction: the static buffers start smaller now and grow by copying when a map needs more, see
+// idVertexCache::GrowStatic.
 const int STATIC_INDEX_MEMORY = 4 * 31 * 1024 * 1024;
-const int STATIC_VERTEX_MEMORY = 32 * 1024 * 1024;
+const int STATIC_VERTEX_MEMORY = 4 * 31 * 1024 * 1024;
 #if defined( ID_LOW_MEMORY )
 const int STATIC_INDEX_MEMORY_START = 6 * 1024 * 1024;
 const int STATIC_VERTEX_MEMORY_START = 16 * 1024 * 1024;
@@ -52,20 +52,30 @@ const int STATIC_VERTEX_MEMORY_START = 32 * 1024 * 1024;
 // there are a lot more static indexes than vertexes, because interactions are just new
 // index lists that reference existing vertexes
 const int STATIC_INDEX_MEMORY = 4 * 31 * 1024 * 1024;
-const int STATIC_VERTEX_MEMORY = 32 * 1024 * 1024;
+const int STATIC_VERTEX_MEMORY = 4 * 31 * 1024 * 1024;
 const int STATIC_INDEX_MEMORY_START = STATIC_INDEX_MEMORY;
 const int STATIC_VERTEX_MEMORY_START = STATIC_VERTEX_MEMORY;
 #endif
 
-// vertCacheHandle_t packs size, offset, and frame number into 64 bits
+// vertCacheHandle_t packs size, offset, and frame number into 64 bits.
+// 0 is no allocation (ActuallyAlloc never makes it: a static one has VERTCACHE_STATIC set, a per-frame one a size) and is
+// never current. Its frame number, 0, is the current one every VERTCACHE_FRAME_MASK + 1 frames: the surfaces whose caches
+// were not made yet - a particle system's, new every frame - were taken as cached then and drawn from the start of the
+// frame's buffers, the white flashes every 8192 frames (~2:16 at 60 fps) of the 13 bit frame number. A wider frame number
+// only made them rarer, and cost the offset (32 MB, the static index buffer is 124 MB) and the size (1 MB, the GUI's
+// vertex block is 2.5 MB) their range. Only a handle unused for exactly a multiple of 16384 frames can still look current.
 typedef uint64 vertCacheHandle_t;
 const int VERTCACHE_STATIC = 1;                 // in the static set, not the per-frame set
 const int VERTCACHE_SIZE_SHIFT = 1;
-const int VERTCACHE_SIZE_MASK = 0xFFFFF;
-const int VERTCACHE_OFFSET_SHIFT = 21;
-const int VERTCACHE_OFFSET_MASK = 0x1FFFFFF;
-const int VERTCACHE_FRAME_SHIFT = 46;
-const int VERTCACHE_FRAME_MASK = 0x3FFFF;
+const int VERTCACHE_SIZE_MASK = 0x3FFFFF;		// 22 bits: 4 MB
+const int VERTCACHE_OFFSET_SHIFT = 23;
+const int VERTCACHE_OFFSET_MASK = 0x7FFFFFF;	// 27 bits: 128 MB
+const int VERTCACHE_FRAME_SHIFT = 50;
+const int VERTCACHE_FRAME_MASK = 0x3FFF;		// 14 bits: 16384 frames to wrap around
+
+static_assert( STATIC_INDEX_MEMORY <= VERTCACHE_OFFSET_MASK + 1 && STATIC_VERTEX_MEMORY <= VERTCACHE_OFFSET_MASK + 1 &&
+			   VERTCACHE_INDEX_MEMORY_PER_FRAME <= VERTCACHE_OFFSET_MASK + 1 && VERTCACHE_VERTEX_MEMORY_PER_FRAME <= VERTCACHE_OFFSET_MASK + 1,
+			   "a handle's offset must address every buffer" );
 
 const int VERTEX_CACHE_ALIGN		= 32;
 const int INDEX_CACHE_ALIGN			= 16;

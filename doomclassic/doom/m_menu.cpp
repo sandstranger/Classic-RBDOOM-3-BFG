@@ -313,7 +313,7 @@ menuitem_t etrareadthis[1] = {
 };
 menu_t extradef = {
 	1,
-	&::g->MainDef,
+	NULL,	// (&::g->MainDef, set in M_DrawExtraReadThis: here ::g is still null)
 	etrareadthis,
 	M_DrawErt,
 	280,185,
@@ -1064,6 +1064,7 @@ void M_DrawReadThis1(void)
 //GK:Read this for specific additional modded help pages
 void M_DrawExtraReadThis(int choice) {
 	choice = 0;
+	extradef.prevMenu = &::g->MainDef;
 	M_SetupNextMenu(&extradef);
 }
 

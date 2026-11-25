@@ -409,7 +409,7 @@ typedef enum
 //  p_spec.structs begin // 
 typedef struct
 {
-	char	istexture;
+	signed char	istexture;	// (signed: see animdef_t)
 	int		picnum;
 	int		basepic;
 	int		numpics;
@@ -418,7 +418,7 @@ typedef struct
 } anim_t2;
 typedef struct
 {
-	char	istexture;	// if false, it is a flat
+	signed char	istexture;	// if false, it is a flat; -1 ends the list (signed: a plain char is unsigned on ARM, the end was never found)
 	char	endname[9];
 	char	startname[9];
 	byte	speed[4]; //GK: Padding fix

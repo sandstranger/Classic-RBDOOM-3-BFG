@@ -60,6 +60,7 @@ static int cmdargc = 0;
 
 #if ANDROID
 #include "SDL3/SDL_main.h"
+#include "SDL3/SDL_log.h"
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -71,11 +72,12 @@ string g_pathToResourcesFolder;
 string g_pathToSDLControllerDB;
 
 // SDL may enter SDL_main as soon as the activity resumes. Do not let the engine
-// initialize its filesystem until Kotlin has installed every required JNI path.
+// initialize its filesystem until Kotlin has installed every required JNI path:
+// SDL_main waits for usable ones, see Android_Wait_For_Startup_Paths.
 static std::mutex g_androidStartupMutex;
 static std::condition_variable g_androidStartupCondition;
-static bool g_androidStartupConfigReady = false;
-static bool g_androidStartupConfigValid = false;
+static bool g_androidStartupPathsSet = false;   // setPathsToResources was called
+static bool g_androidStartupPathsTaken = false; // SDL_main took them: the running engine's paths no longer change
 #endif
 
 /*
@@ -579,6 +581,64 @@ main
 */
 
 #ifdef ANDROID
+/*
+==============
+Android_Wait_For_Startup_Paths
+
+Waits (up to 15 seconds) for paths the engine can use: both given, the data root a directory - what the last
+setPathsToResources call gave, checked again as the wait goes on (the folder may only appear once the launcher is done
+with it). The first call used to be kept for good, even with an empty or not yet existing path: the right ones that
+came after were ignored - on the next start too, when android kept the process - and the engine never saw its data.
+On a failure the next start waits for new paths. Logged with SDL_Log: stderr goes nowhere on android.
+==============
+*/
+static bool Android_Wait_For_Startup_Paths()
+{
+	std::unique_lock<std::mutex> lock(g_androidStartupMutex);
+	g_androidStartupPathsTaken = false;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+	bool usable = false;
+	int statError = 0;
+	for (;;) {
+		if (g_androidStartupPathsSet) {
+			struct stat info;
+			statError = 0;
+			if (!g_pathToHomeFolder.empty() && !g_pathToResourcesFolder.empty()) {
+				if (stat(g_pathToResourcesFolder.c_str(), &info) != 0) {
+					statError = errno;
+				} else if (!S_ISDIR(info.st_mode)) {
+					statError = ENOTDIR;
+				} else {
+					usable = true;
+					break;
+				}
+			}
+		}
+		if (std::chrono::steady_clock::now() >= deadline) {
+			break;
+		}
+		g_androidStartupCondition.wait_for(lock, std::chrono::milliseconds(250));
+	}
+
+	if (usable && chdir(g_pathToResourcesFolder.c_str()) != 0) {
+		statError = errno;
+		usable = false;
+	}
+	if (!usable) {
+		if (!g_androidStartupPathsSet) {
+			SDL_Log("[DoomBFA] Timed out waiting for the game data paths from the launcher (setPathsToResources)");
+		} else {
+			SDL_Log("[DoomBFA] Unusable game data paths: saves '%s', data '%s' (%s)", g_pathToHomeFolder.c_str(),
+				g_pathToResourcesFolder.c_str(), statError != 0 ? strerror(statError) : "empty");
+		}
+		g_androidStartupPathsSet = false; // (the next start waits for new ones)
+		return false;
+	}
+	g_androidStartupPathsTaken = true;
+	SDL_Log("[DoomBFA] Game data '%s', saves '%s'", g_pathToResourcesFolder.c_str(), g_pathToHomeFolder.c_str());
+	return true;
+}
+
 __attribute__((used)) __attribute__((visibility("default")))
 int SDL_main(int argc, char **argv)
 #else
@@ -596,26 +656,7 @@ int main( int argc, const char** argv )
 #endif
 
 #if ANDROID
-	{
-		std::unique_lock<std::mutex> lock(g_androidStartupMutex);
-		const bool configReady = g_androidStartupCondition.wait_for(
-			lock, std::chrono::seconds(15), []() {
-				return g_androidStartupConfigReady;
-			}
-		);
-		if (!configReady) {
-			fprintf(stderr, "[DoomBFA] Timed out waiting for Android startup paths from JNI.\n");
-			return 1;
-		}
-		if (!g_androidStartupConfigValid) {
-			fprintf(stderr, "[DoomBFA] Android startup paths are empty or the game data root is not a directory.\n");
-			return 1;
-		}
-	}
-
-	if (chdir(g_pathToResourcesFolder.c_str()) != 0) {
-		fprintf(stderr, "[DoomBFA] Cannot enter game data directory '%s': %s\n",
-			g_pathToResourcesFolder.c_str(), strerror(errno));
+	if (!Android_Wait_For_Startup_Paths()) {
 		return 1;
 	}
 #endif
@@ -757,17 +798,14 @@ __attribute__((used)) __attribute__((visibility("default")))
 void setPathsToResources (const char *pathToHomeFolder, const char *pathToResourcesFolder) {
 	{
 		std::lock_guard<std::mutex> lock(g_androidStartupMutex);
-		if (!g_androidStartupConfigReady) {
+		if (g_androidStartupPathsTaken) {
+			// (the engine runs with the paths it took: they cannot change under it)
+			SDL_Log("[DoomBFA] setPathsToResources ignored, the engine already runs with '%s'", g_pathToResourcesFolder.c_str());
+		} else {
+			// (the last call before SDL_main takes them wins, see Android_Wait_For_Startup_Paths)
 			g_pathToHomeFolder = pathToHomeFolder != NULL ? pathToHomeFolder : "";
 			g_pathToResourcesFolder = pathToResourcesFolder != NULL ? pathToResourcesFolder : "";
-
-			struct stat resourcePathInfo;
-			g_androidStartupConfigValid =
-				!g_pathToHomeFolder.empty() &&
-				!g_pathToResourcesFolder.empty() &&
-				stat(g_pathToResourcesFolder.c_str(), &resourcePathInfo) == 0 &&
-				S_ISDIR(resourcePathInfo.st_mode);
-			g_androidStartupConfigReady = true;
+			g_androidStartupPathsSet = true;
 		}
 	}
 	g_androidStartupCondition.notify_all();

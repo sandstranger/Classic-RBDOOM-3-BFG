@@ -334,7 +334,9 @@ static std::string baseGameDir;
 
 static std::string AndroidBaseGameDir() {
 	std::lock_guard<std::mutex> lock(baseGameDirMutex);
-	return baseGameDir;
+	// Not given - or not yet: SDL_main only waits for setPathsToResources - the base game's folder. An empty one made
+	// every path the data root itself, where the game's files are not: the engine found no data.
+	return baseGameDir.empty() ? std::string(BASE_GAMEDIR) : baseGameDir;
 }
 
 extern "C"{

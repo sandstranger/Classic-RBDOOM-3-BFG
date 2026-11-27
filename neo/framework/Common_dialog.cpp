@@ -1582,8 +1582,26 @@ bool idCommonDialog::HandleDialogEvent( const sysEvent_t* sev )
 				// TODO_D3_PORT
 				//sys->ClearEvents();
 			}
+			else if( sev->evType == SE_KEY && sev->evValue2 == 1 && sev->evValue == K_ESCAPE )
+			{
+				// Escape that the dialog itself does not take is its cancel, when it has one (the one shown: the
+				// first not cleared, see ShowNextDialog). The dialog stays otherwise.
+				for( int index = 0; index < messageList.Num(); ++index )
+				{
+					if( !messageList[index].clear )
+					{
+						if( messageList[index].cancelCB != NULL )
+						{
+							idSWFParmList parms;
+							messageList[index].cancelCB->Call( NULL, parms );
+							idKeyInput::ClearStates();
+						}
+						break;
+					}
+				}
+			}
 		}
-		
+
 		return true;
 	}
 	

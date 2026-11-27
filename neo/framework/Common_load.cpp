@@ -425,7 +425,10 @@ void idCommonLocal::ExecuteMapChange()
 	}
 	
 	insideExecuteMapChange = true;
-	
+
+	// nothing the old map's last frame returned is for the new one (see idGameThread::DiscardReturn)
+	gameThread.DiscardReturn();
+
 	common->Printf( "--------- Execute Map Change ---------\n" );
 	common->Printf( "Map: %s\n", matchParameters.mapName.c_str() );
 	

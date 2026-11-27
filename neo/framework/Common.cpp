@@ -2190,7 +2190,9 @@ idCommonLocal::ProcessEvent
 bool idCommonLocal::ProcessEvent( const sysEvent_t* event )
 {
 	// hitting escape anywhere brings up the menu
-	if( game && game->IsInGame() && !cl_inGUI.GetBool())
+	// - not with a dialog up (a "load this game?" in the pause menu): the escape is the dialog's (below). Taken
+	// here it went to the menus behind it, which closed while the dialog stayed, and the menus were broken.
+	if( game && game->IsInGame() && !cl_inGUI.GetBool() && !Dialog().IsDialogActive() )
 	{
 		if( event->evType == SE_KEY && event->evValue2 == 1 && ( event->evValue == K_ESCAPE || event->evValue == K_JOY9 ) )
 		{

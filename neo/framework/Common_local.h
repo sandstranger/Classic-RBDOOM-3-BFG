@@ -61,6 +61,14 @@ public:
 	// the gameReturn_t is from the previous frame, the
 	// new frame will be running in parallel on exit
 	gameReturn_t	RunGameAndDraw( int numGameFrames, idUserCmdMgr& userCmdMgr_, bool isClient_, int startGameFrame );
+
+	// The return of the frame run last belongs to the map that is left: given out after a map change (a save loaded
+	// while the player lay dead: "died" every tic) it opened the pause menu over the game just loaded.
+	void			DiscardReturn()
+	{
+		WaitForThread();
+		ret = gameReturn_t();
+	}
 	
 	// Accessors to the stored frame/thread time information
 	void			SetThreadTotalTime( const int inTime )

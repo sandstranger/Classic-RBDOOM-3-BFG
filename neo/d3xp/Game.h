@@ -48,12 +48,18 @@ If you have questions concerning this license or the applicable additional terms
 struct gameReturn_t
 {
 
+	// sessionCommand and the trigger rumble were not initialised: "ret = gameReturn_t()" (the game thread clearing its
+	// return while the game is paused, at a map change) copied what the stack held - a "died" of the player killed a
+	// frame before: handed out every paused frame and after a save was loaded, it opened the pause menu there
 	gameReturn_t() :
+		sessionCommand(),
 		syncNextGameFrame( false ),
 		vibrationLow( 0 ),
-		vibrationHigh( 0 )
+		vibrationHigh( 0 ),
+		impulseVibrationLow( 0 ),
+		impulseVibrationHigh( 0 )
 	{
-	
+
 	}
 	
 	char		sessionCommand[MAX_STRING_CHARS];	// "map", "disconnect", "victory", etc

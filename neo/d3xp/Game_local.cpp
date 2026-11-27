@@ -2974,7 +2974,8 @@ void idGameLocal::BuildReturnValue( gameReturn_t& ret )
 	if( GetLocalPlayer() != NULL )
 	{
 		GetLocalPlayer()->GetControllerShake( ret.vibrationLow, ret.vibrationHigh );
-		GetLocalPlayer()->GetControllerTriggerShake(ret.impulseVibrationLow, ret.impulseVibrationLow);
+		// (the high trigger was given the low one's variable: it was never set)
+		GetLocalPlayer()->GetControllerTriggerShake(ret.impulseVibrationLow, ret.impulseVibrationHigh);
 	}
 	else
 	{
@@ -2982,7 +2983,7 @@ void idGameLocal::BuildReturnValue( gameReturn_t& ret )
 		ret.vibrationLow = 0;
 		ret.vibrationHigh = 0;
 		ret.impulseVibrationLow = 0;
-		ret.impulseVibrationLow = 0;
+		ret.impulseVibrationHigh = 0;
 	}
 	
 	// see if a target_sessionCommand has forced a changelevel

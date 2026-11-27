@@ -10253,7 +10253,36 @@ void idRenderBackend::DrawViewInternal( const viewDef_t* _viewDef, const int ste
 	//-------------------------------------------------
 	drawSurf_t** drawSurfs = ( drawSurf_t** )&_viewDef->drawSurfs[0];
 	const int numDrawSurfs = _viewDef->numDrawSurfs;
-	
+
+	// A material purged at a level load stays its default until it is parsed again, here. The front end built the
+	// surfaces of such a material on that default: its constant registers, which the parse below frees (a use after
+	// free in DrawShaderPasses - the console, any gui first shown after a level load), or registers evaluated for the
+	// default's count and stages. Those surfaces are not drawn this frame (numIndexes 0, which every pass skips, as
+	// for the deforms that disable themselves); from the next frame on they are built on the parsed material.
+	// Marked before any is parsed: two surfaces of one material, or its light interactions, all come too early.
+	for( int i = 0; i < numDrawSurfs; i++ )
+	{
+		drawSurf_t* ds = drawSurfs[ i ];
+		if( ds->material != NULL && ds->material->GetState() == DS_UNPARSED )
+		{
+			ds->numIndexes = 0;
+		}
+	}
+	for( const viewLight_t* vLight = _viewDef->viewLights; vLight != NULL; vLight = vLight->next )
+	{
+		drawSurf_t* const lists[] = { vLight->localInteractions, vLight->globalInteractions, vLight->translucentInteractions };
+		for( drawSurf_t* list : lists )
+		{
+			for( drawSurf_t* ds = list; ds != NULL; ds = ds->nextOnLight )
+			{
+				if( ds->material != NULL && ds->material->GetState() == DS_UNPARSED )
+				{
+					ds->numIndexes = 0;
+				}
+			}
+		}
+	}
+
 	for( int i = 0; i < numDrawSurfs; i++ )
 	{
 		const drawSurf_t* ds = _viewDef->drawSurfs[ i ];
